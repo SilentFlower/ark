@@ -1,0 +1,26 @@
+# 构建产物
+/bin/
+/dist/
+
+# 本机真实清单。它包含仓库地址和路径，属于每台机器的私有配置，
+# 不应该进版本库；examples/ark.yaml 才是模板。
+/ark.yaml
+ark.local.yaml
+
+# 密钥文件。任何情况下都不应该出现在版本库里。
+*.pass
+*.key
+.env
+.env.*
+!.env.example
+
+# 前端
+node_modules/
+/web/dist/
+.vite/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store
