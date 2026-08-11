@@ -209,15 +209,46 @@ func (r *Repo) Snapshots(ctx context.Context, tags []string) ([]Snapshot, error)
 // @param tags 逐项传给 restic 的快照过滤标签。
 // @return error 策略、标签或 restic 命令失败时的错误。
 func (r *Repo) Forget(ctx context.Context, policy config.Retention, tags []string) error {
+	args, err := forgetArgs(policy, tags, true)
+	if err != nil {
+		return err
+	}
+	return r.run(ctx, args...)
+}
+
+// ForgetPolicy 按保留策略标记快照删除，但不执行 prune。
+// @param ctx 控制 forget 取消；本方法不附加固定超时。
+// @param policy 已生效的日、周、月保留份数。
+// @param tags 逐项传给 restic 的快照过滤标签。
+// @return error 策略、标签或 restic 命令失败时的错误。
+func (r *Repo) ForgetPolicy(ctx context.Context, policy config.Retention, tags []string) error {
+	args, err := forgetArgs(policy, tags, false)
+	if err != nil {
+		return err
+	}
+	return r.run(ctx, args...)
+}
+
+// Prune 统一回收已被 forget 标记为不再引用的数据。
+// @param ctx 控制 prune 取消；本方法不附加固定超时。
+// @return error restic prune 失败时的错误。
+func (r *Repo) Prune(ctx context.Context) error {
+	return r.run(ctx, "prune", "--json")
+}
+
+func forgetArgs(policy config.Retention, tags []string, prune bool) ([]string, error) {
 	if policy.Daily < 0 || policy.Weekly < 0 || policy.Monthly < 0 {
-		return fmt.Errorf("restic 保留份数不能为负: daily=%d weekly=%d monthly=%d",
+		return nil, fmt.Errorf("restic 保留份数不能为负: daily=%d weekly=%d monthly=%d",
 			policy.Daily, policy.Weekly, policy.Monthly)
 	}
 	if policy.Daily == 0 && policy.Weekly == 0 && policy.Monthly == 0 {
-		return fmt.Errorf("restic 保留策略三项不能同时为 0")
+		return nil, fmt.Errorf("restic 保留策略三项不能同时为 0")
 	}
 
-	args := []string{"forget", "--json", "--prune"}
+	args := []string{"forget", "--json"}
+	if prune {
+		args = append(args, "--prune")
+	}
 	if policy.Daily > 0 {
 		args = append(args, "--keep-daily", strconv.Itoa(policy.Daily))
 	}
@@ -229,9 +260,9 @@ func (r *Repo) Forget(ctx context.Context, policy config.Retention, tags []strin
 	}
 	args, err := appendTags(args, tags)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return r.run(ctx, args...)
+	return args, nil
 }
 
 // ForgetSnapshot 精确删除一个坏快照并立即 prune。

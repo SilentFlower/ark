@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"P2-6 流程、锁、CLI、systemd 和验收来源。"}
+{"file":"docs/design.md","reason":"ADR-005、009、011 和完整备份编排边界。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"外部命令、凭证、超时和 systemd 委托校验。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"CLI 输出、结构化状态和敏感信息边界。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"partial 失败、退出码和多错误传播。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"CLI 注入测试、race 和完整质量门禁。"}

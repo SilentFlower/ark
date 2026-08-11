@@ -312,6 +312,8 @@ func (r *Repo) EnsureInit(ctx context.Context) error
 func (r *Repo) BackupStdin(ctx context.Context, stdin io.Reader, filename string, tags []string) (Snapshot, error)
 func (r *Repo) Snapshots(ctx context.Context, tags []string) ([]Snapshot, error)
 func (r *Repo) Forget(ctx context.Context, policy config.Retention, tags []string) error
+func (r *Repo) ForgetPolicy(ctx context.Context, policy config.Retention, tags []string) error
+func (r *Repo) Prune(ctx context.Context) error
 func (r *Repo) ForgetSnapshot(ctx context.Context, id string) error
 func (r *Repo) Dump(ctx context.Context, snapshotID, path string) (io.ReadCloser, error)
 func (r *Repo) Check(ctx context.Context) error
@@ -331,6 +333,8 @@ func (r *Repo) Check(ctx context.Context) error
 - `Snapshots` 解析 JSON 数组，只暴露 ark 实际使用的稳定字段，并按时间、ID 升序返回。
 - `Forget` 映射非零 daily/weekly/monthly 值并统一 `--prune`；`ForgetSnapshot`
   只删除明确 ID，不猜测其它快照。
+- 多 host 编排使用 `ForgetPolicy` 只执行不带 `--prune` 的 forget，全部 policy
+  结束后调用一次 `Prune`；不得在 host 循环内反复 prune。
 - `Dump` 的 `ReadCloser` 在读到 EOF 时执行 Wait；提前 Close 时关闭 pipe 后执行 Wait。
   非零退出必须通过最终 Read 或 Close 返回，不能只暴露 stdout。
 - 实际 backup、forget、dump、check 只使用调用方 context，不套 doctor 的 15 秒超时。
@@ -362,6 +366,7 @@ func (r *Repo) Check(ctx context.Context) error
 #### 6. Tests Required
 
 - 精确断言所有 API 的 argv、重复 `--tag`、保留策略和 `--prune`。
+- 精确断言 `ForgetPolicy` 不带 `--prune`，`Prune` 单独执行 `prune --json`。
 - 断言父进程冲突变量被移除、env 文件值只进入 restic、强制变量由清单覆盖，
   且错误不含 env value 或 restic stderr 内容。
 - `EnsureInit` 覆盖成功、退出码 10 后 init 和密码错误不 init。

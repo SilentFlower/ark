@@ -287,7 +287,8 @@ func TestSnapshots_解析并稳定排序(t *testing.T) {
 func TestForgetCheck_参数精确映射(t *testing.T) {
 	var calls []commandCall
 	repo := newTestRepo(t, testRepoConfig(), helperCommand(t, &calls,
-		helperPlan{mode: "ok"}, helperPlan{mode: "ok"}, helperPlan{mode: "ok"}))
+		helperPlan{mode: "ok"}, helperPlan{mode: "ok"}, helperPlan{mode: "ok"},
+		helperPlan{mode: "ok"}, helperPlan{mode: "ok"}))
 
 	if err := repo.Forget(context.Background(), config.Retention{Daily: 7, Monthly: 6},
 		[]string{"host:web-01"}); err != nil {
@@ -295,6 +296,13 @@ func TestForgetCheck_参数精确映射(t *testing.T) {
 	}
 	if err := repo.ForgetSnapshot(context.Background(), "snapshot-123"); err != nil {
 		t.Fatalf("ForgetSnapshot 返回错误: %v", err)
+	}
+	if err := repo.ForgetPolicy(context.Background(), config.Retention{Daily: 3},
+		[]string{"host:web-02"}); err != nil {
+		t.Fatalf("ForgetPolicy 返回错误: %v", err)
+	}
+	if err := repo.Prune(context.Background()); err != nil {
+		t.Fatalf("Prune 返回错误: %v", err)
 	}
 	if err := repo.Check(context.Background()); err != nil {
 		t.Fatalf("Check 返回错误: %v", err)
@@ -304,7 +312,9 @@ func TestForgetCheck_参数精确映射(t *testing.T) {
 		"forget", "--json", "--prune", "--keep-daily", "7", "--keep-monthly", "6",
 		"--tag", "host:web-01")
 	assertCall(t, calls, 1, "forget", "--json", "--prune", "snapshot-123")
-	assertCall(t, calls, 2, "check", "--json")
+	assertCall(t, calls, 2, "forget", "--json", "--keep-daily", "3", "--tag", "host:web-02")
+	assertCall(t, calls, 3, "prune", "--json")
+	assertCall(t, calls, 4, "check", "--json")
 }
 
 func TestDump_最终Read暴露退出状态(t *testing.T) {

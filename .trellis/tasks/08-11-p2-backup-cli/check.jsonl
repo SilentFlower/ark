@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 backup 流程、flags、flock、systemd 和验收。"}
+{"file":"docs/design.md","reason":"审计 host 串行、统一 prune 和 oneshot 调度 ADR。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计命令、凭证、超时和 systemd 验证。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计输出通道、JSON 和状态库可观测性。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"审计 partial run、退出码和清理错误。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 CLI、unit、race 和构建检查。"}
