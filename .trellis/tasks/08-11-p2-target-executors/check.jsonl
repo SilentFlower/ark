@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"逐类型核对远程命令、文件名和验收。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计 argv、shell 转义、纯 stdout、Wait 和 context。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"审计数据库逻辑备份、-T、BGSAVE 与无压缩。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"审计阶段错误与无法判断分支。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 race 与高风险场景测试。"}

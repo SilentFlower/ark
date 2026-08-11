@@ -395,6 +395,128 @@ if code, ok := commandExitCode(err); !ok || code != 10 {
 return repo.run(ctx, "init")
 ```
 
+### Scenario: target 产流执行器
+
+#### 1. Scope / Trigger
+
+- 修改 `internal/backup` 的 postgres、redis、volume、files 或 image_digest 执行器时，
+  必须遵守本节。
+- 执行器只把已校验清单转换为纯数据流和稳定元数据；restic、状态库、CLI、
+  target 完整性判定和失败快照撤销属于调用方。
+- local 与 SSH 目标必须使用调用方传入的 `sshexec.Runner`，本包不得自行创建
+  `exec.Cmd`、SSH 连接、shell 或临时文件。
+
+#### 2. Signatures
+
+公开入口和结果字段保持为：
+
+```go
+type Result struct {
+    Host          string
+    TargetID      string
+    TargetType    config.TargetType
+    StdinFilename string
+    Reader        io.ReadCloser
+    Wait          func() error
+    ImageDigests  map[string]string
+}
+
+func Execute(
+    ctx context.Context,
+    host config.Host,
+    target config.Target,
+    runner sshexec.Runner,
+) (*Result, error)
+```
+
+`Reader` 消费完成后必须关闭；`Wait` 必须在读完数据后调用。结果包装层保证底层
+`Close` 和 `Wait` 各至多执行一次，重复调用返回第一次结果。
+
+#### 3. Contracts
+
+- `StdinFilename` 固定为 `<host>/<target.ID()><suffix>`；suffix 分别是 `.sql`、
+  `.rdb`、`.tar`、`.tar`、`.json`。禁止加入日期、run ID 或 snapshot ID。
+- compose 前缀固定为 `docker compose -f <compose_file>`，随后条件追加
+  `-p <project_name>`、`--env-file <env_file>`，顺序与 doctor 一致。
+- 命令矩阵固定为：
+
+| target | argv 尾部或完整 argv |
+|---|---|
+| postgres | `exec -T <service> pg_dump [-U <user>] -d <database> --no-owner --no-acl --clean --if-exists` |
+| redis 基线/轮询 | `exec -T <service> redis-cli LASTSAVE` |
+| redis 触发 | `exec -T <service> redis-cli BGSAVE` |
+| redis 产流 | `exec -T <service> cat /data/dump.rdb` |
+| volume | `docker run --rm -v <name>:/src:ro alpine tar -cpf - -C /src .` |
+| files | `tar -cpf - -- <paths...>`，每条路径保持独立 argv |
+| image_digest | compose `ps --format json`，再按容器 ID 和实际 image ID 做 inspect |
+
+- Redis 必须在 BGSAVE 前读取 LASTSAVE 基线；触发后按 context 轮询，时间戳发生变化
+  才能读取 `/data/dump.rdb`。不得直接复制正在写入的 RDB。
+- image_digest 只接受 `State=running` 的 compose 容器。先从容器 inspect 读取实际
+  image ID 与 `Config.Image` 仓库引用，再对实际 image ID 读取 `RepoDigests`；
+  `Config.Image` 只用于选择仓库，最终值必须来自 `RepoDigests`。
+- 同一 service 有多个运行容器时，所有容器必须解析出同一个 RepoDigest；JSON 输出
+  是 `service -> RepoDigest` 的稳定键序对象，`ImageDigests` 与流内容语义一致。
+- 实际 dump/tar 命令只使用调用方 context，不套 doctor 的 15 秒探测超时。
+
+#### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+|---|---|
+| context、runner、host 或 compose_file 无效 | 启动任何命令前返回中文参数错误 |
+| target 类型未知 | 返回包含 target ID 与类型的错误 |
+| `Runner.Stream` 失败 | 不返回半初始化 Result，保留原错误链 |
+| `Runner.Stream` 成功但 Reader 或 Wait 缺失 | 回收已有资源并返回组合错误 |
+| Reader Close 或 Wait 失败 | 重复调用仍返回第一次错误，底层动作只执行一次 |
+| Redis LASTSAVE 命令失败或输出不是非负整数 | 当前 target 失败，不触发后续阶段 |
+| Redis 轮询期间 context 取消 | 停止轮询并保留 `errors.Is` 语义 |
+| compose ps JSON 无效或目标 service 没有运行容器 | image_digest 失败，不回退到 compose tag |
+| 容器 image ID / image ref 为空 | image_digest 失败，不猜测仓库 |
+| RepoDigests 为空、目标仓库无匹配或匹配多项 | image_digest 失败，不任选候选 |
+| 同一 service 的运行容器解析出多个 digest | image_digest 失败，不输出不确定映射 |
+
+#### 5. Good / Base / Bad Cases
+
+- Good：带空格、引号或 shell 元字符的 service、路径和 volume 名仍各自作为单个 argv
+  交给 Runner；SSH 层统一转义，数据流 stdout 不混入 stderr。
+- Base：postgres 未配置 user 时完全省略 `-U`；image target 的 services 顺序不同，
+  仍产生相同 JSON 字节和 service 映射。
+- Bad：把 files 路径拼成一条 shell 字符串，会重新引入命令注入并破坏含空格路径。
+- Bad：直接用 `Config.Image` 的 tag 作为恢复版本；tag 可变，不能证明备份时实际运行镜像。
+
+#### 6. Tests Required
+
+- 五类执行器都用表驱动 fake Runner 测试，精确断言 argv、调用顺序、稳定文件名和
+  `Host` / `TargetID` / `TargetType` 元数据。
+- postgres 断言 `-T`、可选 `-U`、无 `-Fc` / gzip；volume 断言 `:ro` 和
+  `tar -cpf`；files 断言 `--` 后路径保持独立 argv。
+- Redis 覆盖基线、BGSAVE、未变化轮询、变化后 Stream、context 取消和各阶段错误。
+- image_digest 覆盖 JSON Lines、稳定 service 排序、Docker Hub 别名、registry 端口、
+  空 RepoDigests、仓库不匹配、多候选、多运行 digest 以及每级 inspect/解析失败。
+- 共享流结果覆盖 Stream 启动失败、半初始化回收、Wait/Close 错误链和重复调用次数。
+- 至少运行 `go test ./internal/backup -race -count=1`、`make check`、标准构建、
+  `CGO_ENABLED=0 go build ./cmd/ark` 和 `git diff --check`。
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```go
+// tag 不是运行版本证明；拼 shell 也绕过了 Runner 的逐参数转义。
+command := "docker compose exec " + target.Service + " pg_dump -d " + target.Database
+digest := configuredImageTag
+```
+
+##### Correct
+
+```go
+argv := append(composeArgv(host.Project),
+    "exec", "-T", target.Service, "pg_dump", "-d", target.Database)
+reader, wait, err := runner.Stream(ctx, argv...)
+
+// image_digest 从运行容器的 image ID 反查 RepoDigests；Config.Image 只筛选仓库。
+```
+
 ### 可选参数用条件 append
 
 见上面的 `-p` 和 `--env-file`。不要为了省事传空字符串——
