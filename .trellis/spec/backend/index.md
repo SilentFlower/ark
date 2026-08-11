@@ -1,12 +1,19 @@
 # Backend Development Guidelines
 
-> Best practices for backend development in this project.
+> ark 的后端编码规约。所有内容来自本仓库的真实代码，不是通用建议。
 
 ---
 
 ## Overview
 
-This directory contains guidelines for backend development. Fill in each file with your project's specific conventions.
+ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
+产出 `ark`（agent）和 `ark-hub`（中心机观测面）两个二进制。
+
+写代码前请先理解一条贯穿全项目的前提：
+**ark 的失败是延迟暴露的**。一个写错的备份工具会连续三个月「成功」运行，
+直到需要恢复的那天才暴露。下面所有规约里偏严的部分，理由都源于此。
+
+架构背景与 8 条 ADR 见 `docs/design.md`，分阶段任务见 `docs/roadmap.md`。
 
 ---
 
@@ -14,25 +21,39 @@ This directory contains guidelines for backend development. Fill in each file wi
 
 | Guide | Description | Status |
 |-------|-------------|--------|
-| [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
-| [Database Guidelines](./database-guidelines.md) | ORM patterns, queries, migrations | To fill |
-| [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
-| [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
+| [Directory Structure](./directory-structure.md) | 包划分、依赖方向、命名约定 | Filled |
+| [External Command Guidelines](./external-command-guidelines.md) | 子进程调用与凭证注入红线 | Filled |
+| [Database Guidelines](./database-guidelines.md) | 备份/恢复数据库的规约 | Filled |
+| [Error Handling](./error-handling.md) | 错误传播、聚合与退出码 | Filled |
+| [Logging Guidelines](./logging-guidelines.md) | 输出通道、结构化上报、密钥红线 | Filled |
+| [Quality Guidelines](./quality-guidelines.md) | 提交门槛、测试要求、注释标准 | Filled |
+
+### 与模板的差异
+
+本项目对 Trellis 默认模板做了两处调整，理由如下：
+
+- **新增 `external-command-guidelines.md`**。ark 的功能几乎全部由调用
+  `restic` / `docker compose` / `pg_dump` 实现，子进程调用是本项目
+  最主要的代码形态和最集中的风险点，需要独立成篇。
+- **`database-guidelines.md` 改写了范围**。ark 自身没有数据库、没有 ORM、
+  没有迁移，模板里的相应章节不适用。该文档现在讲的是
+  「如何备份和恢复别人的数据库」。
 
 ---
 
-## How to Fill These Guidelines
+## Reading Order
 
-For each guideline file:
+首次进入本项目，按这个顺序读效率最高：
 
-1. Document your project's **actual conventions** (not ideals)
-2. Include **code examples** from your codebase
-3. List **forbidden patterns** and why
-4. Add **common mistakes** your team has made
+1. `docs/design.md` 第 4 节的 8 条 ADR — 理解为什么是现在这个形状。
+2. [Directory Structure](./directory-structure.md) — 知道代码该往哪放。
+3. [External Command Guidelines](./external-command-guidelines.md) — 本项目最容易出事的地方。
+4. 其余三篇按需查阅。
 
-The goal is to help AI assistants and new team members understand how YOUR project works.
+动手前再扫一眼 [Quality Guidelines](./quality-guidelines.md) 末尾的
+Code Review Checklist。
 
 ---
 
-**Language**: All documentation should be written in **English**.
+**Language**: 文档标题保持英文，正文用中文。代码注释、错误信息、
+用户可见文本一律中文。
