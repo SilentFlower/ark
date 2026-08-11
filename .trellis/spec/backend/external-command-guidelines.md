@@ -77,6 +77,119 @@ remote := "docker compose exec -T " + t.Service + " pg_dump -d " + t.Database
 **必查的测试断言**：给 `service` / `name` 传入含 `;`、`$(...)`、空格、单引号的值，
 断言生成的远程命令串里这些字符全部落在引号内、且远程侧不产生额外命令。
 
+### Scenario: 本地与 SSH 统一执行层
+
+#### 1. Scope / Trigger
+
+- 当上层需要在 hub 本地或目标机执行同一条命令时，统一依赖
+  `internal/sshexec.Runner`，不要在业务代码中重复判断 `Host.Local`。
+- 该边界承载命令注入防护、流式数据纯度和 SSH 退出状态，任何签名或生命周期
+  变更都必须同步更新本节与测试。
+
+#### 2. Signatures
+
+```go
+type Runner interface {
+    Run(ctx context.Context, argv ...string) (string, error)
+    Stream(ctx context.Context, argv ...string) (io.ReadCloser, func() error, error)
+    Feed(ctx context.Context, stdin io.Reader, argv ...string) error
+}
+
+func NewLocal() Runner
+func NewSSH(cfg config.SSH) (Runner, error)
+```
+
+`Run` 面向短命令；`Stream` 面向备份方向的 stdout 数据流；`Feed` 面向恢复方向的
+stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
+
+#### 3. Contracts
+
+- `NewLocal` 使用 `exec.CommandContext(ctx, argv[0], argv[1:]...)`，不经过 shell。
+- `NewSSH` 接收 `config.SSH` 的 `address`、`user`、`identity_file`、
+  `known_hosts_file`，并固定 `-T`、`Compression=no`、`BatchMode=yes`、
+  `StrictHostKeyChecking=yes`、`UserKnownHostsFile`、`IdentitiesOnly=yes`、
+  `-i`、`-p`、`-l` 和 `--`。
+- SSH 远程 argv 的每个元素分别做 POSIX 单引号转义，最终只向系统 `ssh`
+  传递一条远程命令串；不得增加第二层 `bash -c`。
+- `Run` 等待结束并返回 stdout/stderr 合并输出；非零退出时仍返回已产生的输出。
+- `Stream` 只暴露 stdout。调用方必须先读到 EOF，再调用且只调用一次 `Wait`；
+  stderr 仅在失败时进入诊断，不能混入业务数据。
+- `Feed` 把 reader 直接连接到 stdin，不得整读或落临时文件；stdout 丢弃，
+  stderr 仅用于失败诊断。
+- 三种模式都使用调用方 context，本包不统一设置时长。取消或超时错误必须保留
+  `errors.Is(err, context.Canceled/DeadlineExceeded)` 语义。
+- 生产环境变量：无。localhost 集成测试使用可选的
+  `ARK_SSH_TEST_ADDRESS`、`ARK_SSH_TEST_USER`、`ARK_SSH_TEST_IDENTITY_FILE`、
+  `ARK_SSH_TEST_KNOWN_HOSTS_FILE`；缺失任一项时跳过。
+- 错误可以包含命令、身份文件路径和 known_hosts 路径，但不得读取或输出文件内容，
+  也不得打印完整环境变量集合。
+
+#### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+|---|---|
+| argv 为空或命令名为空 | 三种入口立即返回中文错误，不 panic |
+| `address` 不是 `host:port`、host 为空、端口越界 | `NewSSH` 返回包含字段上下文的错误 |
+| user 为空 | `NewSSH` 返回 `ssh.user` 校验错误 |
+| identity / known_hosts 为空或不是绝对路径 | `NewSSH` 返回对应字段校验错误，不读取文件 |
+| 命令启动失败 | 返回带命令上下文且保留 `%w` 的错误 |
+| context 取消或超时 | 返回错误可被 `errors.Is` 识别 |
+| `Run` 非零退出 | 返回合并输出和非 nil error |
+| `Stream` 非零退出或被信号终止 | stdout 读取结束后，`Wait` 返回非 nil error |
+| `Feed` 非零退出 | 返回包含 stderr 诊断的非 nil error |
+
+#### 5. Good / Base / Bad Cases
+
+- Good：远程参数包含 `safe; $(touch /tmp/x); x'y with spaces`，远端 `printf`
+  原样输出该值，且 `/tmp/x` 不存在。
+- Base：`Stream(ctx, "pg_dump", "-d", database)` 返回纯 stdout，调用方读完后
+  `Wait()` 为 nil。
+- Bad：调用方只读 stdout、不调用 `Wait`，会把 SSH 中断或远程命令失败误判为成功。
+- Bad：把恢复输入先 `io.ReadAll`，会让大体积备份占满内存并破坏流式约束。
+
+#### 6. Tests Required
+
+- 单元测试断言本地 argv 原样传递，shell 元字符不会创建额外文件。
+- 单元测试断言 SSH 的全部固定选项、host/port/user/路径和最终远程命令串。
+- 转义测试覆盖空字符串、空格、`;`、`$(...)`、换行和单引号。
+- `Run` 覆盖成功、合并输出、非零退出和 context 取消。
+- `Stream` 覆盖 stdout/stderr 隔离、成功、非零退出、SIGKILL 和 context 超时；
+  断言失败由 `Wait` 返回。
+- `Feed` 覆盖大输入原样传递、非零退出和 context 超时。
+- localhost SSH 集成测试用 `testing.Short()` 和四个可选环境变量保护，并实际断言
+  正常执行、参数不注入、远程非零退出和远程进程被 kill。
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```go
+remote := "docker compose exec -T " + service + " pg_dump -d " + database
+cmd := exec.CommandContext(ctx, "ssh", host, "bash", "-c", remote)
+stdout, _ := cmd.StdoutPipe()
+_ = cmd.Start()
+return stdout // 丢失 Wait，截断流可能被当作成功
+```
+
+##### Correct
+
+```go
+runner, err := sshexec.NewSSH(*host.SSH)
+if err != nil {
+    return err
+}
+stdout, wait, err := runner.Stream(ctx, "docker", "compose", "exec", "-T",
+    service, "pg_dump", "-d", database)
+if err != nil {
+    return err
+}
+// 调用方先消费 stdout，再用 wait 校验 SSH 与远程命令的最终退出状态。
+if err := consume(stdout); err != nil {
+    return err
+}
+return wait()
+```
+
 ### 可选参数用条件 append
 
 见上面的 `-p` 和 `--env-file`。不要为了省事传空字符串——

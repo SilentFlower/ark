@@ -98,6 +98,7 @@ func Run(ctx context.Context, cfg *config.Config) *Report {
 	// 这几项是 hub 自身的能力，与有多少台机器无关，只查一次。
 	dockerOK := checkBinary(ctx, r, "docker", "docker", "--version")
 	checkBinary(ctx, r, "restic", "restic", "version")
+	checkBinary(ctx, r, "ssh", "ssh", "-V")
 	systemdOK := checkBinary(ctx, r, "systemd-analyze", "systemd-analyze", "--version")
 
 	composeOK := false
