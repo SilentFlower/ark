@@ -1,0 +1,8 @@
+{"file":"docs/roadmap.md","reason":"P1-3 的 RunLocal/RunHost、远程检查项、时钟偏移与 P1-4 doctor CLI 范围来源。"}
+{"file":"docs/design.md","reason":"ADR-008 的静态/hub/host 三层校验边界，以及 agentless 与失败可见性约束。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"Runner 命令构造、15 秒探测超时、凭证子进程 Env、输出脱敏与 compose 参数约束。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"doctor 三态报告、依赖失败降级、错误链和 CLI 退出码语义。"}
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"Host/SSH/Repo/Project 字段约束与 config 不访问环境的边界。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"doctor、cli、config、sshexec 的职责边界和依赖方向。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"核对 config 到 doctor 再到 CLI/JSON 输出的完整数据流与失败传播。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"本地/远程文件元数据判定和命令构造必须复用，避免两套行为漂移。"}

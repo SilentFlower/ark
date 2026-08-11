@@ -1,0 +1,62 @@
+{
+  "id": "p1-remote-doctor",
+  "name": "p1-remote-doctor",
+  "title": "P1-3 远程 doctor",
+  "description": "拆分 hub 本地与单 host 环境检查，通过 sshexec.Runner 验证远程 docker、compose、文件和 target，并完成 doctor --host/--all CLI 范围选择。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-11T12:10:06Z",
+      "contextKey": "codex_019ff08b-d5c6-72f2-b153-5da3d92ee3af",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "1d6beafae147db17003435542fa3b2d3f2377269",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "1d6beafae147db17003435542fa3b2d3f2377269",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "f32d2c310fb761e5d3e80fa0fa7ec33f2682b22beb06dcb25002ef49dc321798"
+          }
+        ],
+        "fingerprint": "98b90936f22a5f52aaa6f1df0c310d6508b0dca1ff34609f6120318039b1da50"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-11T21:10:13+08:00",
+    "completedSteps": [
+      "完成 RunLocal 与 RunHost 的本地及远程环境检查",
+      "完成 doctor --host/--all 范围选择及兼容输出",
+      "完成测试、文档、Full Check-All 与 code-spec 更新"
+    ],
+    "partialStep": null,
+    "nextStep": "归档当前任务",
+    "notes": "Full Check-All 严格通过，剩余 CHK/FBK 为 0；真实 host 集成测试未配置专用环境时安全跳过。"
+  }
+}

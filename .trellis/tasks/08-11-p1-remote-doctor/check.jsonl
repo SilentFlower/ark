@@ -1,0 +1,7 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 P1-3 与随同完成的 P1-4 doctor flags 验收范围。"}
+{"file":"docs/design.md","reason":"核对 ADR-008 三层校验、agentless 目标依赖和失败不可伪装为成功。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计 shell 注入、超时、凭证环境隔离、敏感输出与 compose argv。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"审计 fail/warn 依赖矩阵、错误链、单项失败不中断和退出码 0/1/2。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 make check、race、注释、外部依赖跳过与静默错误检查。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"确认 restic env、SSH 路径与远程 stderr 不泄露敏感内容。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"反向核对默认/host/all 到 Report、JSON、文本和退出码的完整路径。"}
