@@ -1,0 +1,7 @@
+{"file":"docs/roadmap.md","reason":"P2-1 的固定路径、四张表、modernc SQLite、迁移与并发验收来源；同步 P1-2 完成标记。"}
+{"file":"docs/design.md","reason":"状态库字段、ark 写/ark-hub 读、WAL 与 P2/P3/P4 消费场景的架构来源。"}
+{"file":".trellis/tasks/08-11-p2-store/research/sqlite.md","reason":"Go 1.22 驱动版本兼容、DSN PRAGMA、WAL busy 与迁移锁研究结论。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"internal/store 包职责、依赖方向与文件归属约束。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"状态库作为结构化可观测面，以及持久化字段与敏感信息红线。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"SQL 错误链、无历史正常分支、RowsAffected 与失败可见性约束。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"package doc、公共 API 中文注释、race、外部依赖与完整质量门禁。"}

@@ -1,0 +1,63 @@
+{
+  "id": "p2-store",
+  "name": "p2-store",
+  "title": "P2-1 状态库",
+  "description": "新增基于 SQLite WAL 的 internal/store，提供 schema v1、顺序迁移、运行与检查结果持久化，并验证 ark 写与 ark-hub 读的并发边界。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-11T13:33:30Z",
+      "contextKey": "codex_019ff08b-d5c6-72f2-b153-5da3d92ee3af",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "9035d9cfc4f080adbcf5a1c843271baf8b55b4c1",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "9035d9cfc4f080adbcf5a1c843271baf8b55b4c1",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "8858db47c221984fd3235c3798d0d4c1e7268c2582efe3e1565cbedbca1eb2a5"
+          }
+        ],
+        "fingerprint": "d1df2bf886f75fdfc4bd03da9909a43be7697cdaec46a72b77d929675afed147"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-11T23:22:09+08:00",
+    "completedSteps": [
+      "实现 SQLite WAL 状态库、schema v1 与并发安全迁移",
+      "实现 run、target、doctor 和 verification 状态读写 API",
+      "通过状态库 race、无 CGO、make check 与构建验证",
+      "更新 roadmap 与数据库开发规范"
+    ],
+    "partialStep": null,
+    "nextStep": "运行 trellis-finish-work 归档 P2-1 状态库",
+    "notes": "P2-1 已完成；P2-3 仍需使用 SQLite 在线备份语义处理 WAL 一致性。"
+  }
+}

@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 P2-1 schema、迁移、并发与首次建库验收，并确认未越界到 P2-2/P2-3。"}
+{"file":"docs/design.md","reason":"反向核对多机 run、target 结果、doctor/verification 和 ark-hub 读取需求。"}
+{"file":".trellis/tasks/08-11-p2-store/research/sqlite.md","reason":"核对依赖版本、Go 兼容、连接级 PRAGMA、WAL busy 与在线复制风险。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"审计迁移失败、SQL 错误链、无历史查询与 Close/rollback 错误处理。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计结构化字段完整性和错误/JSON 中的敏感信息边界。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 race、make check、无 cgo 构建、注释和失败可见性检查。"}
