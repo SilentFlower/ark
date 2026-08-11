@@ -111,7 +111,7 @@ host 重名、`local` 与 `ssh` 并存、缺 `known_hosts_file`、v1 清单
 
 ---
 
-### P1-2 SSH 执行层 `internal/sshexec/`
+### P1-2 SSH 执行层 `internal/sshexec/` ✅ 已完成
 
 **新增文件**：`internal/sshexec/client.go`、`client_test.go`
 
@@ -223,7 +223,7 @@ func RunHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report
 
 粗估 4–5 天。
 
-### P2-1 状态库 `internal/store/`
+### P2-1 状态库 `internal/store/` ✅ 已完成
 
 **新增文件**：`internal/store/store.go`、`schema.sql`、`store_test.go`
 

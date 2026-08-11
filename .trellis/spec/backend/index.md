@@ -25,7 +25,7 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 | [Directory Structure](./directory-structure.md) | 包划分、依赖方向、命名约定 | Filled |
 | [Manifest Guidelines](./manifest-guidelines.md) | 清单模型演进、校验规约、默认值继承 | Filled |
 | [External Command Guidelines](./external-command-guidelines.md) | 子进程调用与凭证注入红线 | Filled |
-| [Database Guidelines](./database-guidelines.md) | 备份/恢复数据库的规约 | Filled |
+| [Database Guidelines](./database-guidelines.md) | ark 自身 SQLite 状态库，以及业务数据库备份/恢复边界 | Filled |
 | [Error Handling](./error-handling.md) | 错误传播、聚合与退出码 | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | 输出通道、结构化上报、密钥红线 | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | 提交门槛、测试要求、注释标准 | Filled |
@@ -40,9 +40,9 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 - **新增 `manifest-guidelines.md`**。清单是 ark 唯一的用户输入契约，
   hub 的全部行为都由它决定，而它的每一次结构变更都会横穿
   config / doctor / cli 三层，需要一份独立的演进与校验规约。
-- **`database-guidelines.md` 改写了范围**。ark 自身没有数据库、没有 ORM、
-  没有迁移，模板里的相应章节不适用。该文档现在讲的是
-  「如何备份和恢复别人的数据库」。
+- **`database-guidelines.md` 明确了双重边界**。ark 自身状态只允许
+  `internal/store` 管理 SQLite；被备份的业务数据库仍只通过容器内 CLI
+  交互，不引入业务数据库驱动或 ORM。
 
 ---
 

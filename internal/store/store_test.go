@@ -1,0 +1,630 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestOpen_CreatesDatabaseAndSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state dir", "ark.db")
+	first := openTestStore(t, path)
+	second := openTestStore(t, path)
+
+	for name, wantMode := range map[string]os.FileMode{
+		filepath.Dir(path): 0o700,
+		path:               0o600,
+	} {
+		info, err := os.Stat(name)
+		if err != nil {
+			t.Fatalf("读取 %s 状态失败: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != wantMode {
+			t.Errorf("%s 权限 = %#o，期望 %#o", name, got, wantMode)
+		}
+	}
+
+	if got := queryInt(t, first.db, "PRAGMA user_version"); got != currentSchemaVersion {
+		t.Errorf("user_version = %d，期望 %d", got, currentSchemaVersion)
+	}
+	assertSchemaObjects(t, first.db)
+	assertSchemaObjects(t, second.db)
+}
+
+func TestOpen_AppliesPragmasToEveryConnection(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "ark.db"))
+	store.db.SetMaxOpenConns(4)
+
+	connections := make([]*sql.Conn, 0, 4)
+	for range 4 {
+		conn, err := store.db.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("获取独立连接失败: %v", err)
+		}
+		connections = append(connections, conn)
+	}
+	t.Cleanup(func() {
+		for _, conn := range connections {
+			if err := conn.Close(); err != nil {
+				t.Errorf("关闭测试连接失败: %v", err)
+			}
+		}
+	})
+
+	for i, conn := range connections {
+		var foreignKeys int
+		if err := conn.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+			t.Fatalf("读取连接 %d 的 foreign_keys 失败: %v", i, err)
+		}
+		if foreignKeys != 1 {
+			t.Errorf("连接 %d 的 foreign_keys = %d，期望 1", i, foreignKeys)
+		}
+
+		var busyTimeout int
+		if err := conn.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+			t.Fatalf("读取连接 %d 的 busy_timeout 失败: %v", i, err)
+		}
+		if busyTimeout != busyTimeoutMilliseconds {
+			t.Errorf("连接 %d 的 busy_timeout = %d，期望 %d", i, busyTimeout, busyTimeoutMilliseconds)
+		}
+
+		var journalMode string
+		if err := conn.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&journalMode); err != nil {
+			t.Fatalf("读取连接 %d 的 journal_mode 失败: %v", i, err)
+		}
+		if !strings.EqualFold(journalMode, "wal") {
+			t.Errorf("连接 %d 的 journal_mode = %q，期望 wal", i, journalMode)
+		}
+	}
+}
+
+func TestOpen_RejectsInvalidPathAndNewerSchema(t *testing.T) {
+	if _, err := Open(context.Background(), "  "); err == nil || !strings.Contains(err.Error(), "路径不能为空") {
+		t.Fatalf("空路径错误 = %v，期望包含路径不能为空", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "ark.db")
+	store := openTestStore(t, path)
+	if _, err := store.db.Exec("PRAGMA user_version = 2"); err != nil {
+		t.Fatalf("设置较新 schema 版本失败: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("关闭预置状态库失败: %v", err)
+	}
+
+	_, err := Open(context.Background(), path)
+	if err == nil {
+		t.Fatal("期望拒绝较新的 schema，实际成功")
+	}
+	if !strings.Contains(err.Error(), "高于当前程序支持") {
+		t.Errorf("错误信息 %q 中未包含版本过新说明", err.Error())
+	}
+}
+
+func TestOpen_MigrationFailureRollsBackPartialSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	if err := prepareDatabaseFile(path); err != nil {
+		t.Fatalf("预创建数据库失败: %v", err)
+	}
+	raw, err := sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("打开预置数据库失败: %v", err)
+	}
+	if _, err := raw.Exec("CREATE TABLE run_targets (id TEXT PRIMARY KEY)"); err != nil {
+		t.Fatalf("创建冲突表失败: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("关闭预置数据库失败: %v", err)
+	}
+
+	_, err = Open(context.Background(), path)
+	if err == nil {
+		t.Fatal("期望迁移因冲突表失败，实际成功")
+	}
+	if !strings.Contains(err.Error(), "schema v1") {
+		t.Errorf("迁移错误 %q 中未包含 schema 版本", err.Error())
+	}
+
+	raw, err = sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("重新打开失败数据库失败: %v", err)
+	}
+	defer func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("关闭失败数据库连接失败: %v", err)
+		}
+	}()
+	if got := queryInt(t, raw, "PRAGMA user_version"); got != 0 {
+		t.Errorf("失败迁移后的 user_version = %d，期望 0", got)
+	}
+	wantTables := []string{"run_targets"}
+	if got := schemaObjectNames(t, raw, "table"); !equalStrings(got, wantTables) {
+		t.Errorf("失败迁移后的表 = %#v，期望仅保留 %#v", got, wantTables)
+	}
+}
+
+func TestStore_RunAndTargetLifecycle(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "ark.db"))
+	base := time.Date(2026, 8, 11, 4, 17, 0, 0, time.FixedZone("CST", 8*60*60))
+
+	runs := []struct {
+		id      string
+		started time.Time
+		status  Status
+		bytes   int64
+	}{
+		{id: "run-1", started: base, status: StatusOK, bytes: 100},
+		{id: "run-2", started: base.Add(time.Hour), status: StatusFail, bytes: 10},
+		{id: "run-3", started: base.Add(2 * time.Hour), status: StatusOK, bytes: 200},
+	}
+	for _, item := range runs {
+		createRun(t, store, Run{
+			ID:            item.id,
+			RequestedHost: "web-01",
+			Status:        StatusRunning,
+			StartedAt:     item.started,
+			ArkVersion:    "v0.2.0",
+		})
+		if err := store.RecordRunTarget(context.Background(), RunTarget{
+			RunID:      item.id,
+			Host:       "web-01",
+			TargetID:   "postgres/app/main",
+			TargetType: "postgres",
+			Status:     item.status,
+			Bytes:      item.bytes,
+			Duration:   1500 * time.Millisecond,
+			SnapshotID: "snapshot-" + item.id,
+		}); err != nil {
+			t.Fatalf("记录 %s target 失败: %v", item.id, err)
+		}
+	}
+
+	bytes, found, err := store.LastSuccessfulTargetBytes(
+		context.Background(), "web-01", "postgres/app/main")
+	if err != nil {
+		t.Fatalf("查询最近成功 bytes 失败: %v", err)
+	}
+	if !found || bytes != 200 {
+		t.Errorf("最近成功结果 = (%d, %t)，期望 (200, true)", bytes, found)
+	}
+	bytes, found, err = store.LastSuccessfulTargetBytes(
+		context.Background(), "web-01", "files/missing")
+	if err != nil {
+		t.Fatalf("查询无历史 target 失败: %v", err)
+	}
+	if found || bytes != 0 {
+		t.Errorf("无历史结果 = (%d, %t)，期望 (0, false)", bytes, found)
+	}
+
+	if err := store.FinishRun(context.Background(), "run-3", RunResult{
+		Status:     StatusWarn,
+		FinishedAt: base.Add(2*time.Hour + 3*time.Second),
+		Duration:   3 * time.Second,
+		Error:      "快照体积低于历史值",
+	}); err != nil {
+		t.Fatalf("完成运行记录失败: %v", err)
+	}
+	got, err := store.GetRun(context.Background(), "run-3")
+	if err != nil {
+		t.Fatalf("查询运行记录失败: %v", err)
+	}
+	if got.ID != "run-3" || got.RequestedHost != "web-01" || got.Status != StatusWarn ||
+		got.Duration != 3*time.Second || got.ArkVersion != "v0.2.0" ||
+		got.Error != "快照体积低于历史值" {
+		t.Errorf("运行记录不符合预期: %#v", got)
+	}
+	if !got.StartedAt.Equal(base.Add(2 * time.Hour).UTC()) {
+		t.Errorf("started_at = %s，期望 %s", got.StartedAt, base.Add(2*time.Hour).UTC())
+	}
+	if !got.FinishedAt.Equal(base.Add(2*time.Hour + 3*time.Second).UTC()) {
+		t.Errorf("finished_at = %s，期望 %s", got.FinishedAt, base.Add(2*time.Hour+3*time.Second).UTC())
+	}
+
+	_, err = store.GetRun(context.Background(), "missing")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("查询不存在记录错误 = %v，期望保留 sql.ErrNoRows", err)
+	}
+}
+
+func TestStore_RecordsDoctorAndVerification(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "ark.db"))
+	startedAt := time.Date(2026, 8, 11, 4, 17, 0, 0, time.UTC)
+	createRun(t, store, Run{
+		ID:         "run-1",
+		Status:     StatusRunning,
+		StartedAt:  startedAt,
+		ArkVersion: "v0.2.0",
+	})
+
+	if err := store.RecordDoctorReport(context.Background(), DoctorReport{
+		Scope:      DoctorScopeHost,
+		Host:       "db-01",
+		CreatedAt:  startedAt,
+		Status:     StatusWarn,
+		NextRunAt:  startedAt.Add(24 * time.Hour),
+		ReportJSON: []byte(`{"checks":[{"name":"docker","status":"warn"}]}`),
+	}); err != nil {
+		t.Fatalf("记录 doctor 报告失败: %v", err)
+	}
+	if err := store.RecordVerification(context.Background(), Verification{
+		ID:         "verify-1",
+		Host:       "db-01",
+		RunID:      "run-1",
+		SnapshotID: "snapshot-1",
+		StartedAt:  startedAt,
+		FinishedAt: startedAt.Add(2 * time.Minute),
+		Duration:   2 * time.Minute,
+		Status:     StatusOK,
+		DetailJSON: []byte(`{"database":"restored"}`),
+	}); err != nil {
+		t.Fatalf("记录 verification 失败: %v", err)
+	}
+
+	if got := queryInt(t, store.db, "SELECT COUNT(*) FROM doctor_reports"); got != 1 {
+		t.Errorf("doctor_reports 数量 = %d，期望 1", got)
+	}
+	if got := queryInt(t, store.db, "SELECT COUNT(*) FROM verifications"); got != 1 {
+		t.Errorf("verifications 数量 = %d，期望 1", got)
+	}
+
+	if _, err := store.db.Exec("DELETE FROM runs WHERE id = 'run-1'"); err != nil {
+		t.Fatalf("删除 run 失败: %v", err)
+	}
+	if got := queryInt(t, store.db, "SELECT COUNT(*) FROM verifications WHERE run_id IS NOT NULL"); got != 0 {
+		t.Errorf("run 删除后仍有 %d 条 verification 保留 run_id", got)
+	}
+}
+
+func TestStore_ForeignKeyCascadeAndDatabaseChecks(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "ark.db"))
+	now := time.Date(2026, 8, 11, 4, 17, 0, 0, time.UTC)
+	createRun(t, store, Run{ID: "run-1", Status: StatusRunning, StartedAt: now, ArkVersion: "dev"})
+	if err := store.RecordRunTarget(context.Background(), RunTarget{
+		RunID:      "run-1",
+		Host:       "hub",
+		TargetID:   "files/etc-ark",
+		TargetType: "files",
+		Status:     StatusOK,
+		Bytes:      42,
+		Duration:   time.Second,
+	}); err != nil {
+		t.Fatalf("记录 target 失败: %v", err)
+	}
+	if _, err := store.db.Exec("DELETE FROM runs WHERE id = 'run-1'"); err != nil {
+		t.Fatalf("删除 run 失败: %v", err)
+	}
+	if got := queryInt(t, store.db, "SELECT COUNT(*) FROM run_targets"); got != 0 {
+		t.Errorf("级联删除后仍有 %d 条 target", got)
+	}
+
+	_, err := store.db.Exec(`
+		INSERT INTO doctor_reports (scope, host, created_at, status, report_json)
+		VALUES ('local', NULL, 1, 'ok', 'not-json')`)
+	if err == nil {
+		t.Error("数据库 CHECK 未拒绝非法 JSON")
+	}
+	_, err = store.db.Exec(`
+		INSERT INTO run_targets (
+			run_id, host, target_id, target_type, status, bytes, duration_ms
+		) VALUES ('missing', 'hub', 'files/etc-ark', 'files', 'ok', 1, 1)`)
+	if err == nil {
+		t.Error("foreign key 未拒绝不存在的 run")
+	}
+}
+
+func TestStore_ValidationErrors(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "ark.db"))
+	now := time.Date(2026, 8, 11, 4, 17, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		run     func() error
+		wantSub string
+	}{
+		{name: "run ID 为空", run: func() error {
+			return store.CreateRun(context.Background(), Run{Status: StatusRunning, StartedAt: now, ArkVersion: "dev"})
+		}, wantSub: "run.id"},
+		{name: "run 状态不是 running", run: func() error {
+			return store.CreateRun(context.Background(), Run{ID: "run", Status: StatusOK, StartedAt: now, ArkVersion: "dev"})
+		}, wantSub: "期望 \"running\""},
+		{name: "run 版本为空", run: func() error {
+			return store.CreateRun(context.Background(), Run{ID: "run", Status: StatusRunning, StartedAt: now})
+		}, wantSub: "ark_version"},
+		{name: "run 提前包含完成字段", run: func() error {
+			return store.CreateRun(context.Background(), Run{
+				ID: "run", Status: StatusRunning, StartedAt: now, FinishedAt: now, ArkVersion: "dev",
+			})
+		}, wantSub: "不能包含完成时间"},
+		{name: "完成状态非法", run: func() error {
+			return store.FinishRun(context.Background(), "run", RunResult{Status: StatusRunning, FinishedAt: now})
+		}, wantSub: "必须是"},
+		{name: "完成耗时为负", run: func() error {
+			return store.FinishRun(context.Background(), "run", RunResult{
+				Status: StatusOK, FinishedAt: now, Duration: -time.Second,
+			})
+		}, wantSub: "不能为负数"},
+		{name: "target host 为空", run: func() error {
+			return store.RecordRunTarget(context.Background(), RunTarget{
+				RunID: "run", TargetID: "files/etc", TargetType: "files", Status: StatusOK,
+			})
+		}, wantSub: "run_target.host"},
+		{name: "target bytes 为负", run: func() error {
+			return store.RecordRunTarget(context.Background(), RunTarget{
+				RunID: "run", Host: "hub", TargetID: "files/etc", TargetType: "files",
+				Status: StatusOK, Bytes: -1,
+			})
+		}, wantSub: "bytes"},
+		{name: "doctor local 带 host", run: func() error {
+			return store.RecordDoctorReport(context.Background(), DoctorReport{
+				Scope: DoctorScopeLocal, Host: "hub", CreatedAt: now, Status: StatusOK,
+				ReportJSON: []byte(`{}`),
+			})
+		}, wantSub: "不能指定 host"},
+		{name: "doctor JSON 非法", run: func() error {
+			return store.RecordDoctorReport(context.Background(), DoctorReport{
+				Scope: DoctorScopeLocal, CreatedAt: now, Status: StatusOK,
+				ReportJSON: []byte(`{`),
+			})
+		}, wantSub: "不是合法 JSON"},
+		{name: "verification 快照为空", run: func() error {
+			return store.RecordVerification(context.Background(), Verification{
+				ID: "verify", Host: "hub", StartedAt: now, FinishedAt: now,
+				Status: StatusOK, DetailJSON: []byte(`{}`),
+			})
+		}, wantSub: "snapshot_id"},
+		{name: "verification 结束早于开始", run: func() error {
+			return store.RecordVerification(context.Background(), Verification{
+				ID: "verify", Host: "hub", SnapshotID: "snapshot", StartedAt: now,
+				FinishedAt: now.Add(-time.Second), Status: StatusOK, DetailJSON: []byte(`{}`),
+			})
+		}, wantSub: "不能早于"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			if err == nil {
+				t.Fatal("期望校验失败，实际通过")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("错误信息 %q 中未包含 %q", err.Error(), tc.wantSub)
+			}
+		})
+	}
+
+	err := store.FinishRun(context.Background(), "missing", RunResult{
+		Status: StatusOK, FinishedAt: now, Duration: time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Errorf("完成不存在 run 的错误 = %v，期望包含不存在", err)
+	}
+}
+
+func TestStore_WALAllowsReadDuringWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	writer := openTestStore(t, path)
+	reader := openTestStore(t, path)
+	now := time.Date(2026, 8, 11, 4, 17, 0, 0, time.UTC)
+	createRun(t, writer, Run{ID: "run-1", Status: StatusRunning, StartedAt: now, ArkVersion: "dev"})
+
+	conn, err := writer.db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("获取 writer 连接失败: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("关闭 writer 连接失败: %v", err)
+		}
+	}()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("开始写事务失败: %v", err)
+	}
+	defer rollbackTestTransaction(t, conn)
+	if _, err := conn.ExecContext(context.Background(),
+		"UPDATE runs SET status = 'fail' WHERE id = 'run-1'"); err != nil {
+		t.Fatalf("写入未提交状态失败: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := reader.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("写事务期间读取已提交数据失败: %v", err)
+	}
+	if got.Status != StatusRunning {
+		t.Errorf("reader 看到了未提交状态 %q，期望 %q", got.Status, StatusRunning)
+	}
+}
+
+func TestStore_ContextCancellationStopsBusyWait(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	locker := openTestStore(t, path)
+	contender := openTestStore(t, path)
+
+	conn, err := locker.db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("获取锁连接失败: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("关闭锁连接失败: %v", err)
+		}
+	}()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("取得写锁失败: %v", err)
+	}
+	transactionActive := true
+	defer func() {
+		if transactionActive {
+			rollbackTestTransaction(t, conn)
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	timer := time.AfterFunc(100*time.Millisecond, cancel)
+	defer timer.Stop()
+	started := time.Now()
+	err = contender.CreateRun(ctx, Run{
+		ID: "blocked", Status: StatusRunning, StartedAt: time.Now(), ArkVersion: "dev",
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("锁等待错误 = %v，期望保留 context canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Errorf("context 取消后仍等待了 %s，期望 1 秒内返回", elapsed)
+	}
+
+	rollbackTestTransaction(t, conn)
+	transactionActive = false
+	if err := contender.CreateRun(context.Background(), Run{
+		ID: "after-cancel", Status: StatusRunning, StartedAt: time.Now(), ArkVersion: "dev",
+	}); err != nil {
+		t.Fatalf("context 取消后复用连接写入失败: %v", err)
+	}
+	if got := queryInt(t, contender.db, "PRAGMA busy_timeout"); got != busyTimeoutMilliseconds {
+		t.Errorf("操作完成后的 busy_timeout = %d，期望 %d", got, busyTimeoutMilliseconds)
+	}
+}
+
+func TestOpen_ConcurrentFirstMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	const workers = 8
+	start := make(chan struct{})
+	errorsByWorker := make(chan error, workers)
+	var wait sync.WaitGroup
+
+	for i := range workers {
+		wait.Add(1)
+		go func(worker int) {
+			defer wait.Done()
+			<-start
+			store, err := Open(context.Background(), path)
+			if err != nil {
+				errorsByWorker <- fmt.Errorf("worker %d 打开失败: %w", worker, err)
+				return
+			}
+			if err := store.Close(); err != nil {
+				errorsByWorker <- fmt.Errorf("worker %d 关闭失败: %w", worker, err)
+			}
+		}(i)
+	}
+	close(start)
+	wait.Wait()
+	close(errorsByWorker)
+	for err := range errorsByWorker {
+		t.Error(err)
+	}
+
+	store := openTestStore(t, path)
+	if got := queryInt(t, store.db, "PRAGMA user_version"); got != currentSchemaVersion {
+		t.Errorf("并发迁移后的 user_version = %d，期望 %d", got, currentSchemaVersion)
+	}
+	assertSchemaObjects(t, store.db)
+}
+
+func openTestStore(t *testing.T, path string) *Store {
+	t.Helper()
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("打开测试状态库失败: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("关闭测试状态库失败: %v", err)
+		}
+	})
+	return store
+}
+
+func createRun(t *testing.T, store *Store, run Run) {
+	t.Helper()
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("创建运行记录 %q 失败: %v", run.ID, err)
+	}
+}
+
+func queryInt(t *testing.T, db *sql.DB, query string) int {
+	t.Helper()
+	var value int
+	if err := db.QueryRow(query).Scan(&value); err != nil {
+		t.Fatalf("执行查询 %q 失败: %v", query, err)
+	}
+	return value
+}
+
+func rollbackTestTransaction(t *testing.T, conn *sql.Conn) {
+	t.Helper()
+	if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+		t.Errorf("回滚测试事务失败: %v", err)
+	}
+}
+
+func assertSchemaObjects(t *testing.T, db *sql.DB) {
+	t.Helper()
+	wantTables := []string{"doctor_reports", "run_targets", "runs", "verifications"}
+	wantIndexes := []string{
+		"idx_doctor_reports_scope_host_created",
+		"idx_run_targets_lookup",
+		"idx_runs_started_at",
+		"idx_runs_status_started_at",
+		"idx_verifications_host_started",
+	}
+	if got := schemaObjectNames(t, db, "table"); !equalStrings(got, wantTables) {
+		t.Errorf("schema 表 = %#v，期望 %#v", got, wantTables)
+	}
+	if got := schemaObjectNames(t, db, "index"); !equalStrings(got, wantIndexes) {
+		t.Errorf("schema 索引 = %#v，期望 %#v", got, wantIndexes)
+	}
+}
+
+func schemaObjectNames(t *testing.T, db *sql.DB, objectType string) []string {
+	t.Helper()
+	rows, err := db.Query(`
+		SELECT name
+		FROM sqlite_master
+		WHERE type = ? AND name NOT LIKE 'sqlite_%'
+		ORDER BY name`, objectType)
+	if err != nil {
+		t.Fatalf("查询 schema %s 失败: %v", objectType, err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("关闭 schema 查询结果失败: %v", err)
+		}
+	}()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("读取 schema %s 名称失败: %v", objectType, err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("遍历 schema %s 失败: %v", objectType, err)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
