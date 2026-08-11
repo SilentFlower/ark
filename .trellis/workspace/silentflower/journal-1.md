@@ -26,3 +26,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 2: P1-1 清单模型升级到多机（v2）
+
+**Date**: 2026-08-11
+**Task**: P1-1 清单模型升级到多机（v2）
+**Branch**: `main`
+
+### Summary
+
+ark.yaml 从单机模型升级为 hub 编排的多机 v2 模型：顶层拆为 repo/defaults/hosts，新增 Host 与 SSH（known_hosts_file 必填、绝对路径），local 与 ssh 互斥、host 名全局唯一；默认值继承改为指针 + ScheduleFor/RetentionFor，删除 retention 三项全 0 的启发式；Load 改两遍解析，v1 清单给出迁移提示。validate 改为逐 host 摘要，doctor 过渡适配多机遍历，examples/ark.yaml 重写为多机清单，config 测试整体重写覆盖全部新增失败路径，README/design/roadmap 同步并新增 spec backend/manifest-guidelines.md。归档时生成 release.md，记录 v1→v2 人工迁移与 repo.url 不再按机器分路径两项配置事项。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ca1078d` | (see git log) |
+
+### Status
+
+[OK] **Completed**
