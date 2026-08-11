@@ -24,6 +24,7 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | 包划分、依赖方向、命名约定 | Filled |
 | [Manifest Guidelines](./manifest-guidelines.md) | 清单模型演进、校验规约、默认值继承 | Filled |
+| [Backup Manifest Guidelines](./backup-manifest-guidelines.md) | 备份产物 manifest schema、restic 存取与恢复一致性 | Filled |
 | [External Command Guidelines](./external-command-guidelines.md) | 子进程调用与凭证注入红线 | Filled |
 | [Database Guidelines](./database-guidelines.md) | ark 自身 SQLite 状态库，以及业务数据库备份/恢复边界 | Filled |
 | [Error Handling](./error-handling.md) | 错误传播、聚合与退出码 | Filled |

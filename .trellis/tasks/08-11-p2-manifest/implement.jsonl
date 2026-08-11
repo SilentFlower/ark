@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"P2-5 manifest 字段、标签和最新读取验收来源。"}
+{"file":"docs/design.md","reason":"备份/恢复数据链和 digest 恢复契约。"}
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"版本化用户输入契约的兼容与校验模式参考。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"无历史正常分支与损坏 manifest 错误语义。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"持久化契约和延迟暴露风险的测试要求。"}

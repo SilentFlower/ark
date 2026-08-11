@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"核对字段、标签、往返和最新读取验收。"}
+{"file":"docs/design.md","reason":"审计 manifest 是否足够驱动 P3 恢复计划。"}
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"审计 schema 版本、严格校验和兼容策略。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计 manifest/error 不泄漏密钥内容。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 race 与持久化边界测试。"}
