@@ -8,8 +8,10 @@
 
 ark 是一个单仓库 Go 项目，产出两个二进制：
 
-- `ark`：装在每台被备份机器上的 agent，由 systemd timer 触发，跑完即退出。
-- `ark-hub`：中心机上的只读观测面（P3 阶段才开始写）。
+- `ark`：装在 hub 上的编排 CLI，由 systemd timer 触发，跑完即退出。
+  通过 SSH 驱动所有目标机，目标机上不装它（ADR-002）。
+- `ark-hub`：hub 上常驻的界面与 API（P4 阶段才开始写）。它不承载调度，
+  需要执行长任务时起一个 `ark` 子进程（ADR-005）。
 
 包划分遵循一条主线：**按「职责边界」分包，而不是按「技术分层」分包**。
 判断一个新包是否成立，问的是「它能不能独立解释自己在解决什么问题」，
@@ -32,7 +34,7 @@ internal/
 │   └── config_test.go
 └── doctor/doctor.go         运行环境校验（外部命令、文件权限、compose 资源）
 docs/
-├── design.md                架构与 8 条 ADR
+├── design.md                架构与 13 条 ADR
 └── roadmap.md               分阶段任务，含接口草案与验收标准
 examples/
 └── ark.yaml                 清单模板（真实清单是 /etc/ark/ark.yaml，不入库）
@@ -42,12 +44,17 @@ roadmap 已经规划、但尚未创建的包（新建时按此归位，不要另
 
 | 包 | 职责 | 阶段 |
 |---|---|---|
-| `internal/restic/` | restic CLI 的 Go 封装 | P1-1 |
-| `internal/backup/` | 各 target 类型的执行器 + 快照清单 | P1-2 / P1-3 |
-| `internal/status/` | 状态文件生成与上报 | P1-5 |
-| `internal/restore/` | 恢复计划与执行 | P2-1 / P2-2 |
-| `internal/hub/` + `cmd/ark-hub/` | 中心机后端 | P3-1 |
-| `web/` | Vue 3 前端，构建产物 go:embed 进 ark-hub | P3-2 / P3-3 |
+| `internal/sshexec/` | SSH / 本地命令执行层，上层执行器不区分远近 | P1-2 |
+| `internal/store/` | SQLite 状态库（`/var/lib/ark/ark.db`） | P2-1 |
+| `internal/restic/` | restic CLI 的 Go 封装 | P2-2 |
+| `internal/backup/` | 各 target 执行器 + 流完整性 + 快照清单 | P2-3 / P2-4 / P2-5 |
+| `internal/systemd/` | systemd unit 模板 | P2-6 |
+| `internal/restore/` | 恢复计划与执行 | P3-1 / P3-2 |
+| `internal/hub/` + `cmd/ark-hub/` | hub 后端（界面与 API） | P4-1 / P4-2 |
+| `web/` | Vue 3 前端，构建产物 go:embed 进 ark-hub | P4-3 / P4-4 |
+
+早期规划过的 `internal/status/` **已取消**：hub 自己就是执行者，
+状态直接落本地 SQLite，不再需要把 `_status/<host>.json` 推到对象存储（design.md §9）。
 
 ---
 
@@ -82,7 +89,7 @@ cli  ──►  doctor  ──►  config
 这是 ADR-008 落在代码结构上的直接结果，也是最容易被新代码破坏的约定：
 
 - `internal/config` 只做静态语义校验，**全程不碰文件系统、不碰 docker、不碰网络**。
-  因此中心机可以校验任意一台机器的清单副本。
+  因此 hub 可以校验任意一台机器的清单段落，不需要连上那台机器。
 - `internal/doctor` 做运行环境校验——文件是否存在、权限是否安全、
   compose 里是否真有这个 service、volume 是否真的存在。
 

@@ -9,14 +9,14 @@
 **ark 目前没有引入任何日志库**，也没有 debug/info/warn/error 分级。
 这不是遗漏，是当前形态下的合适选择：
 
-agent 是 oneshot 进程，由 systemd timer 触发，跑完退出。
+`ark` 是 oneshot 进程，由 hub 上的 systemd timer 触发，跑完退出（ADR-005）。
 它的 stdout/stderr 直接进 systemd journal，时间戳、单元名、PID
 都由 journald 补齐。再套一层 `logrus`/`zap` 只会得到重复的时间戳前缀。
 
-真正需要被程序消费的运行结果，走的是**结构化状态文件**而不是日志文本
+真正需要被程序消费的运行结果，走的是**结构化状态库**而不是日志文本
 （见下文 Structured Reporting）。
 
-在 hub（P3）引入之前不要加日志框架。如果某天需要，先在 `docs/design.md`
+在 `ark-hub`（P4）引入之前不要加日志框架。如果某天需要，先在 `docs/design.md`
 里补一条 ADR 说明是什么需求逼出了这个依赖。
 
 ---
@@ -82,11 +82,14 @@ enc.SetIndent("", "  ")
 
 新增命令时，只要输出可能被脚本消费，就照此加 `--json`。
 
-### 状态文件是主要的可观测面
+### 状态库是主要的可观测面
 
-每次运行结束后写 `_status/<host>.json` 到对象存储（P1-5，`internal/status/`）。
-中心机 `ark-hub` 只读这个文件，不碰 restic 仓库（ADR-006）。
-需要长期留存、跨机聚合的信息应该进状态文件，而不是指望有人去翻 journal。
+每次运行结束后把结果写进本地 SQLite 状态库 `/var/lib/ark/ark.db`
+（P2-1，`internal/store/`）。`ark`（oneshot）写，`ark-hub`（常驻）读，WAL 模式下并发安全。
+需要长期留存、跨机聚合的信息应该进状态库，而不是指望有人去翻 journal。
+
+早期设计里的 `_status/<host>.json` 对象存储上报**已取消**——hub 自己就是执行者，
+不需要绕对象存储传状态（design.md §9）。
 
 结构化数据的字段用 snake_case 的 json tag，与现有类型一致：
 

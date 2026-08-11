@@ -15,7 +15,7 @@ ark 几乎不自己实现功能，它的价值在**编排层**（ADR-001）：
 输出可能含密钥，参数可能被注入。这份文档把这些约束写死。
 
 现有的参考实现是 `internal/doctor/doctor.go:286` 的 `runCommand`。
-新增的 `internal/restic/`（P1-1）等包应沿用同样的形态。
+新增的 `internal/sshexec/`（P1-2）、`internal/restic/`（P2-2）等包应沿用同样的形态。
 
 ---
 
@@ -39,8 +39,43 @@ exec.Command("sh", "-c", "docker compose -f "+path+" config --services")
 一旦经过 shell，`;`、`$()`、空格、引号都会被重新解释。
 `exec.Command` 直接 execve，参数原样传递，不存在这个问题。
 
-**全项目不应该出现 `sh -c`。** 需要管道时用 Go 的 `io.Pipe` 或
+**本地子进程里不应该出现 `sh -c`。** 需要管道时用 Go 的 `io.Pipe` 或
 把上游命令的 `Stdout` 接到下游的 `Stdin`，不要交给 shell。
+
+### 远程命令：shell 无法避开，改为强制转义
+
+上面那条红线**只管本地**。走 SSH 时它不成立，因为 `sshd` 执行远程命令的方式
+固定是 `$SHELL -c "<命令串>"`——**不管你写不写 `bash -c`，远程端一定会过一次 shell**。
+
+因此远程侧的防线从「避开 shell」换成「**每个插值进去的值都必须转义**」：
+
+```go
+// ✅ 转义后再拼进远程命令串
+func shellQuote(s string) string {
+    return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+remote := fmt.Sprintf("docker compose -f %s exec -T %s pg_dump -d %s",
+    shellQuote(cfg.Project.ComposeFile), shellQuote(t.Service), shellQuote(t.Database))
+argv := []string{"ssh", target, remote}   // ssh 本身仍用 argv 切片
+
+// ❌ 绝不
+remote := "docker compose exec -T " + t.Service + " pg_dump -d " + t.Database
+```
+
+`service`、`database`、`name`、`paths` 全部来自用户手写的 YAML。
+本地 `exec.Command` 靠 execve 天然免疫，远程没有这个保护——
+一个卷名写成 `data; rm -rf /` 就会在生产机上执行。
+
+**同时不要额外包一层 `bash -c`。** 远程端已经有一层 shell，再包一层
+只是把转义做两遍，出错概率翻倍而安全性不变。
+
+**也不需要 `set -o pipefail`。** 当前 5 种 target 的远程命令都是单条命令，
+远程侧没有管道；管道在 hub 本地（ssh 的 `Stdout` 接 restic 的 `Stdin`），
+退出码由 Go 侧的 `Wait` 拿（ADR-011）。将来真出现远程管道再单独论证。
+
+**必查的测试断言**：给 `service` / `name` 传入含 `;`、`$(...)`、空格、单引号的值，
+断言生成的远程命令串里这些字符全部落在引号内、且远程侧不产生额外命令。
 
 ### 可选参数用条件 append
 
@@ -159,7 +194,7 @@ out, err := cmd.CombinedOutput()
 
 restic 的人类可读输出格式会随版本变化，JSON 不会。
 所有 restic 调用都带 `--json` 并解析结构化结果，不要用正则去抓文本
-（roadmap P1-1 已定的设计点）。
+（roadmap P2-2 已定的设计点）。
 
 ### 错误信息带上命令，但要考虑脱敏
 
@@ -233,7 +268,9 @@ v2 的 compose 是 docker 的插件，装了 docker 不等于装了它。
 ## Common Mistakes
 
 - **`os.Setenv` 注入凭证**，泄漏给后续所有子进程。
-- **用 `sh -c` 拼命令**，清单里的路径变成注入点。
+- **用 `sh -c` 拼本地命令**，清单里的路径变成注入点。
+- **拼远程命令时不转义**，卷名或服务名里的 `;`、`$()` 在生产机上被执行。
+- **给远程命令再包一层 `bash -c`**，转义做两遍，出错概率翻倍。
 - **忘记超时**，docker 守护进程异常时 ark 挂死，systemd 也看不出是卡住还是在跑。
 - **给数据流用 `CombinedOutput`**，stderr 的一行警告污染转储。
 - **解析 restic 的人类可读输出**，下次升级就崩。

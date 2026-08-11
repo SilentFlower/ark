@@ -7,13 +7,14 @@
 ## Overview
 
 ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
-产出 `ark`（agent）和 `ark-hub`（中心机观测面）两个二进制。
+产出 `ark`（hub 上的编排 CLI，oneshot）和 `ark-hub`（常驻的界面与 API）两个二进制。
+被备份的目标机上不安装任何 ark 组件，只需要 docker 和 sshd（ADR-002）。
 
 写代码前请先理解一条贯穿全项目的前提：
 **ark 的失败是延迟暴露的**。一个写错的备份工具会连续三个月「成功」运行，
 直到需要恢复的那天才暴露。下面所有规约里偏严的部分，理由都源于此。
 
-架构背景与 8 条 ADR 见 `docs/design.md`，分阶段任务见 `docs/roadmap.md`。
+架构背景与 13 条 ADR 见 `docs/design.md`，分阶段任务见 `docs/roadmap.md`。
 
 ---
 
@@ -45,7 +46,7 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 
 首次进入本项目，按这个顺序读效率最高：
 
-1. `docs/design.md` 第 4 节的 8 条 ADR — 理解为什么是现在这个形状。
+1. `docs/design.md` 第 4 节的 13 条 ADR — 理解为什么是现在这个形状。
 2. [Directory Structure](./directory-structure.md) — 知道代码该往哪放。
 3. [External Command Guidelines](./external-command-guidelines.md) — 本项目最容易出事的地方。
 4. 其余三篇按需查阅。
