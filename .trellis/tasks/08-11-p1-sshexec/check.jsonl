@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"核对 P1-2 公共接口、固定参数和三类 localhost 集成场景是否完整实现。"}
+{"file":"docs/design.md","reason":"核对 ADR-010 流式不落盘与 ADR-011 退出码不可忽略。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计 shell 注入、双层 shell、stdout/stderr 污染、超时与敏感输出。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 make check，检查 race、注释、失败可见性和外部依赖测试保护。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"确认错误与测试输出不暴露密钥内容或环境变量。"}

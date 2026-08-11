@@ -1,0 +1,63 @@
+{
+  "id": "p1-sshexec",
+  "name": "p1-sshexec",
+  "title": "P1-2 SSH 执行层",
+  "description": "实现统一的本地/SSH 命令执行层，提供短命令、流式读取和流式写入三种模式，并保证远程参数转义、主机密钥校验与退出码可见。对应 docs/roadmap.md P1-2。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-11T11:24:49Z",
+      "contextKey": "codex_019ff08b-d5c6-72f2-b153-5da3d92ee3af",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "75e5095df9bc5c02d8f15aa574f68d344525e6b9",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "75e5095df9bc5c02d8f15aa574f68d344525e6b9",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "e966188d802ca93e382fac250e2e08ac065cbf8dfb0ffb8004366acea2ab45c8"
+          }
+        ],
+        "fingerprint": "966b4151d6ec587b50af333aff10bf4af2087596eed7ab51b8345cc06a6f820e"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-11T19:56:22+08:00",
+    "completedSteps": [
+      "实现本地与 SSH 统一 Runner，覆盖 Run、Stream、Feed",
+      "为 doctor 增加系统 ssh 二进制检查",
+      "通过 Full Check-All、竞态测试和真实 localhost SSH 注入验证",
+      "将 SSH 执行层契约写入 backend 外部命令规范"
+    ],
+    "partialStep": null,
+    "nextStep": "任务完成，待显式执行 finish-work 归档并继续 roadmap P1-3",
+    "notes": "make check 全绿；sshexec 覆盖率 93.6%；Check-All 剩余问题 0"
+  }
+}

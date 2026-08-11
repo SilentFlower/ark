@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"P1-2 的 Runner 接口、OpenSSH 固定参数、转义要求与 localhost 集成验收来源。"}
+{"file":"docs/design.md","reason":"ADR-002、ADR-010、ADR-011 定义 agentless SSH、纯流式数据路径和必须检查 SSH 退出码。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"本地 argv、远程 shell 转义、超时、stdout/stderr 分离与错误脱敏红线。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"sshexec 包职责、依赖方向、命名和构造函数约定。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"package doc、导出注释、race 测试、外部依赖测试跳过和提交门槛。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"错误输出通道与密钥、外部命令输出不得泄露的约束。"}
