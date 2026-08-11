@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"核对 Wait、撤销和体积跌幅全部验收。"}
+{"file":"docs/design.md","reason":"审计 ADR-011 在备份方向的完整实现。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计 stdout/Wait、context 与资源清理。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"审计历史基线和状态记录字段。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"审计 restic、Wait、Forget、Store 多错误可见性。"}

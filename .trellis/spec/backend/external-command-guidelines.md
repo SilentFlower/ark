@@ -517,6 +517,124 @@ reader, wait, err := runner.Stream(ctx, argv...)
 // image_digest 从运行容器的 image ID 反查 RepoDigests；Config.Image 只筛选仓库。
 ```
 
+### Scenario: target 流完整性与状态持久化
+
+#### 1. Scope / Trigger
+
+- 修改 `internal/backup.BackupTarget`、`TargetResult`、上游 Wait、坏快照撤销、
+  历史字节比较或 `store.RunTarget` 映射时，必须遵守本节。
+- 本场景是 ADR-011 的备份方向实现：restic 成功只证明下游接收结束，不能证明
+  SSH/远程命令完整退出。
+- manifest 和整体 backup 编排只能消费这里产生的最终结果，不得绕过完整性判定
+  重新把 snapshot、bytes 或 status 拼成另一套事实。
+
+#### 2. Signatures
+
+```go
+type TargetResult struct {
+    Host         string
+    TargetID     string
+    TargetType   config.TargetType
+    Status       store.Status
+    Bytes        int64
+    Duration     time.Duration
+    SnapshotID   string
+    Error        string
+    ImageDigests map[string]string
+}
+
+func BackupTarget(
+    ctx context.Context,
+    runID string,
+    source *Result,
+    repo *restic.Repo,
+    state *store.Store,
+) (TargetResult, error)
+```
+
+公开入口使用具体 `*restic.Repo` 和 `*store.Store`；测试只在 backup 包内注入窄函数，
+不得为了 mock 扩大公开接口体系。
+
+#### 3. Contracts
+
+- 固定顺序是 counting reader → `BackupStdin` → source Wait → source Close →
+  必要时 `ForgetSnapshot` → 历史比较 → `RecordRunTarget`。
+- restic 提前失败时顺序改为 Close → Wait，先切断上游 stdout，避免远程进程继续阻塞。
+- 快照标签固定为 `host:<host>`、`target:<target-id>`、`run:<run-id>`；filename
+  直接使用执行器的 `StdinFilename`，调用层不得改名。
+- `BackupStdin` 成功后必须调用且只调用一次 Wait。Wait 非零且 snapshot ID 明确时，
+  必须精确 `ForgetSnapshot(id)`；撤销失败与 Wait/Close 错误使用 `errors.Join` 并列返回。
+- counting reader 只统计 restic 实际读取的字节，不整读、不缓存、不落临时文件。
+- 历史基线来自 `LastSuccessfulTargetBytes(host, targetID)`。无历史或历史为 0 不比较；
+  `current * 2 < previous` 才 warn，恰好 50% 不 warn。实现使用向上取整的一半避免乘法溢出。
+- ok、warn、fail 都尝试写 `RunTarget`。context 已取消时，最终状态写入使用
+  `context.WithoutCancel` 加 10 秒超时，避免取消事实丢失；restic 撤销仍使用原 context，
+  不在取消后启动无界外部命令。
+- 返回 error 保留底层错误链；`TargetResult.Error` 和 `RunTarget.Error` 只能写阶段级
+  脱敏摘要，禁止复制上游 stderr、restic 底层详情或 SQLite detail。
+- 状态库写入失败时，返回 `TargetResult.Status` 必须降为 fail；已产生的 snapshot ID
+  和 bytes 保留用于审计，不能把“未持久化”伪装成成功。
+
+#### 4. Validation & Error Matrix
+
+| 条件 | 最终行为 |
+|---|---|
+| ctx、run ID、source、repo、store 或内部依赖无效 | 启动备份前返回参数错误 |
+| restic 失败 | Close + Wait 回收；不猜 snapshot、不撤销；记录 fail |
+| restic 成功但 snapshot ID 为空 | Wait + Close 后记录 fail，不调用 forget |
+| restic 成功且 Wait 失败 | 精确撤销该 snapshot；记录 fail |
+| Wait 与 forget 同时失败 | 两条错误链都可 `errors.Is`，脱敏摘要只列失败阶段 |
+| Wait 成功但 Close 失败 | snapshot 保留，target 记录 fail，Close 错误可识别 |
+| 历史查询失败 | snapshot 保留，target 记录 fail，返回查询错误链 |
+| 无历史或历史 bytes=0 | status=ok，不做比例判断 |
+| 当前 bytes 恰好为历史 50% | status=ok |
+| 当前 bytes 低于历史 50% | status=warn，snapshot 保留，Error 写安全告警原因 |
+| `RecordRunTarget` 失败 | 返回 fail 结果和持久化错误；安全摘要不含底层详情 |
+| 原 context 已取消 | 清理仍执行；最终记录用最多 10 秒的收尾 context |
+
+#### 5. Good / Base / Bad Cases
+
+- Good：restic 返回 snapshot 后，远程 pg_dump Wait 非零；代码只撤销这个 ID，
+  Store 记录 fail，返回错误同时识别 Wait 和可选 forget 错误。
+- Base：首次备份没有历史，正常记录 ok；后续恰好 50% 仍是 ok，49% 才是 warn。
+- Bad：`BackupStdin` 返回 nil 就直接标记成功，会把 SSH 截断产生的快照留作恢复输入。
+- Bad：把 `cause.Error()` 原样写数据库，会把上游 stderr 或底层存储详情扩散到 hub/API。
+
+#### 6. Tests Required
+
+- 断言成功调用顺序、稳定 filename、三类标签、bytes、duration、snapshot ID、
+  image digest 拷贝和完整 `RunTarget` 字段。
+- 阈值表覆盖无历史、零基线、高于一半、恰好一半、低于一半、奇数基线和 int64 最大值。
+- restic 失败断言 Close → Wait 且不 forget；Wait 失败断言 Wait → Close → 精确 forget。
+- Wait/Close/Forget 多错误用 `errors.Is` 分别识别，底层动作各只调用一次。
+- 覆盖 snapshot ID 缺失、history 失败、record 失败、context 取消及取消后的收尾写库。
+- secret sentinel 必须仍存在于返回错误链，但不得出现在 `TargetResult.Error` 或
+  `RunTarget.Error`。
+- 使用临时 SQLite Store 验证 warn 会持久化且不会替代最近一次 ok 历史；运行
+  `go test ./internal/backup ./internal/store -race -count=1`、`make check` 和双构建。
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```go
+snapshot, err := repo.BackupStdin(ctx, source.Reader, source.StdinFilename, tags)
+if err == nil {
+    return TargetResult{Status: store.StatusOK, SnapshotID: snapshot.ID}, nil
+}
+```
+
+##### Correct
+
+```go
+snapshot, backupErr := repo.BackupStdin(ctx, counter, source.StdinFilename, tags)
+waitErr := source.Wait()
+if backupErr == nil && waitErr != nil {
+    forgetErr := repo.ForgetSnapshot(ctx, snapshot.ID)
+    return failedResult, errors.Join(waitErr, forgetErr)
+}
+```
+
 ### 可选参数用条件 append
 
 见上面的 `-p` 和 `--env-file`。不要为了省事传空字符串——

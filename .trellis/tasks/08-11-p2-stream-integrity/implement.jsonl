@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"P2-4 两道防线、50% 阈值与真实验收来源。"}
+{"file":"docs/design.md","reason":"ADR-011 截断风险和失败撤销原则。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"Stream reader/Wait 生命周期与 context 规则。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Store 历史查询和 RunTarget 持久化契约。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"多错误组合、清理失败和错误链。"}
