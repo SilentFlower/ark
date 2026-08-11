@@ -47,3 +47,24 @@ ark.yaml 从单机模型升级为 hub 编排的多机 v2 模型：顶层拆为 r
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: 完成 P1-2 SSH 执行层
+
+**Date**: 2026-08-11
+**Task**: 完成 P1-2 SSH 执行层
+**Branch**: `main`
+
+### Summary
+
+新增本地与系统 OpenSSH 统一 Runner，覆盖 Run、Stream、Feed 生命周期与远程参数安全转义；doctor 增加 ssh 运行时依赖检查，并通过 Full Check-All、竞态测试和真实 localhost SSH 注入验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fd53cabd1308bb4bc37e91c137a2f296353899a2` | (see git log) |
+
+### Status
+
+[OK] **Completed**
