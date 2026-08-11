@@ -1,0 +1,6 @@
+state.json
+cache/
+transactions/
+trellis-control.json
+trellis-detached/
+*.tmp

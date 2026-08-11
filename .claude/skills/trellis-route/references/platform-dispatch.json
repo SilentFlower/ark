@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "platforms": [
+    {
+      "id": "claude-code",
+      "runtimePlatforms": ["claude"],
+      "detectPath": ".claude",
+      "implement": { "eligible": true, "target": ".claude/agents/trellis-implement.md", "launch": "Task/Agent: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".claude/agents/trellis-check-all.md", "format": "markdown-claude", "launch": "Task/Agent: trellis-check-all", "skillPath": ".claude/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "cursor",
+      "detectPath": ".cursor",
+      "implement": { "eligible": true, "target": ".cursor/agents/trellis-implement.md", "launch": "Task/Subagent: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".cursor/agents/trellis-check-all.md", "format": "markdown-claude", "launch": "Task/Subagent: trellis-check-all", "skillPath": ".cursor/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "opencode",
+      "detectPath": ".opencode",
+      "implement": { "eligible": true, "target": ".opencode/agents/trellis-implement.md", "launch": "task tool: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".opencode/agents/trellis-check-all.md", "format": "markdown-opencode", "launch": "task tool: trellis-check-all", "skillPath": ".opencode/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "codex",
+      "detectPath": ".codex",
+      "implement": { "eligible": true, "target": ".codex/agents/trellis-implement.toml", "launch": "native subagent_type=trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".codex/agents/trellis-check-all.toml", "format": "codex-toml", "launch": "native subagent_type=trellis-check-all", "skillPath": ".agents/skills/trellis-check-all/SKILL.md", "verification": "read-only-sandbox" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "kilo",
+      "detectPath": ".kilocode",
+      "implement": { "eligible": false, "target": null, "launch": null },
+      "checkAll": { "eligible": false, "target": null, "format": null, "launch": null, "skillPath": ".kilocode/skills/trellis-check-all/SKILL.md", "verification": "inline-only" },
+      "inlineOnlyReason": "host has no verified project-subagent launcher"
+    },
+    {
+      "id": "kiro",
+      "detectPath": ".kiro",
+      "implement": { "eligible": true, "target": ".kiro/agents/trellis-implement.json", "launch": "agent spawn: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".kiro/agents/trellis-check-all.json", "format": "kiro-json", "launch": "agent spawn: trellis-check-all", "skillPath": ".kiro/skills/trellis-check-all/SKILL.md", "verification": "read-only-tool-list" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "gemini",
+      "detectPath": ".gemini",
+      "implement": { "eligible": true, "target": ".gemini/agents/trellis-implement.md", "launch": "discovered agent tool: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".gemini/agents/trellis-check-all.md", "format": "markdown-plain", "launch": "discovered agent tool: trellis-check-all", "skillPath": ".agents/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "antigravity",
+      "detectPath": ".agent",
+      "implement": { "eligible": false, "target": null, "launch": null },
+      "checkAll": { "eligible": false, "target": null, "format": null, "launch": null, "skillPath": ".agent/skills/trellis-check-all/SKILL.md", "verification": "inline-only" },
+      "inlineOnlyReason": "host has no verified project-subagent launcher"
+    },
+    {
+      "id": "devin",
+      "runtimePlatforms": ["devin", "windsurf"],
+      "detectPath": ".devin",
+      "implement": { "eligible": false, "target": null, "launch": null },
+      "checkAll": { "eligible": false, "target": null, "format": null, "launch": null, "skillPath": ".devin/skills/trellis-check-all/SKILL.md", "verification": "inline-only" },
+      "inlineOnlyReason": "host has no verified project-subagent launcher"
+    },
+    {
+      "id": "qoder",
+      "detectPath": ".qoder",
+      "implement": { "eligible": true, "target": ".qoder/agents/trellis-implement.md", "launch": "Task/Agent: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".qoder/agents/trellis-check-all.md", "format": "markdown-claude", "launch": "Task/Agent: trellis-check-all", "skillPath": ".qoder/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "codebuddy",
+      "detectPath": ".codebuddy",
+      "implement": { "eligible": true, "target": ".codebuddy/agents/trellis-implement.md", "launch": "Task/Agent: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".codebuddy/agents/trellis-check-all.md", "format": "markdown-claude", "launch": "Task/Agent: trellis-check-all", "skillPath": ".codebuddy/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "copilot",
+      "detectPath": ".github",
+      "implement": { "eligible": true, "target": null, "launch": "task tool with audit prompt" },
+      "checkAll": { "eligible": false, "target": null, "format": null, "launch": null, "skillPath": ".github/skills/trellis-check-all/SKILL.md", "verification": "inline-only" },
+      "inlineOnlyReason": "no dedicated read-only project agent definition"
+    },
+    {
+      "id": "droid",
+      "detectPath": ".factory",
+      "implement": { "eligible": true, "target": ".factory/droids/trellis-implement.md", "launch": "Task/Agent: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".factory/droids/trellis-check-all.md", "format": "markdown-lower", "launch": "Task/Agent: trellis-check-all", "skillPath": ".factory/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "pi",
+      "detectPath": ".pi",
+      "implement": { "eligible": true, "target": ".pi/agents/trellis-implement.md", "launch": "trellis_subagent agent=trellis-implement mode=single" },
+      "checkAll": { "eligible": true, "target": ".pi/agents/trellis-check-all.md", "format": "markdown-lower", "launch": "trellis_subagent agent=trellis-check-all mode=single", "skillPath": ".agents/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "reasonix",
+      "detectPath": ".reasonix",
+      "implement": { "eligible": true, "target": ".reasonix/skills/trellis-implement/SKILL.md", "launch": "dispatch runAs=subagent skill trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".reasonix/skills/trellis-check-all/SKILL.md", "format": "markdown-reasonix", "launch": "dispatch runAs=subagent skill trellis-check-all", "skillPath": ".reasonix/skills/trellis-check-all/SKILL.md", "verification": "read-only-tool-list" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "zcode",
+      "detectPath": ".zcode",
+      "implement": { "eligible": true, "target": ".zcode/agents/trellis-implement.md", "launch": "project agent: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".zcode/agents/trellis-check-all.md", "format": "markdown-plain", "launch": "project agent: trellis-check-all", "skillPath": ".zcode/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "trae",
+      "detectPath": ".trae",
+      "implement": { "eligible": true, "target": ".trae/agents/trellis-implement.md", "launch": "Task/Agent: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".trae/agents/trellis-check-all.md", "format": "markdown-claude", "launch": "Task/Agent: trellis-check-all", "skillPath": ".trae/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "omp",
+      "detectPath": ".omp",
+      "implement": { "eligible": true, "target": ".omp/agents/trellis-implement.md", "launch": "task tool: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".omp/agents/trellis-check-all.md", "format": "markdown-lower", "launch": "task tool: trellis-check-all", "skillPath": ".omp/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "grok",
+      "detectPath": ".grok",
+      "implement": { "eligible": true, "target": ".grok/agents/trellis-implement.md", "launch": "spawn_subagent subagent_type=trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".grok/agents/trellis-check-all.md", "format": "markdown-plain", "launch": "spawn_subagent subagent_type=trellis-check-all", "skillPath": ".grok/skills/trellis-check-all/SKILL.md", "verification": "native-agent-discovery" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "kimi",
+      "detectPath": ".kimi-code",
+      "implement": { "eligible": true, "target": ".kimi-code/skills/trellis-implement/SKILL.md", "launch": "Agent built-in coder with local skill" },
+      "checkAll": { "eligible": true, "target": ".kimi-code/skills/trellis-check-all/SKILL.md", "format": "markdown-kimi", "launch": "Agent built-in explore with local skill", "skillPath": ".kimi-code/skills/trellis-check-all/SKILL.md", "verification": "built-in-read-only-agent" },
+      "inlineOnlyReason": null
+    },
+    {
+      "id": "snow",
+      "detectPath": ".snow",
+      "implement": { "eligible": true, "target": ".snow/agents/trellis-implement.md", "launch": "project-agent launcher: trellis-implement" },
+      "checkAll": { "eligible": true, "target": ".snow/agents/trellis-check-all.md", "format": "markdown-snow", "launch": "project-agent launcher: trellis-check-all", "skillPath": ".snow/skills/trellis-check-all/SKILL.md", "verification": "read-only-tool-list" },
+      "inlineOnlyReason": null
+    }
+  ]
+}
