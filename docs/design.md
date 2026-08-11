@@ -189,7 +189,7 @@ YAML 解析开启 `KnownFields(true)`。写错一个字段名会立刻失败，�
 ### ADR-008：校验分三层——静态、hub 本地、目标机远程
 
 - `ark validate` 只检查清单本身，全程不碰文件系统、不连网络、不 SSH。
-- `ark doctor --local` 检查 hub 自己：restic / ssh 客户端是否存在、
+- `ark doctor`（无范围标志）检查 hub 自己：restic / ssh 客户端是否存在、
   密钥文件权限是否为 0600、对象存储是否可达、仓库是否能解锁。
 - `ark doctor --host <name>` 通过 SSH 检查目标机：能否登录、
   docker 与 compose v2 是否可用、清单里引用的 service / volume / 路径是否真实存在。
@@ -355,7 +355,7 @@ hosts:
 ```
 ark backup [--host <name>]
   ├─ 加载并校验清单
-  ├─ doctor --local（失败即中止）
+  ├─ doctor（默认 local，失败即中止）
   ├─ EnsureInit 仓库
   ├─ 逐个 host 串行执行（ADR-009）
   │    ├─ doctor --host（失败则跳过该 host，不中止其余）
@@ -441,7 +441,7 @@ ark restore --host web-01 [--to <target-host>] [--snapshot latest] [--dry-run]
 
 1. `repo.password_file` 的内容必须同时存在于密码管理器或离线介质中。
    只存在于 hub 上的仓库密码，在 hub 损毁时和没有备份是等价的。
-2. 所有密钥文件权限必须是 `0600`，`ark doctor --local` 强制检查。
+2. 所有密钥文件权限必须是 `0600`，`ark doctor` 强制检查。
 3. 密钥本身不进备份（ADR-012）。
 4. 清单文件不含密钥（只含文件路径），但含仓库地址和内网拓扑，
    因此 `.gitignore` 排除真实清单，只提交 `examples/`。

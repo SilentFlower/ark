@@ -49,7 +49,7 @@ P2 做完先别急着做 P4，把 P3 走通再说。
 这些核心逻辑可以原样保留——它们与「谁来执行」无关。
 
 **返工进度**：`internal/config` 与 `examples/ark.yaml` 已在 P1-1 完成；
-`internal/doctor` 只做了多机遍历的过渡适配，远程检查待 P1-3。
+`internal/doctor` 已在 P1-3 拆分 hub 本地检查与单 host 环境检查。
 
 ---
 
@@ -137,7 +137,7 @@ func NewLocal() Runner                        // local: true 的 host
 - 用 `golang.org/x/crypto/ssh` 还是直接 exec `ssh` 命令？
   **倾向直接 exec `ssh`**：能复用系统的 known_hosts、ProxyJump、
   连接复用（ControlMaster）等成熟能力，不用自己实现一遍主机密钥校验。
-  代价是多一个运行时依赖，`doctor --local` 加一条检查。
+  代价是多一个运行时依赖，`doctor` 的 hub 本地检查加一条检查。
 - 固定参数：`-o Compression=no`（restic 会压，SSH 再压是浪费 CPU）、
   `-o BatchMode=yes`（禁止交互式密码提示，否则会挂死）、
   `-o StrictHostKeyChecking=yes`、`-o UserKnownHostsFile=<配置值>`。
@@ -157,7 +157,7 @@ func NewLocal() Runner                        // local: true 的 host
 
 ---
 
-### P1-3 doctor 拆分为本地检查与远程检查
+### P1-3 doctor 拆分为本地检查与远程检查 ✅ 已完成
 
 **改动文件**：`internal/doctor/doctor.go`、新增 `doctor_remote.go`
 
@@ -189,35 +189,30 @@ func RunHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report
 - 保持现有的「无法判断降级为 warn，不伪造成 fail」原则。
   SSH 登录失败时后续检查是 warn 不是 fail——区分「确定有问题」和「无法判断」
   对运维决策很重要。
-- 加一条 **NTP / 时钟偏移检查**：hub 与目标机时间差超过阈值时告警。
+- 加一条 **NTP / 时钟偏移检查**：hub 与目标机时间差超过 60 秒时告警。
   时间不同步会让 `LASTSAVE` 轮询和快照时间戳都变得不可信。
 
-**验收**：`ark doctor --local` 在缺少 restic 时报 fail；
+**验收**：`ark doctor` 在缺少 restic 时报 fail；
 `ark doctor --host X` 对一台真实机器能列出全部检查项；
 故意把目标机的 compose service 改名后，对应 target 检查必须 fail。
 
 ---
 
-### P1-4 CLI 与示例清单适配 🚧 完成一半
+### P1-4 CLI 与示例清单适配 ✅ 已完成
 
 **改动文件**：`internal/cli/root.go`、`examples/ark.yaml`、`README.md`
 
 - [x] `validate` 输出改为逐 host 摘要（当前打印的 `cfg.Host` / `cfg.Project.Name`
   在多机模型下已不存在）。
-- [ ] `doctor` 加 `--host <name>` 与 `--all` 标志。不带标志时等价于 `--local`。
+- [x] `doctor` 加 `--host <name>` 与 `--all` 标志。不带标志时只检查 hub。
   退出码语义保持不变：`0` 全通过 / `1` 工具出错 / `2` 检查未通过。
-  **留到 P1-3 一起做**——标志的语义依赖 `RunLocal` / `RunHost` 的拆分，
-  先加标志只会得到一个没有 `--host` 可用的 `--host`。
+  该项已随 P1-3 的 `RunLocal` / `RunHost` 拆分一起完成。
 - [x] `examples/ark.yaml` 重写为多机清单，含一台 `local: true` 的 hub 条目。
 - [x] README 的命令用法段随 CLI 改动同步（`validate` 的新输出）。
   架构图、状态表和依赖说明已在架构重排那轮更新，这里不用再动。
 
 **验收**：`make check` 全绿；`./bin/ark validate -c examples/ark.yaml`
 在示例清单上通过（示例里的路径不必真实存在——validate 不碰文件系统）。
-
-> P1-1 完成时的过渡状态：`doctor` 已能遍历多机清单，但只有 `local: true`
-> 的机器被真正体检，远程机器的 target 检查报告为 warn（「未检查」，不是「通过」）。
-> P1-3 补齐远程检查后这条过渡说明即可删除。
 
 ---
 
@@ -359,7 +354,7 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
 流程：
 
 ```
-加载清单 → doctor --local（失败即中止）→ EnsureInit
+加载清单 → doctor（默认 local，失败即中止）→ EnsureInit
   → 逐 host 串行：doctor --host → 逐 target 执行
   → 写 manifest → 统一 forget --prune → 写状态库 → 推心跳
 ```
@@ -370,7 +365,7 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
   `pg_dump` 同时跑，白白加倍数据库压力。拿不到锁就直接退出，不排队。
 - **host 串行执行**（ADR-009）：`prune` 需要仓库排他锁，串行也顺带避免
   多台机器同时 dump 打爆 hub 带宽。
-- **前置 `doctor --local` 失败即中止**，不产生半成品快照。提供 `--skip-doctor` 用于应急。
+- **前置 `doctor` 本地检查失败即中止**，不产生半成品快照。提供 `--skip-doctor` 用于应急。
 - **单个 host 的 `doctor --host` 失败则跳过该 host，不中止其余**；
   单个 target 失败不中止同 host 的其余 target。半份备份也比没有强；
   但整体退出码非零，失败信息进 manifest 和状态库。
@@ -399,7 +394,7 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
 - **密钥不进备份**（ADR-012）：SSH 私钥和 restic 密码走离线介质。
   清单里要有注释明确说明这一点，防止后来者「顺手」把它们加进 paths。
 - 在对象存储侧开启对象锁 / 仅追加保留，保留期与月备保留时长对齐。
-  这一步是控制台操作，但**必须写进文档并在 `doctor --local` 里加一条提示性检查**
+  这一步是控制台操作，但**必须写进文档并在 `doctor` 的 hub 本地检查里加一条提示性检查**
   （能否检测到桶的保留策略取决于后端 API，取不到就输出 warn 提醒人工确认）。
 
 **验收**：用 hub 上那把有写权限的凭证尝试删除一个保留期内的对象，必须失败。

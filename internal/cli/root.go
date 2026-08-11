@@ -126,19 +126,42 @@ func printManifestSummary(cmd *cobra.Command, cfg *config.Config) {
 
 // newDoctorCmd 校验运行环境。
 func newDoctorCmd(configPath *string) *cobra.Command {
+	return newDoctorCmdWithRunners(configPath, doctor.RunLocal, doctor.RunHost)
+}
+
+type runLocalFunc func(context.Context, *config.Config) *doctor.Report
+type runHostFunc func(context.Context, *config.Config, *config.Host) *doctor.Report
+
+// newDoctorCmdWithRunners 允许测试替换实际环境探测，同时保留完整的 CLI 编排行为。
+func newDoctorCmdWithRunners(
+	configPath *string,
+	runLocal runLocalFunc,
+	runHost runHostFunc,
+) *cobra.Command {
 	var asJSON bool
+	var hostName string
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "检查运行环境是否具备执行备份的条件",
 		Args:  cobra.NoArgs,
+		PreRunE: func(_ *cobra.Command, _ []string) error {
+			if hostName != "" && all {
+				return errors.New("--host 与 --all 不能同时使用")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.LoadAndValidate(*configPath)
 			if err != nil {
 				return err
 			}
 
-			report := doctor.Run(context.Background(), cfg)
+			report, err := runDoctor(cmd.Context(), cfg, hostName, all, runLocal, runHost)
+			if err != nil {
+				return err
+			}
 
 			if asJSON {
 				enc := json.NewEncoder(cmd.OutOrStdout())
@@ -158,7 +181,46 @@ func newDoctorCmd(configPath *string) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "以 JSON 输出，便于被监控采集")
+	cmd.Flags().StringVar(&hostName, "host", "", "只检查指定 host")
+	cmd.Flags().BoolVar(&all, "all", false, "检查 hub 和清单中的全部 host")
+	cmd.MarkFlagsMutuallyExclusive("host", "all")
 	return cmd
+}
+
+// runDoctor 选择检查范围并按调用顺序合并报告。
+func runDoctor(
+	ctx context.Context,
+	cfg *config.Config,
+	hostName string,
+	all bool,
+	runLocal runLocalFunc,
+	runHost runHostFunc,
+) (*doctor.Report, error) {
+	report := &doctor.Report{}
+	appendReport := func(next *doctor.Report) {
+		if next != nil {
+			report.Checks = append(report.Checks, next.Checks...)
+		}
+	}
+
+	switch {
+	case hostName != "":
+		for i := range cfg.Hosts {
+			if cfg.Hosts[i].Host == hostName {
+				appendReport(runHost(ctx, cfg, &cfg.Hosts[i]))
+				return report, nil
+			}
+		}
+		return nil, fmt.Errorf("清单中不存在 host %q", hostName)
+	case all:
+		appendReport(runLocal(ctx, cfg))
+		for i := range cfg.Hosts {
+			appendReport(runHost(ctx, cfg, &cfg.Hosts[i]))
+		}
+	default:
+		appendReport(runLocal(ctx, cfg))
+	}
+	return report, nil
 }
 
 // printReport 以人类可读的形式打印检查报告。

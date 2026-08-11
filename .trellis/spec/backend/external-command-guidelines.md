@@ -190,6 +190,103 @@ if err := consume(stdout); err != nil {
 return wait()
 ```
 
+### Scenario: doctor 的 hub 与 host 环境探测
+
+#### 1. Scope / Trigger
+
+- 当 `doctor` 新增或修改 hub 本地检查、单台 host 检查、CLI 范围选择、凭证环境或
+  远程文件元数据判定时，必须同步维护本节。
+- `config.Validate` 只负责清单静态语义；真实文件、命令、仓库、compose 和 target
+  状态只能由 `doctor` 检查，不能把运行环境访问下沉到 `config`。
+
+#### 2. Signatures
+
+```go
+func RunLocal(ctx context.Context, cfg *config.Config) *Report
+func RunHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report
+```
+
+CLI 范围固定为：`ark doctor` 只调用 `RunLocal`；`--host <name>` 只调用匹配的
+`RunHost`；`--all` 先调用 `RunLocal`，再按 `cfg.Hosts` 顺序逐台调用 `RunHost`。
+`--host` 与 `--all` 互斥。
+
+#### 3. Contracts
+
+- `RunLocal` 只检查 hub：`restic`、`ssh`、`systemd-analyze`、仓库密码与 env 文件、
+  SSH identity/known_hosts、OnCalendar 语法，以及 `restic cat config` 仓库解锁。
+- 仓库密码、repo env 和 SSH identity 权限不得宽于 `0600`。repo env 只接受
+  `KEY=VALUE`、可选 `export `、空行和整行注释；不得执行 shell 展开、命令替换或
+  变量插值，错误不得包含 value。
+- restic 环境以 `cmd.Env` 隔离注入；`RESTIC_REPOSITORY` 和
+  `RESTIC_PASSWORD_FILE` 最终必须由清单值覆盖。禁止 `os.Setenv`，失败时禁止回显
+  完整环境或 restic 输出。
+- `RunHost` 对 local host 使用 `sshexec.NewLocal()`，对远程 host 使用
+  `sshexec.NewSSH(*host.SSH)`；所有目标机短命令都通过 `Runner.Run` 执行，并各自使用
+  15 秒 context。doctor 不自行拼 SSH 或 shell 命令。
+- 远程文件元数据命令固定为 `stat -L -c "%f %a" -- <path>`。`-L` 必须保留，
+  因为本地 `os.Stat` 会跟随符号链接；两条路径统一归一化为文件类型与权限位后，
+  再走同一判定函数。
+- 时钟检查执行 `date +%s`，用命令前后 hub 时间的中点计算绝对偏移；偏移大于
+  60 秒为 warn，不阻断其它检查。
+- `--all` 串行执行且单台失败不阻止后续 host。合并报告继续使用 `checks` JSON
+  字段和 `ok` / `warn` / `fail` 三态；warn 不触发检查失败退出码。
+
+#### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+|---|---|
+| `RunLocal` 的 config 为空 | 记录 `config` fail，不 panic |
+| `RunHost` 的 config 或 host 为空 | 记录可定位的 fail，不 panic |
+| restic、密码文件或 repo env 前置检查失败 | 前置项 fail，`repo.access` warn 并跳过解锁 |
+| SSH 登录失败 | connection fail；clock、docker、compose、项目文件和全部 target 为 warn |
+| docker 不可用 | docker fail；compose 与依赖 docker 的 target 为 warn；项目文件和 files target 继续 |
+| compose 文件或服务解析失败 | 对应项 fail；service/image target 为 warn；volume/files target 独立检查 |
+| service、volume 或 path 确定不存在 | 对应 target fail；同一 host 的其它独立检查继续 |
+| 时钟命令失败、输出无效或偏移大于 60 秒 | clock warn；其它检查继续 |
+| `--host` 与 `--all` 同时使用，或 host 不存在 | 返回工具错误，退出码 1，不执行范围内检查 |
+| 已执行报告包含 fail | 完整输出报告后返回检查失败，退出码 2 |
+
+#### 5. Good / Base / Bad Cases
+
+- Good：repo env 中同名对象存储键只进入 restic 子进程，清单仍强制覆盖仓库地址和
+  密码文件；其它 doctor 子进程看不到新增凭证。
+- Base：`ark doctor --all --json` 按 local、host 清单顺序合并为一份报告，某台
+  host fail 后仍继续下一台。
+- Bad：SSH 失败后把未执行的 target 标为 fail 或 ok，会把“无法判断”伪装成确定结论。
+- Bad：远程使用不带 `-L` 的 `stat -c`，符号链接在 local 与 SSH host 上会得到不同
+  文件类型或权限结论。
+
+#### 6. Tests Required
+
+- `RunLocal` 覆盖二进制、密钥权限、OnCalendar、repo env 严格解析、环境覆盖、
+  `restic cat config` 成败，以及敏感值不进入错误或其它子进程。
+- `RunHost` 用可控 Runner 覆盖 local/SSH 选择、登录失败降级、docker/compose 依赖、
+  service/volume/path/image target、60 秒边界和每条命令 15 秒超时。
+- 文件元数据测试必须断言远程 argv 精确包含 `stat -L -c "%f %a" --`，并用符号链接
+  证明本地与远程判定一致。
+- 参数边界测试必须证明 compose 路径、项目名、service、volume 和 files path 始终是
+  独立 argv，shell 元字符不被 doctor 重新解释。
+- CLI 测试覆盖默认 local、`--host`、`--all`、互斥、未知 host、顺序合并、JSON
+  结构和退出码 0/1/2。
+- 真实 host 集成测试必须由 `testing.Short()` 和专用环境变量保护，默认检查不得依赖
+  SSH 或 docker 环境。
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```go
+// 不跟随符号链接，和本地 os.Stat 的语义不一致。
+out, err := runRunner(ctx, runner, "stat", "-c", "%f %a", "--", path)
+```
+
+##### Correct
+
+```go
+// -L 让 local 与 SSH host 共用同一套文件类型和权限判定。
+out, err := runRunner(ctx, runner, "stat", "-L", "-c", "%f %a", "--", path)
+```
+
 ### 可选参数用条件 append
 
 见上面的 `-p` 和 `--env-file`。不要为了省事传空字符串——

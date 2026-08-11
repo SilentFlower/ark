@@ -1,33 +1,33 @@
 // Package doctor 校验 ark 的运行环境。
 //
 // 它和 config.Validate 的分工是：config 只看清单本身写得对不对，
-// doctor 看是不是真的能执行这份清单——外部命令在不在、
-// 密钥文件权限安不安全、compose 里是不是真有这个 service、
-// volume 是不是真的存在。
-//
-// 检查在 hub 上发起。目前只有 local: true 的机器能被完整体检，
-// 远程机器需要 SSH 执行层（roadmap P1-2 / P1-3）才能查到对端，
-// 在那之前对端的检查项一律记为 warn——「没检查」不能报成「没问题」。
+// doctor 则验证 hub 与目标机是否真的具备执行条件。hub 本地检查由
+// RunLocal 负责，单台 local 或 SSH host 的项目环境由 RunHost 负责。
 //
 // 备份工具最常见的失败模式不是「代码写错了」，而是「三个月前某个
-// 前提条件悄悄变了，而没人发现」。doctor 就是用来把这些前提条件
-// 变成可以定期自动检查的断言。
+// 前提条件悄悄变了，而没人发现」。doctor 把这些前提条件变成可以
+// 定期自动检查的断言，并明确区分失败、告警与通过。
 package doctor
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/silentflower/ark/internal/config"
 )
 
-// commandTimeout 是单条外部命令的超时时间。
-// docker 在守护进程异常时可能长时间无响应，不设超时会让 doctor 整个卡死。
+// commandTimeout 是单条探测命令的超时时间。
+// docker 或网络依赖异常时可能长时间无响应，不设超时会让整轮 doctor 卡死。
 const commandTimeout = 15 * time.Second
+
+var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Status 是单项检查的结果。
 type Status string
@@ -35,20 +35,20 @@ type Status string
 const (
 	// StatusOK 表示检查通过。
 	StatusOK Status = "ok"
-	// StatusWarn 表示不影响本次备份，但需要关注。
+	// StatusWarn 表示当前无法确认或存在不阻断执行的风险。
 	StatusWarn Status = "warn"
 	// StatusFail 表示备份或恢复会失败，必须修复。
 	StatusFail Status = "fail"
 )
 
-// Check 是一项检查的结果。
+// Check 是一项环境检查的结果。
 type Check struct {
 	Name   string `json:"name"`
 	Status Status `json:"status"`
 	Detail string `json:"detail"`
 }
 
-// Report 汇总一次 doctor 的全部检查结果。
+// Report 汇总一次或多次 doctor 检查的结果。
 type Report struct {
 	Checks []Check `json:"checks"`
 }
@@ -63,6 +63,7 @@ func (r *Report) add(name string, status Status, format string, args ...any) {
 }
 
 // Failed 报告是否存在必须修复的问题。
+// @return bool 存在 StatusFail 时返回 true。
 func (r *Report) Failed() bool {
 	for _, c := range r.Checks {
 		if c.Status == StatusFail {
@@ -73,6 +74,9 @@ func (r *Report) Failed() bool {
 }
 
 // Counts 返回各状态的数量，用于输出摘要。
+// @return ok 通过项数量。
+// @return warn 告警项数量。
+// @return fail 失败项数量。
 func (r *Report) Counts() (ok, warn, fail int) {
 	for _, c := range r.Checks {
 		switch c.Status {
@@ -87,78 +91,42 @@ func (r *Report) Counts() (ok, warn, fail int) {
 	return ok, warn, fail
 }
 
-// Run 执行全部检查。
-//
-// 检查之间存在依赖：docker 不可用时，compose service 和 volume 的检查
-// 无法给出有意义的结论，此时降级为 warn 而不是伪造成 fail——
-// 区分「确定有问题」和「无法判断」对运维决策很重要。
-func Run(ctx context.Context, cfg *config.Config) *Report {
+// RunLocal 检查 hub 自身及清单在 hub 上依赖的文件、计划和仓库访问能力。
+// @param ctx 控制每条探测命令的取消和超时。
+// @param cfg 已完成静态校验的备份清单。
+// @return *Report hub 本地检查报告；无效输入会记录为失败而不会 panic。
+func RunLocal(ctx context.Context, cfg *config.Config) *Report {
 	r := &Report{}
+	if cfg == nil {
+		r.add("config", StatusFail, "清单为空")
+		return r
+	}
 
-	// 这几项是 hub 自身的能力，与有多少台机器无关，只查一次。
-	dockerOK := checkBinary(ctx, r, "docker", "docker", "--version")
-	checkBinary(ctx, r, "restic", "restic", "version")
+	resticOK := checkBinary(ctx, r, "restic", "restic", "version")
 	checkBinary(ctx, r, "ssh", "ssh", "-V")
 	systemdOK := checkBinary(ctx, r, "systemd-analyze", "systemd-analyze", "--version")
 
-	composeOK := false
-	if dockerOK {
-		composeOK = checkDockerCompose(ctx, r)
-	} else {
-		r.add("docker compose", StatusWarn, "docker 不可用，跳过检查")
-	}
-
-	// 仓库全局唯一，凭证也只有一份。
-	checkFile(r, "repo.password_file", cfg.Repo.PasswordFile, 0o077)
-	if cfg.Repo.EnvFile != "" {
-		checkFile(r, "repo.env_file", cfg.Repo.EnvFile, 0o077)
-	}
+	passwordOK := checkLocalPath(r, "repo.password_file", cfg.Repo.PasswordFile, true, 0o077)
+	envValues, envOK := checkRepoEnvFile(r, cfg.Repo.EnvFile)
 
 	for i := range cfg.Hosts {
-		checkHost(ctx, r, cfg, &cfg.Hosts[i], systemdOK, composeOK)
-	}
-
-	return r
-}
-
-// checkHost 检查一台机器。
-//
-// 目前只有 local: true 的 host 能被真正体检：远程检查需要 SSH 执行层
-// （roadmap P1-2 / P1-3），在它就位之前，远程机器上的 compose 文件、
-// service 和 volume 是否存在都无从判断。这些项记为 warn 而不是 ok——
-// 报成 ok 会让人以为已经验证过了，那正是备份工具最危险的谎言。
-func checkHost(ctx context.Context, r *Report, cfg *config.Config, h *config.Host, systemdOK, composeOK bool) {
-	// 一份报告里有多台机器，每项检查都要能看出属于谁。
-	name := func(item string) string { return h.Host + " / " + item }
-
-	if h.Local {
-		checkFile(r, name("project.compose_file"), h.Project.ComposeFile, 0)
-		if h.Project.EnvFile != "" {
-			// .env 里通常有数据库密码和加密密钥，不应该对同组或其他用户可读。
-			checkFile(r, name("project.env_file"), h.Project.EnvFile, 0o077)
+		h := &cfg.Hosts[i]
+		name := func(item string) string { return h.Host + " / " + item }
+		if h.SSH != nil {
+			checkLocalPath(r, name("ssh.identity_file"), h.SSH.IdentityFile, true, 0o077)
+			checkLocalPath(r, name("ssh.known_hosts_file"), h.SSH.KnownHostsFile, true, 0)
 		}
-	} else if h.SSH != nil {
-		// SSH 私钥和 known_hosts 都在 hub 上，不需要连过去就能查。
-		checkFile(r, name("ssh.identity_file"), h.SSH.IdentityFile, 0o077)
-		checkFile(r, name("ssh.known_hosts_file"), h.SSH.KnownHostsFile, 0)
+
+		if systemdOK {
+			checkOnCalendar(ctx, r, name("schedule.on_calendar"), cfg.ScheduleFor(h).OnCalendar)
+		} else {
+			r.add(name("schedule.on_calendar"), StatusWarn,
+				"systemd-analyze 不可用，跳过语法校验")
+		}
 	}
 
-	// 备份时机的语法由 systemd 自己裁决，与目标机在不在线无关。
-	onCalendar := cfg.ScheduleFor(h).OnCalendar
-	if systemdOK {
-		checkOnCalendar(ctx, r, name("schedule.on_calendar"), onCalendar)
-	} else {
-		r.add(name("schedule.on_calendar"), StatusWarn, "systemd-analyze 不可用，跳过语法校验")
-	}
-
-	switch {
-	case !h.Local:
-		r.add(name("targets"), StatusWarn, "远程检查待 SSH 执行层就位（roadmap P1-2 / P1-3），本轮跳过")
-	case composeOK:
-		checkTargets(ctx, r, h, name)
-	default:
-		r.add(name("targets"), StatusWarn, "docker compose 不可用，跳过目标存在性检查")
-	}
+	checkRepoAccess(ctx, r, cfg, envValues, resticOK && passwordOK && envOK)
+	return r
 }
 
 // checkBinary 检查外部命令是否存在且可执行，返回是否可用。
@@ -176,44 +144,6 @@ func checkBinary(ctx context.Context, r *Report, name string, argv ...string) bo
 	return true
 }
 
-// checkDockerCompose 单独检查 compose v2 插件，返回是否可用。
-// docker 存在不代表 compose 插件装了，这是两件事。
-func checkDockerCompose(ctx context.Context, r *Report) bool {
-	out, err := runCommand(ctx, "docker", "compose", "version")
-	if err != nil {
-		r.add("docker compose", StatusFail, "compose v2 插件不可用: %v", err)
-		return false
-	}
-	r.add("docker compose", StatusOK, "%s", firstLine(out))
-	return true
-}
-
-// checkFile 检查文件存在性，并在 forbiddenPerm 非零时检查权限是否过宽。
-// forbiddenPerm 是「不允许出现的权限位」，例如 0o077 表示禁止同组和其他用户访问。
-func checkFile(r *Report, name, path string, forbiddenPerm os.FileMode) {
-	if path == "" {
-		r.add(name, StatusFail, "路径为空")
-		return
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		r.add(name, StatusFail, "无法访问 %s: %v", path, err)
-		return
-	}
-	if info.IsDir() {
-		r.add(name, StatusFail, "%s 是目录，期望文件", path)
-		return
-	}
-	if forbiddenPerm != 0 {
-		if perm := info.Mode().Perm(); perm&forbiddenPerm != 0 {
-			r.add(name, StatusFail,
-				"%s 权限过宽（当前 %04o，应为 0600）", path, perm)
-			return
-		}
-	}
-	r.add(name, StatusOK, "%s", path)
-}
-
 // checkOnCalendar 用 systemd 自己来校验 OnCalendar 表达式。
 func checkOnCalendar(ctx context.Context, r *Report, name, expr string) {
 	out, err := runCommand(ctx, "systemd-analyze", "calendar", expr)
@@ -221,8 +151,7 @@ func checkOnCalendar(ctx context.Context, r *Report, name, expr string) {
 		r.add(name, StatusFail, "%q 不是合法的 OnCalendar 表达式", expr)
 		return
 	}
-	// systemd-analyze 会输出 "Next elapse: ..." 这一行，直接展示给用户
-	// 比复述表达式更有价值——它告诉你下一次实际会在什么时候跑。
+	// systemd 的下一次触发时间比简单复述表达式更有排障价值。
 	detail := expr
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "Next elapse:") {
@@ -233,91 +162,204 @@ func checkOnCalendar(ctx context.Context, r *Report, name, expr string) {
 	r.add(name, StatusOK, "%s", detail)
 }
 
-// checkTargets 检查每个备份目标引用的资源是否真实存在。
-// name 用于给检查项加上所属机器的前缀。
-func checkTargets(ctx context.Context, r *Report, h *config.Host, name func(string) string) {
-	services, err := composeServices(ctx, h)
+type pathKind uint8
+
+const (
+	pathKindOther pathKind = iota
+	pathKindRegular
+	pathKindDirectory
+)
+
+type pathMetadata struct {
+	kind pathKind
+	perm os.FileMode
+}
+
+// localPathMetadata 将 os.Stat 结果归一化为本地和远程共用的文件元数据。
+func localPathMetadata(path string) (pathMetadata, error) {
+	info, err := os.Stat(path)
 	if err != nil {
-		r.add(name("targets"), StatusWarn, "无法读取 compose 服务列表: %v", err)
+		return pathMetadata{}, err
+	}
+
+	kind := pathKindOther
+	switch {
+	case info.Mode().IsRegular():
+		kind = pathKindRegular
+	case info.IsDir():
+		kind = pathKindDirectory
+	}
+	return pathMetadata{kind: kind, perm: info.Mode().Perm()}, nil
+}
+
+// validatePathMetadata 是本地 os.Stat 与远程 stat 的唯一判定入口。
+func validatePathMetadata(path string, metadata pathMetadata, requireRegular bool, forbiddenPerm os.FileMode) error {
+	if requireRegular && metadata.kind != pathKindRegular {
+		if metadata.kind == pathKindDirectory {
+			return fmt.Errorf("%s 是目录，期望普通文件", path)
+		}
+		return fmt.Errorf("%s 不是普通文件", path)
+	}
+	if forbiddenPerm != 0 && metadata.perm&forbiddenPerm != 0 {
+		return fmt.Errorf("%s 权限过宽（当前 %04o，应为 0600）", path, metadata.perm)
+	}
+	return nil
+}
+
+// checkLocalPath 检查 hub 上路径的存在性、类型和权限。
+func checkLocalPath(r *Report, name, path string, requireRegular bool, forbiddenPerm os.FileMode) bool {
+	if path == "" {
+		r.add(name, StatusFail, "路径为空")
+		return false
+	}
+	metadata, err := localPathMetadata(path)
+	if err != nil {
+		r.add(name, StatusFail, "无法访问 %s: %v", path, err)
+		return false
+	}
+	if err := validatePathMetadata(path, metadata, requireRegular, forbiddenPerm); err != nil {
+		r.add(name, StatusFail, "%v", err)
+		return false
+	}
+	r.add(name, StatusOK, "%s", path)
+	return true
+}
+
+// checkRepoEnvFile 同时检查凭证文件元数据并按受限语法解析内容。
+func checkRepoEnvFile(r *Report, path string) (map[string]string, bool) {
+	if path == "" {
+		return nil, true
+	}
+	metadata, err := localPathMetadata(path)
+	if err != nil {
+		r.add("repo.env_file", StatusFail, "无法访问 %s: %v", path, err)
+		return nil, false
+	}
+	if err := validatePathMetadata(path, metadata, true, 0o077); err != nil {
+		r.add("repo.env_file", StatusFail, "%v", err)
+		return nil, false
+	}
+	values, err := parseEnvFile(path)
+	if err != nil {
+		r.add("repo.env_file", StatusFail, "%v", err)
+		return nil, false
+	}
+	r.add("repo.env_file", StatusOK, "%s", path)
+	return values, true
+}
+
+// parseEnvFile 读取不执行 shell 展开、命令替换或变量插值的凭证文件。
+func parseEnvFile(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("打开凭证文件 %s 失败: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	values := make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		key = strings.TrimSpace(key)
+		if !ok || !envKeyPattern.MatchString(key) {
+			return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 环境变量格式无效", path, lineNumber)
+		}
+		value = strings.TrimSpace(value)
+		if value != "" && (value[0] == '\'' || value[0] == '"') {
+			if len(value) < 2 || value[len(value)-1] != value[0] {
+				return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 引号未闭合", path, lineNumber)
+			}
+			value = value[1 : len(value)-1]
+		}
+		values[key] = value
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("读取凭证文件 %s 失败: %w", path, err)
+	}
+	return values, nil
+}
+
+// checkRepoAccess 在所有本地前置条件通过后验证仓库可达且能够解锁。
+func checkRepoAccess(ctx context.Context, r *Report, cfg *config.Config, envValues map[string]string, prerequisitesOK bool) {
+	if !prerequisitesOK {
+		r.add("repo.access", StatusWarn, "前置检查未通过，跳过仓库解锁")
 		return
 	}
-	known := make(map[string]bool, len(services))
-	for _, s := range services {
-		known[s] = true
+
+	overrides := make(map[string]string, len(envValues)+2)
+	for key, value := range envValues {
+		overrides[key] = value
 	}
+	// 仓库位置和密码文件必须以清单为准，不能被父进程或 env 文件悄悄覆盖。
+	overrides["RESTIC_REPOSITORY"] = cfg.Repo.URL
+	overrides["RESTIC_PASSWORD_FILE"] = cfg.Repo.PasswordFile
 
-	for _, t := range h.Targets {
-		item := name("target " + t.ID())
-		switch t.Type {
-		case config.TargetPostgres, config.TargetRedis:
-			if !known[t.Service] {
-				r.add(item, StatusFail, "compose 中不存在服务 %q", t.Service)
-				continue
-			}
-			r.add(item, StatusOK, "服务 %q 已定义", t.Service)
-
-		case config.TargetVolume:
-			if _, err := runCommand(ctx, "docker", "volume", "inspect", t.Name); err != nil {
-				r.add(item, StatusFail, "volume %q 不存在", t.Name)
-				continue
-			}
-			r.add(item, StatusOK, "volume %q 存在", t.Name)
-
-		case config.TargetFiles:
-			missing := make([]string, 0, len(t.Paths))
-			for _, p := range t.Paths {
-				if _, err := os.Stat(p); err != nil {
-					missing = append(missing, p)
-				}
-			}
-			if len(missing) > 0 {
-				r.add(item, StatusFail, "以下路径不存在: %s", strings.Join(missing, ", "))
-				continue
-			}
-			r.add(item, StatusOK, "%d 个路径均存在", len(t.Paths))
-
-		case config.TargetImageDigest:
-			var unknown []string
-			for _, s := range t.Services {
-				if !known[s] {
-					unknown = append(unknown, s)
-				}
-			}
-			if len(unknown) > 0 {
-				r.add(item, StatusFail, "compose 中不存在服务: %s", strings.Join(unknown, ", "))
-				continue
-			}
-			r.add(item, StatusOK, "%d 个服务均已定义", len(t.Services))
-		}
+	if err := runResticCatConfig(ctx, mergeEnv(os.Environ(), overrides)); err != nil {
+		r.add("repo.access", StatusFail, "%v", err)
+		return
 	}
+	r.add("repo.access", StatusOK, "仓库可达且可以解锁")
 }
 
-// composeServices 返回 compose 文件中定义的服务名列表。
-func composeServices(ctx context.Context, h *config.Host) ([]string, error) {
-	argv := []string{"docker", "compose", "-f", h.Project.ComposeFile}
-	if h.Project.ProjectName != "" {
-		argv = append(argv, "-p", h.Project.ProjectName)
-	}
-	if h.Project.EnvFile != "" {
-		argv = append(argv, "--env-file", h.Project.EnvFile)
-	}
-	argv = append(argv, "config", "--services")
-
-	out, err := runCommand(ctx, argv...)
-	if err != nil {
-		return nil, err
-	}
-
-	var services []string
-	for _, line := range strings.Split(out, "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			services = append(services, s)
+// mergeEnv 合并环境变量并保证每个 key 只出现一次，覆盖值优先。
+func mergeEnv(base []string, overrides map[string]string) []string {
+	values := make(map[string]string, len(base)+len(overrides))
+	order := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
 		}
+		if _, exists := values[key]; !exists {
+			order = append(order, key)
+		}
+		values[key] = value
 	}
-	return services, nil
+
+	var newKeys []string
+	for key, value := range overrides {
+		if _, exists := values[key]; !exists {
+			newKeys = append(newKeys, key)
+		}
+		values[key] = value
+	}
+	sort.Strings(newKeys)
+	order = append(order, newKeys...)
+
+	merged := make([]string, 0, len(order))
+	for _, key := range order {
+		merged = append(merged, key+"="+values[key])
+	}
+	return merged
 }
 
-// runCommand 执行外部命令并返回合并后的输出。
+// runResticCatConfig 隔离凭证环境，并刻意不回显可能包含敏感信息的输出。
+func runResticCatConfig(ctx context.Context, env []string) error {
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "restic", "cat", "config")
+	cmd.Env = env
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("执行 restic cat config 失败: %w", ctxErr)
+		}
+		return fmt.Errorf("执行 restic cat config 失败: %w", err)
+	}
+	return nil
+}
+
+// runCommand 执行不含凭证的本地探测命令并返回合并输出。
 func runCommand(ctx context.Context, argv ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
@@ -325,7 +367,11 @@ func runCommand(ctx context.Context, argv ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("%s: %w", strings.Join(argv, " "), ctxErr)
+		}
+		return "", fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err,
+			strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
 }

@@ -55,7 +55,7 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 | 命令 | 状态 | 说明 |
 |---|---|---|
 | `ark validate` | ✅ | 校验多机清单的语法语义，不碰 docker 和网络 |
-| `ark doctor` | 🚧 P1 | hub 自身的检查已可用，目标机的远程检查待 SSH 执行层 |
+| `ark doctor` | ✅ | 检查 hub、指定 host 或清单中的全部运行环境 |
 | `ark backup` | 🚧 P2 | 执行备份 |
 | `ark restore` | 🚧 P3 | 恢复 / 跨机重建 |
 | `ark verify` | 🚧 P3 | 自动恢复演练 |
@@ -63,9 +63,8 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 
 > ⚠️ 清单格式已是 `version: 2`——**一份清单描述全部机器**，只放在 hub 上。
 > P0 时期按单机写的 v1 清单需要迁移，`ark validate` 会直接给出迁移提示。
-> `doctor` 目前只能完整体检 `local: true` 的 hub 自己；目标机上的
-> compose service / volume 检查要等 SSH 执行层就位（P1-2 / P1-3），
-> 在那之前这些项报告为「未检查」而不是「通过」。
+> `doctor` 无范围标志时只检查 hub；使用 `--host <name>` 检查指定目标机，
+> 使用 `--all` 先检查 hub，再按清单顺序检查全部 host。
 
 ## 快速开始
 
@@ -81,8 +80,14 @@ sudo vim /etc/ark/ark.yaml
 # 校验清单本身（不碰 docker 和网络，任何机器都能跑）
 ./bin/ark validate -c /etc/ark/ark.yaml
 
-# 校验是否真的能执行
+# 校验 hub 自身是否真的具备执行条件
 ./bin/ark doctor -c /etc/ark/ark.yaml
+
+# 校验指定目标机
+./bin/ark doctor -c /etc/ark/ark.yaml --host web-01
+
+# 完整体检：hub + 清单中的全部 host
+./bin/ark doctor -c /etc/ark/ark.yaml --all
 ```
 
 `validate` 通过时会逐台列出摘要：
@@ -96,7 +101,8 @@ sudo vim /etc/ark/ark.yaml
   db-01（ssh 10.0.0.12:22）项目 pgcluster，4 个目标，*-*-* 00,06,12,18:23:00
 ```
 
-`doctor` 的退出码：`0` 全部通过，`1` 工具本身出错，`2` 检查未通过。
+`doctor` 支持 `--json` 输出合并后的结构化报告。退出码：`0` 全部通过，
+`1` 工具本身出错，`2` 检查未通过。
 方便直接挂到监控上。
 
 ## ⚠️ 关于密钥

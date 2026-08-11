@@ -5,7 +5,7 @@
 #
 # 复制到 /etc/ark/ark.yaml 后按实际情况修改，然后依次执行：
 #   ark validate    # 检查清单本身写得对不对（不碰 docker 和网络，任何机器都能跑）
-#   ark doctor      # 检查是否真的具备执行条件
+#   ark doctor --all # 检查 hub 和全部目标机是否真的具备执行条件
 
 version: 2
 
