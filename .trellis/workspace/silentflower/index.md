@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~105 | Active |
+| `journal-1.md` | ~126 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-08-11 | 完成并归档 P2-1 状态库 | `3735182` | `main` |
 | 4 | 2026-08-11 | 完成 P1-3 远程 doctor | `6e77007` | `main` |
 | 3 | 2026-08-11 | 完成 P1-2 SSH 执行层 | `fd53cabd1308bb4bc37e91c137a2f296353899a2` | `main` |
 | 2 | 2026-08-11 | P1-1 清单模型升级到多机（v2） | `ca1078d` | `main` |

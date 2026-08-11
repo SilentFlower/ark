@@ -103,3 +103,24 @@ ark.yaml 从单机模型升级为 hub 编排的多机 v2 模型：顶层拆为 r
 ### Next Steps
 
 - 开始 roadmap 下一项任务
+
+
+## Session 5: 完成并归档 P2-1 状态库
+
+**Date**: 2026-08-11
+**Task**: 完成并归档 P2-1 状态库
+**Branch**: `main`
+
+### Summary
+
+完成 internal/store SQLite WAL 状态库、schema v1、并发安全迁移和状态读写 API；通过 race、无 CGO 与构建检查，更新数据库规范并归档 P2-1。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3735182` | (see git log) |
+
+### Status
+
+[OK] **Completed**
