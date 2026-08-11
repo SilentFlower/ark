@@ -48,6 +48,9 @@ P2 做完先别急着做 P4，把 P3 走通再说。
 `KnownFields(true)` 的严格解析、错位字段拒绝、`Target.ID()`
 这些核心逻辑可以原样保留——它们与「谁来执行」无关。
 
+**返工进度**：`internal/config` 与 `examples/ark.yaml` 已在 P1-1 完成；
+`internal/doctor` 只做了多机遍历的过渡适配，远程检查待 P1-3。
+
 ---
 
 ## P1 — 地基改造
@@ -57,7 +60,7 @@ P2 做完先别急着做 P4，把 P3 走通再说。
 
 粗估 2–3 天。
 
-### P1-1 清单模型升级到多机
+### P1-1 清单模型升级到多机 ✅ 已完成
 
 **改动文件**：`internal/config/config.go`、`internal/config/config_test.go`
 
@@ -195,20 +198,26 @@ func RunHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report
 
 ---
 
-### P1-4 CLI 与示例清单适配
+### P1-4 CLI 与示例清单适配 🚧 完成一半
 
 **改动文件**：`internal/cli/root.go`、`examples/ark.yaml`、`README.md`
 
-- `validate` 输出改为逐 host 摘要（当前打印的 `cfg.Host` / `cfg.Project.Name`
+- [x] `validate` 输出改为逐 host 摘要（当前打印的 `cfg.Host` / `cfg.Project.Name`
   在多机模型下已不存在）。
-- `doctor` 加 `--host <name>` 与 `--all` 标志。不带标志时等价于 `--local`。
+- [ ] `doctor` 加 `--host <name>` 与 `--all` 标志。不带标志时等价于 `--local`。
   退出码语义保持不变：`0` 全通过 / `1` 工具出错 / `2` 检查未通过。
-- `examples/ark.yaml` 重写为多机清单，含一台 `local: true` 的 hub 条目。
-- README 的命令用法段随 CLI 改动同步（`doctor` 的新标志、`validate` 的新输出）。
+  **留到 P1-3 一起做**——标志的语义依赖 `RunLocal` / `RunHost` 的拆分，
+  先加标志只会得到一个没有 `--host` 可用的 `--host`。
+- [x] `examples/ark.yaml` 重写为多机清单，含一台 `local: true` 的 hub 条目。
+- [x] README 的命令用法段随 CLI 改动同步（`validate` 的新输出）。
   架构图、状态表和依赖说明已在架构重排那轮更新，这里不用再动。
 
 **验收**：`make check` 全绿；`./bin/ark validate -c examples/ark.yaml`
 在示例清单上通过（示例里的路径不必真实存在——validate 不碰文件系统）。
+
+> P1-1 完成时的过渡状态：`doctor` 已能遍历多机清单，但只有 `local: true`
+> 的机器被真正体检，远程机器的 target 检查报告为 warn（「未检查」，不是「通过」）。
+> P1-3 补齐远程检查后这条过渡说明即可删除。
 
 ---
 

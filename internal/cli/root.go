@@ -22,8 +22,8 @@ var (
 )
 
 // defaultConfigPath 是清单的默认位置。
-// 放在 /etc 下而不是随二进制走，是因为清单描述的是「这台机器」，
-// 与二进制版本无关。
+// 放在 /etc 下而不是随二进制走，是因为清单描述的是「这套部署里有哪些机器」，
+// 与二进制版本无关。它只存在于 hub 上。
 const defaultConfigPath = "/etc/ark/ark.yaml"
 
 // errChecksFailed 表示 doctor 发现了必须修复的问题。
@@ -82,7 +82,7 @@ func newVersionCmd() *cobra.Command {
 }
 
 // newValidateCmd 只做清单的静态校验，不访问 docker 也不访问网络。
-// 因此中心机可以用它检查任意一台机器的清单副本。
+// 因此在任何机器上都能跑，不需要能连上清单里的那些目标机。
 func newValidateCmd(configPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate",
@@ -93,11 +93,34 @@ func newValidateCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(),
-				"清单校验通过: %s\n  主机 %s / 项目 %s / %d 个备份目标\n",
-				cfg.Path(), cfg.Host, cfg.Project.Name, len(cfg.Targets))
+			printManifestSummary(cmd, cfg)
 			return nil
 		},
+	}
+}
+
+// printManifestSummary 逐台打印清单摘要。
+//
+// 不做列对齐：host 名和项目名长短不一，而「本机」这类中文的终端显示宽度
+// 是字符数的两倍，按 %-10s 补空格反而会错位。
+func printManifestSummary(cmd *cobra.Command, cfg *config.Config) {
+	out := cmd.OutOrStdout()
+
+	total := 0
+	for _, h := range cfg.Hosts {
+		total += len(h.Targets)
+	}
+	fmt.Fprintf(out, "清单校验通过: %s\n  %d 台机器 / %d 个备份目标\n\n",
+		cfg.Path(), len(cfg.Hosts), total)
+
+	for i := range cfg.Hosts {
+		h := &cfg.Hosts[i]
+		conn := "本机"
+		if h.SSH != nil {
+			conn = "ssh " + h.SSH.Address
+		}
+		fmt.Fprintf(out, "  %s（%s）项目 %s，%d 个目标，%s\n",
+			h.Host, conn, h.Project.Name, len(h.Targets), cfg.ScheduleFor(h).OnCalendar)
 	}
 }
 
@@ -142,7 +165,8 @@ func newDoctorCmd(configPath *string) *cobra.Command {
 func printReport(cmd *cobra.Command, report *doctor.Report) {
 	out := cmd.OutOrStdout()
 	for _, c := range report.Checks {
-		fmt.Fprintf(out, "%s %-28s %s\n", statusSymbol(c.Status), c.Name, c.Detail)
+		// 检查项名带机器前缀（如 "web-01 / ssh.identity_file"），列宽相应留宽。
+		fmt.Fprintf(out, "%s %-38s %s\n", statusSymbol(c.Status), c.Name, c.Detail)
 	}
 	ok, warn, fail := report.Counts()
 	fmt.Fprintf(out, "\n通过 %d / 警告 %d / 失败 %d\n", ok, warn, fail)

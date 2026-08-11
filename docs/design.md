@@ -288,9 +288,6 @@ hub 上同时运行着 dnsmgr（DNS 聚合管理 + DNS 层故障转移 + 证书�
 
 hub 上一份 `/etc/ark/ark.yaml` 描述所有机器。
 
-> 注意：`examples/ark.yaml` 目前仍是 v1 单机清单，与本节不一致。
-> 它会在 P1-4 随清单模型一起迁移到 v2，在那之前以本节为准。
-
 ```yaml
 version: 2
 

@@ -1,9 +1,13 @@
 // Package doctor 校验 ark 的运行环境。
 //
 // 它和 config.Validate 的分工是：config 只看清单本身写得对不对，
-// doctor 看这台机器上是不是真的能执行这份清单——外部命令在不在、
+// doctor 看是不是真的能执行这份清单——外部命令在不在、
 // 密钥文件权限安不安全、compose 里是不是真有这个 service、
 // volume 是不是真的存在。
+//
+// 检查在 hub 上发起。目前只有 local: true 的机器能被完整体检，
+// 远程机器需要 SSH 执行层（roadmap P1-2 / P1-3）才能查到对端，
+// 在那之前对端的检查项一律记为 warn——「没检查」不能报成「没问题」。
 //
 // 备份工具最常见的失败模式不是「代码写错了」，而是「三个月前某个
 // 前提条件悄悄变了，而没人发现」。doctor 就是用来把这些前提条件
@@ -91,6 +95,7 @@ func (r *Report) Counts() (ok, warn, fail int) {
 func Run(ctx context.Context, cfg *config.Config) *Report {
 	r := &Report{}
 
+	// 这几项是 hub 自身的能力，与有多少台机器无关，只查一次。
 	dockerOK := checkBinary(ctx, r, "docker", "docker", "--version")
 	checkBinary(ctx, r, "restic", "restic", "version")
 	systemdOK := checkBinary(ctx, r, "systemd-analyze", "systemd-analyze", "--version")
@@ -102,29 +107,57 @@ func Run(ctx context.Context, cfg *config.Config) *Report {
 		r.add("docker compose", StatusWarn, "docker 不可用，跳过检查")
 	}
 
-	checkFile(r, "project.compose_file", cfg.Project.ComposeFile, 0)
-	if cfg.Project.EnvFile != "" {
-		// .env 里通常有数据库密码和加密密钥，不应该对同组或其他用户可读。
-		checkFile(r, "project.env_file", cfg.Project.EnvFile, 0o077)
-	}
+	// 仓库全局唯一，凭证也只有一份。
 	checkFile(r, "repo.password_file", cfg.Repo.PasswordFile, 0o077)
 	if cfg.Repo.EnvFile != "" {
 		checkFile(r, "repo.env_file", cfg.Repo.EnvFile, 0o077)
 	}
 
-	if systemdOK {
-		checkOnCalendar(ctx, r, cfg.Schedule.OnCalendar)
-	} else {
-		r.add("schedule.on_calendar", StatusWarn, "systemd-analyze 不可用，跳过语法校验")
-	}
-
-	if composeOK {
-		checkTargets(ctx, r, cfg)
-	} else {
-		r.add("targets", StatusWarn, "docker compose 不可用，跳过目标存在性检查")
+	for i := range cfg.Hosts {
+		checkHost(ctx, r, cfg, &cfg.Hosts[i], systemdOK, composeOK)
 	}
 
 	return r
+}
+
+// checkHost 检查一台机器。
+//
+// 目前只有 local: true 的 host 能被真正体检：远程检查需要 SSH 执行层
+// （roadmap P1-2 / P1-3），在它就位之前，远程机器上的 compose 文件、
+// service 和 volume 是否存在都无从判断。这些项记为 warn 而不是 ok——
+// 报成 ok 会让人以为已经验证过了，那正是备份工具最危险的谎言。
+func checkHost(ctx context.Context, r *Report, cfg *config.Config, h *config.Host, systemdOK, composeOK bool) {
+	// 一份报告里有多台机器，每项检查都要能看出属于谁。
+	name := func(item string) string { return h.Host + " / " + item }
+
+	if h.Local {
+		checkFile(r, name("project.compose_file"), h.Project.ComposeFile, 0)
+		if h.Project.EnvFile != "" {
+			// .env 里通常有数据库密码和加密密钥，不应该对同组或其他用户可读。
+			checkFile(r, name("project.env_file"), h.Project.EnvFile, 0o077)
+		}
+	} else if h.SSH != nil {
+		// SSH 私钥和 known_hosts 都在 hub 上，不需要连过去就能查。
+		checkFile(r, name("ssh.identity_file"), h.SSH.IdentityFile, 0o077)
+		checkFile(r, name("ssh.known_hosts_file"), h.SSH.KnownHostsFile, 0)
+	}
+
+	// 备份时机的语法由 systemd 自己裁决，与目标机在不在线无关。
+	onCalendar := cfg.ScheduleFor(h).OnCalendar
+	if systemdOK {
+		checkOnCalendar(ctx, r, name("schedule.on_calendar"), onCalendar)
+	} else {
+		r.add(name("schedule.on_calendar"), StatusWarn, "systemd-analyze 不可用，跳过语法校验")
+	}
+
+	switch {
+	case !h.Local:
+		r.add(name("targets"), StatusWarn, "远程检查待 SSH 执行层就位（roadmap P1-2 / P1-3），本轮跳过")
+	case composeOK:
+		checkTargets(ctx, r, h, name)
+	default:
+		r.add(name("targets"), StatusWarn, "docker compose 不可用，跳过目标存在性检查")
+	}
 }
 
 // checkBinary 检查外部命令是否存在且可执行，返回是否可用。
@@ -181,10 +214,10 @@ func checkFile(r *Report, name, path string, forbiddenPerm os.FileMode) {
 }
 
 // checkOnCalendar 用 systemd 自己来校验 OnCalendar 表达式。
-func checkOnCalendar(ctx context.Context, r *Report, expr string) {
+func checkOnCalendar(ctx context.Context, r *Report, name, expr string) {
 	out, err := runCommand(ctx, "systemd-analyze", "calendar", expr)
 	if err != nil {
-		r.add("schedule.on_calendar", StatusFail, "%q 不是合法的 OnCalendar 表达式", expr)
+		r.add(name, StatusFail, "%q 不是合法的 OnCalendar 表达式", expr)
 		return
 	}
 	// systemd-analyze 会输出 "Next elapse: ..." 这一行，直接展示给用户
@@ -196,14 +229,15 @@ func checkOnCalendar(ctx context.Context, r *Report, expr string) {
 			break
 		}
 	}
-	r.add("schedule.on_calendar", StatusOK, "%s", detail)
+	r.add(name, StatusOK, "%s", detail)
 }
 
 // checkTargets 检查每个备份目标引用的资源是否真实存在。
-func checkTargets(ctx context.Context, r *Report, cfg *config.Config) {
-	services, err := composeServices(ctx, cfg)
+// name 用于给检查项加上所属机器的前缀。
+func checkTargets(ctx context.Context, r *Report, h *config.Host, name func(string) string) {
+	services, err := composeServices(ctx, h)
 	if err != nil {
-		r.add("targets", StatusWarn, "无法读取 compose 服务列表: %v", err)
+		r.add(name("targets"), StatusWarn, "无法读取 compose 服务列表: %v", err)
 		return
 	}
 	known := make(map[string]bool, len(services))
@@ -211,22 +245,22 @@ func checkTargets(ctx context.Context, r *Report, cfg *config.Config) {
 		known[s] = true
 	}
 
-	for _, t := range cfg.Targets {
-		name := "target " + t.ID()
+	for _, t := range h.Targets {
+		item := name("target " + t.ID())
 		switch t.Type {
 		case config.TargetPostgres, config.TargetRedis:
 			if !known[t.Service] {
-				r.add(name, StatusFail, "compose 中不存在服务 %q", t.Service)
+				r.add(item, StatusFail, "compose 中不存在服务 %q", t.Service)
 				continue
 			}
-			r.add(name, StatusOK, "服务 %q 已定义", t.Service)
+			r.add(item, StatusOK, "服务 %q 已定义", t.Service)
 
 		case config.TargetVolume:
 			if _, err := runCommand(ctx, "docker", "volume", "inspect", t.Name); err != nil {
-				r.add(name, StatusFail, "volume %q 不存在", t.Name)
+				r.add(item, StatusFail, "volume %q 不存在", t.Name)
 				continue
 			}
-			r.add(name, StatusOK, "volume %q 存在", t.Name)
+			r.add(item, StatusOK, "volume %q 存在", t.Name)
 
 		case config.TargetFiles:
 			missing := make([]string, 0, len(t.Paths))
@@ -236,10 +270,10 @@ func checkTargets(ctx context.Context, r *Report, cfg *config.Config) {
 				}
 			}
 			if len(missing) > 0 {
-				r.add(name, StatusFail, "以下路径不存在: %s", strings.Join(missing, ", "))
+				r.add(item, StatusFail, "以下路径不存在: %s", strings.Join(missing, ", "))
 				continue
 			}
-			r.add(name, StatusOK, "%d 个路径均存在", len(t.Paths))
+			r.add(item, StatusOK, "%d 个路径均存在", len(t.Paths))
 
 		case config.TargetImageDigest:
 			var unknown []string
@@ -249,22 +283,22 @@ func checkTargets(ctx context.Context, r *Report, cfg *config.Config) {
 				}
 			}
 			if len(unknown) > 0 {
-				r.add(name, StatusFail, "compose 中不存在服务: %s", strings.Join(unknown, ", "))
+				r.add(item, StatusFail, "compose 中不存在服务: %s", strings.Join(unknown, ", "))
 				continue
 			}
-			r.add(name, StatusOK, "%d 个服务均已定义", len(t.Services))
+			r.add(item, StatusOK, "%d 个服务均已定义", len(t.Services))
 		}
 	}
 }
 
 // composeServices 返回 compose 文件中定义的服务名列表。
-func composeServices(ctx context.Context, cfg *config.Config) ([]string, error) {
-	argv := []string{"docker", "compose", "-f", cfg.Project.ComposeFile}
-	if cfg.Project.ProjectName != "" {
-		argv = append(argv, "-p", cfg.Project.ProjectName)
+func composeServices(ctx context.Context, h *config.Host) ([]string, error) {
+	argv := []string{"docker", "compose", "-f", h.Project.ComposeFile}
+	if h.Project.ProjectName != "" {
+		argv = append(argv, "-p", h.Project.ProjectName)
 	}
-	if cfg.Project.EnvFile != "" {
-		argv = append(argv, "--env-file", cfg.Project.EnvFile)
+	if h.Project.EnvFile != "" {
+		argv = append(argv, "--env-file", h.Project.EnvFile)
 	}
 	argv = append(argv, "config", "--services")
 

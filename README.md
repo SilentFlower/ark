@@ -54,17 +54,18 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 
 | 命令 | 状态 | 说明 |
 |---|---|---|
-| `ark validate` | ✅ | 校验清单语法语义，不碰 docker 和网络 |
-| `ark doctor` | ✅ | 检查是否具备执行条件 |
+| `ark validate` | ✅ | 校验多机清单的语法语义，不碰 docker 和网络 |
+| `ark doctor` | 🚧 P1 | hub 自身的检查已可用，目标机的远程检查待 SSH 执行层 |
 | `ark backup` | 🚧 P2 | 执行备份 |
 | `ark restore` | 🚧 P3 | 恢复 / 跨机重建 |
 | `ark verify` | 🚧 P3 | 自动恢复演练 |
 | `ark-hub` | 🚧 P4 | Web 界面与 API |
 
-> ⚠️ 架构在 P0 之后从「每台机器装 agent」改成了「hub 集中编排 + 目标机零安装」。
-> 已有的 `validate` / `doctor` 仍然是按单机清单实现的，
-> **P1 会把清单模型迁移到多机（`version: 2`）并改造 doctor**。
-> 现在照着 `examples/ark.yaml` 写的清单在 P1 之后需要迁移。
+> ⚠️ 清单格式已是 `version: 2`——**一份清单描述全部机器**，只放在 hub 上。
+> P0 时期按单机写的 v1 清单需要迁移，`ark validate` 会直接给出迁移提示。
+> `doctor` 目前只能完整体检 `local: true` 的 hub 自己；目标机上的
+> compose service / volume 检查要等 SSH 执行层就位（P1-2 / P1-3），
+> 在那之前这些项报告为「未检查」而不是「通过」。
 
 ## 快速开始
 
@@ -72,7 +73,7 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 # 构建
 make build
 
-# 准备清单
+# 准备清单。它只放在 hub 上，一份描述全部要备份的机器。
 sudo mkdir -p /etc/ark
 sudo cp examples/ark.yaml /etc/ark/ark.yaml
 sudo vim /etc/ark/ark.yaml
@@ -82,6 +83,17 @@ sudo vim /etc/ark/ark.yaml
 
 # 校验是否真的能执行
 ./bin/ark doctor -c /etc/ark/ark.yaml
+```
+
+`validate` 通过时会逐台列出摘要：
+
+```
+清单校验通过: /etc/ark/ark.yaml
+  3 台机器 / 12 个备份目标
+
+  hub-01（本机）项目 ark-hub，3 个目标，*-*-* 04:17:00
+  web-01（ssh 10.0.0.11:22）项目 sub2api，5 个目标，*-*-* 04:17:00
+  db-01（ssh 10.0.0.12:22）项目 pgcluster，4 个目标，*-*-* 00,06,12,18:23:00
 ```
 
 `doctor` 的退出码：`0` 全部通过，`1` 工具本身出错，`2` 检查未通过。

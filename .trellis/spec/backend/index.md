@@ -23,6 +23,7 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | 包划分、依赖方向、命名约定 | Filled |
+| [Manifest Guidelines](./manifest-guidelines.md) | 清单模型演进、校验规约、默认值继承 | Filled |
 | [External Command Guidelines](./external-command-guidelines.md) | 子进程调用与凭证注入红线 | Filled |
 | [Database Guidelines](./database-guidelines.md) | 备份/恢复数据库的规约 | Filled |
 | [Error Handling](./error-handling.md) | 错误传播、聚合与退出码 | Filled |
@@ -31,11 +32,14 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 
 ### 与模板的差异
 
-本项目对 Trellis 默认模板做了两处调整，理由如下：
+本项目对 Trellis 默认模板做了三处调整，理由如下：
 
 - **新增 `external-command-guidelines.md`**。ark 的功能几乎全部由调用
   `restic` / `docker compose` / `pg_dump` 实现，子进程调用是本项目
   最主要的代码形态和最集中的风险点，需要独立成篇。
+- **新增 `manifest-guidelines.md`**。清单是 ark 唯一的用户输入契约，
+  hub 的全部行为都由它决定，而它的每一次结构变更都会横穿
+  config / doctor / cli 三层，需要一份独立的演进与校验规约。
 - **`database-guidelines.md` 改写了范围**。ark 自身没有数据库、没有 ORM、
   没有迁移，模板里的相应章节不适用。该文档现在讲的是
   「如何备份和恢复别人的数据库」。
@@ -48,8 +52,9 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 
 1. `docs/design.md` 第 4 节的 13 条 ADR — 理解为什么是现在这个形状。
 2. [Directory Structure](./directory-structure.md) — 知道代码该往哪放。
-3. [External Command Guidelines](./external-command-guidelines.md) — 本项目最容易出事的地方。
-4. 其余三篇按需查阅。
+3. [Manifest Guidelines](./manifest-guidelines.md) — 清单是唯一的用户输入契约，几乎所有功能都从它读起。
+4. [External Command Guidelines](./external-command-guidelines.md) — 本项目最容易出事的地方。
+5. 其余三篇按需查阅。
 
 动手前再扫一眼 [Quality Guidelines](./quality-guidelines.md) 末尾的
 Code Review Checklist。

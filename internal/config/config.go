@@ -1,31 +1,39 @@
 // Package config 加载并校验 ark 的备份清单（ark.yaml）。
 //
-// 清单是纯声明式的：它只描述「这台机器上有哪些东西需要被备份」，
+// 清单是纯声明式的：它描述「hub 要管哪些机器、每台机器上有哪些东西需要备份」，
 // 不描述「怎么备份」——执行细节由各 target 的执行器负责。
+//
+// 清单只存在于 hub 上，一份描述全部机器（ADR-002）。被备份的机器上
+// 不安装任何 ark 组件，因此也不会有属于它自己的那份清单。
 //
 // 校验刻意分成两层：
 //   - Validate 只做静态语义校验（字段是否齐全、路径是否绝对、ID 是否重复），
-//     全程不碰文件系统。因此中心机可以校验任意一台机器的清单，而不需要
-//     那台机器上的文件真的存在。
-//   - 运行环境校验（文件是否存在、权限是否安全、docker/restic 是否可用、
+//     全程不碰文件系统。因此 hub 可以校验任意一台机器的清单段落，
+//     而不需要真的连上那台机器。
+//   - 运行环境校验（文件是否存在、权限是否安全、docker 是否可用、
 //     compose service 和 volume 是否真实存在）属于 doctor 包的职责。
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
-	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // SchemaVersion 是当前支持的清单格式版本。
-// 清单格式发生不兼容变更时递增，并在 Load 中提供迁移路径。
-const SchemaVersion = 1
+//
+// v1 是「每台机器装一个 agent、各读各的清单」时代的单机格式。
+// 架构改为 hub 集中编排后（ADR-002），顶层从「一台机器」变成「一组机器」，
+// 这是一次不兼容变更，因此版本号从 1 递增到 2。
+const SchemaVersion = 2
 
 // 各项默认值。默认备份窗口刻意避开整点和半点：
 // 全世界的定时任务都挤在 0 分和 30 分，错开几分钟能显著降低
@@ -39,7 +47,8 @@ const (
 )
 
 // hostPattern 限制 host 的取值范围。
-// host 会成为对象存储 key 的一段路径，因此不允许出现需要转义的字符。
+// host 会成为 restic 快照的 tag，也是恢复时的检索键，
+// 因此不允许出现需要转义的字符。
 var hostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // TargetType 是备份目标的类型。
@@ -66,25 +75,76 @@ const (
 	TargetImageDigest TargetType = "image_digest"
 )
 
-// Config 是一台机器上的完整备份清单。
+// Config 是 hub 的完整备份清单，描述它管理的全部机器。
 type Config struct {
-	Version   int       `yaml:"version"`
-	Host      string    `yaml:"host"`
-	Project   Project   `yaml:"project"`
-	Repo      Repo      `yaml:"repo"`
-	Targets   []Target  `yaml:"targets"`
-	Schedule  Schedule  `yaml:"schedule"`
-	Retention Retention `yaml:"retention"`
+	Version  int      `yaml:"version"`
+	Repo     Repo     `yaml:"repo"`
+	Defaults Defaults `yaml:"defaults"`
+	Hosts    []Host   `yaml:"hosts"`
 
 	// path 记录清单自身的来源路径，仅用于错误信息，不参与序列化。
 	path string
+}
+
+// Defaults 是各 host 未显式覆盖时套用的默认值。
+//
+// 两个字段都是指针：需要区分「这段压根没写」和「写了但值为零」。
+// 后者是用户的明确选择，不能被默认值覆盖。
+type Defaults struct {
+	Schedule  *Schedule  `yaml:"schedule"`
+	Retention *Retention `yaml:"retention"`
+}
+
+// Host 是一台被备份的机器。
+type Host struct {
+	// Host 是这台机器的标识，全局唯一。
+	// 它会成为 restic 快照的 tag，也是恢复时用来检索的键。
+	Host string `yaml:"host"`
+
+	// Local 为 true 表示这台就是 hub 自己，命令直接在本地执行，不走 SSH。
+	// hub 自身也需要被备份（ADR-012），所以它同样出现在 hosts 列表里。
+	Local bool `yaml:"local"`
+
+	// SSH 是连到这台机器的方式。Local 为 true 时必须为空。
+	//
+	// 用指针而不是值：判定「local 与 ssh 互斥」需要区分
+	// 「写了一个空的 ssh 段」和「压根没写 ssh」，值类型做不到。
+	SSH *SSH `yaml:"ssh"`
+
+	Project Project  `yaml:"project"`
+	Targets []Target `yaml:"targets"`
+
+	// Schedule 与 Retention 为 nil 时套用 Defaults，见 ScheduleFor / RetentionFor。
+	Schedule  *Schedule  `yaml:"schedule"`
+	Retention *Retention `yaml:"retention"`
+}
+
+// SSH 描述 hub 连到一台目标机所需的全部信息。
+//
+// 目标机上不需要装任何东西，有 sshd 就够了（ADR-002）。
+type SSH struct {
+	// Address 是 host:port，端口必须显式写出。
+	// 清单是人写一次、机器读三年的东西，显式端口既避免歧义，
+	// 也和 known_hosts 里的记录形态对得上。
+	Address string `yaml:"address"`
+	// User 是登录用户。
+	User string `yaml:"user"`
+	// IdentityFile 是 SSH 私钥的绝对路径。
+	//
+	// 私钥本身不进备份：把开锁的钥匙和锁着的箱子放在一起没有意义。
+	IdentityFile string `yaml:"identity_file"`
+	// KnownHostsFile 是主机密钥库的绝对路径，必填。
+	//
+	// 不提供任何「跳过主机密钥校验」的开关：hub 会把生产数据流经这条连接，
+	// 中间人劫持同时意味着数据泄露和恢复投毒。
+	KnownHostsFile string `yaml:"known_hosts_file"`
 }
 
 // Project 定位被备份的 docker compose 项目。
 type Project struct {
 	// Name 是这套服务的逻辑名称，用于快照标签。
 	Name string `yaml:"name"`
-	// ComposeFile 是 docker-compose.yml 的绝对路径。
+	// ComposeFile 是 docker-compose.yml 在目标机上的绝对路径。
 	ComposeFile string `yaml:"compose_file"`
 	// EnvFile 是 compose 使用的 .env 绝对路径，可为空。
 	EnvFile string `yaml:"env_file"`
@@ -94,15 +154,20 @@ type Project struct {
 }
 
 // Repo 描述备份仓库（当前只支持 restic）。
+//
+// 全局唯一：所有机器的快照进同一个仓库，靠 host tag 区分（ADR-009）。
+// 这样跨机去重才能生效——同一个基础镜像层、同样的配置文件
+// 在 N 台机器上只存一份。
 type Repo struct {
 	// Type 目前固定为 restic。保留该字段是为了后续可能的其它后端。
 	Type string `yaml:"type"`
-	// URL 是 restic 仓库地址，例如 s3:https://<account>.r2.cloudflarestorage.com/<bucket>/<host>。
+	// URL 是 restic 仓库地址，例如 s3:https://<account>.r2.cloudflarestorage.com/<bucket>。
+	// 不要按机器分路径——那会让跨机去重失效。
 	URL string `yaml:"url"`
 	// PasswordFile 是 restic 仓库密码文件的绝对路径。
 	//
-	// 这个文件必须同时存在于生产机之外的地方（密码管理器、离线介质）。
-	// 只存在于生产机上的仓库密码，在机器损毁时会让所有备份一起变成废数据。
+	// 这个文件必须同时存在于 hub 之外的地方（密码管理器、离线介质）。
+	// 只存在于 hub 上的仓库密码，在 hub 损毁时会让所有备份一起变成废数据。
 	PasswordFile string `yaml:"password_file"`
 	// EnvFile 存放对象存储凭证（AWS_ACCESS_KEY_ID 等）的绝对路径。
 	EnvFile string `yaml:"env_file"`
@@ -135,8 +200,9 @@ type Target struct {
 
 // Schedule 描述备份触发时机。
 //
-// 用 systemd OnCalendar 而不是进程内 cron：备份 agent 是 oneshot 进程，
+// 用 systemd OnCalendar 而不是进程内 cron：备份是 oneshot 进程，
 // 跑完就退出。没有常驻进程就没有「守护进程自己挂了导致三个月没备份」这种故障。
+// timer 现在跑在 hub 上，每台机器一个（ADR-005）。
 type Schedule struct {
 	OnCalendar string `yaml:"on_calendar"`
 }
@@ -151,29 +217,62 @@ type Retention struct {
 // Load 从磁盘读取并解析清单，随后填充默认值。
 // 它不做校验，调用方通常应该直接用 LoadAndValidate。
 func Load(path string) (*Config, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("打开清单失败: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("清单 %s 是空文件", path)
+	}
 
-	dec := yaml.NewDecoder(f)
+	if err := checkVersion(data); err != nil {
+		return nil, err
+	}
+
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	// 未知字段一律报错。备份清单里的拼写错误如果被静默忽略，
 	// 会让人以为某个目标已经在备份、而实际上它从未被执行过——
-	// 这种错误只会在真正需要恢复的那天暴露。
+	// 这种错误只会在真正需要恢复的那天暴露（ADR-007）。
 	dec.KnownFields(true)
 
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("清单 %s 是空文件", path)
-		}
 		return nil, fmt.Errorf("解析清单 %s 失败: %w", path, err)
 	}
 
 	cfg.path = path
 	cfg.applyDefaults()
 	return &cfg, nil
+}
+
+// checkVersion 在严格解析之前先判定清单版本。
+//
+// 顺序不能颠倒：v1 清单的顶层是 host / project / targets，
+// 拿 v2 结构去严格解析只会得到一串「未知字段」，
+// 而用户真正需要的信息是「这份清单该迁移了」。
+func checkVersion(data []byte) error {
+	var probe struct {
+		Version int `yaml:"version"`
+	}
+	// 宽松解析：只取版本号，其余字段一律忽略。
+	// 解析失败说明 YAML 语法本身有问题，此时跳过版本判定，
+	// 让后面的严格解析报出带行号的语法错误。
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return nil
+	}
+
+	switch probe.Version {
+	case SchemaVersion:
+		return nil
+	case 0:
+		return fmt.Errorf("version: 未声明。v%d 清单必须显式写 version: %d，"+
+			"参考 examples/ark.yaml", SchemaVersion, SchemaVersion)
+	case 1:
+		return errors.New("version: 检测到 v1 单机清单。架构已改为 hub 集中编排，" +
+			"清单需要迁移到 v2（顶层改为 repo + defaults + hosts），参考 examples/ark.yaml")
+	default:
+		return fmt.Errorf("version: 不支持的版本 %d，当前支持 %d", probe.Version, SchemaVersion)
+	}
 }
 
 // LoadAndValidate 读取清单并执行静态校验。
@@ -191,24 +290,58 @@ func LoadAndValidate(path string) (*Config, error) {
 // Path 返回清单自身的来源路径。
 func (c *Config) Path() string { return c.path }
 
-// applyDefaults 为未填写的字段补默认值。
+// applyDefaults 只补全全局层面的默认值。
+//
+// 刻意不把 defaults 拷进各个 host：那会丢掉「这个值是用户写的还是继承来的」，
+// 导致 on_calendar 非法时错误指向 hosts[2].schedule，
+// 而用户其实写在 defaults 里。生效值由 ScheduleFor / RetentionFor 计算。
 func (c *Config) applyDefaults() {
-	if c.Version == 0 {
-		c.Version = SchemaVersion
-	}
 	if c.Repo.Type == "" {
 		c.Repo.Type = DefaultRepoType
 	}
-	if c.Schedule.OnCalendar == "" {
-		c.Schedule.OnCalendar = DefaultOnCalendar
+	if c.Defaults.Schedule == nil {
+		c.Defaults.Schedule = &Schedule{OnCalendar: DefaultOnCalendar}
 	}
-	// 保留策略三个值同时为 0 才套用默认值。
-	// 只要用户显式配了其中任何一个，就完全尊重用户的选择，
-	// 避免「我明明只想留 3 天，却被悄悄补上了周备和月备」。
-	if c.Retention.Daily == 0 && c.Retention.Weekly == 0 && c.Retention.Monthly == 0 {
-		c.Retention.Daily = DefaultRetentionDaily
-		c.Retention.Weekly = DefaultRetentionWeekly
-		c.Retention.Monthly = DefaultRetentionMonthly
+	if c.Defaults.Retention == nil {
+		c.Defaults.Retention = &Retention{
+			Daily:   DefaultRetentionDaily,
+			Weekly:  DefaultRetentionWeekly,
+			Monthly: DefaultRetentionMonthly,
+		}
+	}
+}
+
+// ScheduleFor 返回一台 host 实际生效的备份时机。
+// 优先级：host 自身覆盖 > defaults > 内置常量。
+//
+// 最后一级兜底是给手工构造的 Config 用的——经过 Load 的清单
+// 在 applyDefaults 阶段就已经填好了 defaults。
+func (c *Config) ScheduleFor(h *Host) Schedule {
+	if h != nil && h.Schedule != nil {
+		return *h.Schedule
+	}
+	if c.Defaults.Schedule != nil {
+		return *c.Defaults.Schedule
+	}
+	return Schedule{OnCalendar: DefaultOnCalendar}
+}
+
+// RetentionFor 返回一台 host 实际生效的保留策略。
+// 优先级同 ScheduleFor。
+//
+// host 显式写了 retention 时完全尊重它的取值，不做任何补全——
+// 「我只想留 3 天」必须被原样执行，而不是被悄悄补上周备和月备。
+func (c *Config) RetentionFor(h *Host) Retention {
+	if h != nil && h.Retention != nil {
+		return *h.Retention
+	}
+	if c.Defaults.Retention != nil {
+		return *c.Defaults.Retention
+	}
+	return Retention{
+		Daily:   DefaultRetentionDaily,
+		Weekly:  DefaultRetentionWeekly,
+		Monthly: DefaultRetentionMonthly,
 	}
 }
 
@@ -246,7 +379,8 @@ func (t Target) filledFields() []string {
 	return out
 }
 
-// ID 返回 target 在一次快照内的唯一标识，同时用作归档路径的一段。
+// ID 返回 target 在一台机器的一次快照内的唯一标识，
+// 同时用作归档路径的一段。
 func (t Target) ID() string {
 	switch t.Type {
 	case TargetPostgres:
@@ -276,34 +410,11 @@ func (c *Config) Validate() error {
 		add("version: 期望 %d，实际 %d", SchemaVersion, c.Version)
 	}
 
-	if c.Host == "" {
-		add("host: 不能为空（用于区分对象存储中不同机器的备份）")
-	} else if !hostPattern.MatchString(c.Host) {
-		add("host: %q 非法，只允许小写字母、数字和中划线，且不能以中划线开头或结尾", c.Host)
-	}
-
-	c.validateProject(add)
 	c.validateRepo(add)
-	c.validateSchedule(add)
-	c.validateRetention(add)
-	c.validateTargets(add)
+	c.validateDefaults(add)
+	c.validateHosts(add)
 
 	return errors.Join(errs...)
-}
-
-// validateProject 校验 compose 项目定位信息。
-func (c *Config) validateProject(add func(string, ...any)) {
-	if c.Project.Name == "" {
-		add("project.name: 不能为空")
-	}
-	if c.Project.ComposeFile == "" {
-		add("project.compose_file: 不能为空")
-	} else if !filepath.IsAbs(c.Project.ComposeFile) {
-		add("project.compose_file: 必须是绝对路径，实际 %q", c.Project.ComposeFile)
-	}
-	if c.Project.EnvFile != "" && !filepath.IsAbs(c.Project.EnvFile) {
-		add("project.env_file: 必须是绝对路径，实际 %q", c.Project.EnvFile)
-	}
 }
 
 // validateRepo 校验备份仓库配置。
@@ -324,54 +435,186 @@ func (c *Config) validateRepo(add func(string, ...any)) {
 	}
 }
 
+// validateDefaults 校验全局默认值。
+// 两段都是可选的，只在写了的时候检查。
+func (c *Config) validateDefaults(add func(string, ...any)) {
+	if c.Defaults.Schedule != nil {
+		validateSchedule("defaults.schedule", *c.Defaults.Schedule, add)
+	}
+	if c.Defaults.Retention != nil {
+		validateRetention("defaults.retention", *c.Defaults.Retention, add)
+	}
+}
+
+// validateHosts 逐台校验，并检查 host 名称的全局唯一性。
+func (c *Config) validateHosts(add func(string, ...any)) {
+	if len(c.Hosts) == 0 {
+		add("hosts: 至少需要一台机器")
+		return
+	}
+
+	seen := make(map[string]int, len(c.Hosts))
+	for i := range c.Hosts {
+		h := &c.Hosts[i]
+
+		// 前缀带上 host 名，让错误信息在一份十几台机器的清单里可定位。
+		prefix := fmt.Sprintf("hosts[%d]", i)
+		if h.Host != "" {
+			prefix = fmt.Sprintf("hosts[%d](%s)", i, h.Host)
+		}
+
+		switch {
+		case h.Host == "":
+			add("%s.host: 不能为空（它是 restic 快照的 tag，也是恢复时的检索键）", prefix)
+		case !hostPattern.MatchString(h.Host):
+			add("%s.host: %q 非法，只允许小写字母、数字和中划线，且不能以中划线开头或结尾", prefix, h.Host)
+		default:
+			// 重名会让两台机器的快照混在同一个 tag 下，恢复时无法区分。
+			if prev, dup := seen[h.Host]; dup {
+				add("%s.host: %q 与 hosts[%d] 重复，host 名称必须全局唯一", prefix, h.Host, prev)
+			} else {
+				seen[h.Host] = i
+			}
+		}
+
+		validateConnection(prefix, h, add)
+		validateProject(prefix, h.Project, add)
+		validateTargets(prefix, h.Targets, add)
+
+		if h.Schedule != nil {
+			validateSchedule(prefix+".schedule", *h.Schedule, add)
+		}
+		if h.Retention != nil {
+			validateRetention(prefix+".retention", *h.Retention, add)
+		}
+	}
+}
+
+// validateConnection 校验「怎么连到这台机器」，local 与 ssh 必须二选一。
+func validateConnection(prefix string, h *Host, add func(string, ...any)) {
+	switch {
+	case h.Local && h.SSH != nil:
+		add("%s: local 为 true 表示这台就是 hub 自己，命令直接本地执行，不能同时配置 ssh", prefix)
+	case !h.Local && h.SSH == nil:
+		add("%s.ssh: 远程机器必填（hub 需要知道怎么连过去）；"+
+			"这台就是 hub 自己时请改写 local: true", prefix)
+	case h.SSH != nil:
+		validateSSH(prefix+".ssh", *h.SSH, add)
+	}
+}
+
+// validateSSH 校验连接参数。文件是否存在、权限是否为 0600
+// 属于 doctor 的职责，这里只看清单写得对不对。
+func validateSSH(prefix string, s SSH, add func(string, ...any)) {
+	validateAddress(prefix+".address", s.Address, add)
+	if s.User == "" {
+		add("%s.user: 不能为空", prefix)
+	}
+	if s.IdentityFile == "" {
+		add("%s.identity_file: 不能为空", prefix)
+	} else if !filepath.IsAbs(s.IdentityFile) {
+		add("%s.identity_file: 必须是绝对路径，实际 %q", prefix, s.IdentityFile)
+	}
+	// 不提供「跳过主机密钥校验」的开关，所以这个字段没有缺省可言。
+	if s.KnownHostsFile == "" {
+		add("%s.known_hosts_file: 不能为空。生产数据会流经这条连接，"+
+			"不校验主机密钥意味着中间人既能窃取数据、也能在恢复时投毒", prefix)
+	} else if !filepath.IsAbs(s.KnownHostsFile) {
+		add("%s.known_hosts_file: 必须是绝对路径，实际 %q", prefix, s.KnownHostsFile)
+	}
+}
+
+// validateAddress 校验 host:port。
+//
+// net.SplitHostPort 本身太宽松，两种写法它都放行、但都连不上任何机器：
+// ":22" 缺主机名，"10.0.0.11:ssh" 用了服务名（ssh 的 -p 只接受数字）。
+// 这类错误必须在写清单的时候暴露——否则它会一直潜伏到某个凌晨四点，
+// 由一个无人值守的定时任务替你发现。
+func validateAddress(prefix, address string, add func(string, ...any)) {
+	if address == "" {
+		add("%s: 不能为空，格式为 host:port（例如 10.0.0.11:22）", prefix)
+		return
+	}
+
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		add("%s: %q 不是合法的 host:port，端口必须显式写出（例如 10.0.0.11:22）", prefix, address)
+		return
+	}
+	if host == "" {
+		add("%s: %q 缺少主机名或 IP", prefix, address)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		add("%s: %q 的端口必须是 1-65535 之间的数字", prefix, address)
+	}
+}
+
+// validateProject 校验 compose 项目定位信息。
+func validateProject(prefix string, p Project, add func(string, ...any)) {
+	if p.Name == "" {
+		add("%s.project.name: 不能为空", prefix)
+	}
+	if p.ComposeFile == "" {
+		add("%s.project.compose_file: 不能为空", prefix)
+	} else if !filepath.IsAbs(p.ComposeFile) {
+		add("%s.project.compose_file: 必须是绝对路径，实际 %q", prefix, p.ComposeFile)
+	}
+	if p.EnvFile != "" && !filepath.IsAbs(p.EnvFile) {
+		add("%s.project.env_file: 必须是绝对路径，实际 %q", prefix, p.EnvFile)
+	}
+}
+
 // validateSchedule 只检查非空。
 // OnCalendar 的语法校验交给 doctor 调用 systemd-analyze 完成——
 // 那里有 systemd 本身作为权威，比自己写一个近似的解析器可靠。
-func (c *Config) validateSchedule(add func(string, ...any)) {
-	if strings.TrimSpace(c.Schedule.OnCalendar) == "" {
-		add("schedule.on_calendar: 不能为空")
+func validateSchedule(prefix string, s Schedule, add func(string, ...any)) {
+	if strings.TrimSpace(s.OnCalendar) == "" {
+		add("%s.on_calendar: 不能为空", prefix)
 	}
 }
 
 // validateRetention 拒绝负数和「全为 0」。
-func (c *Config) validateRetention(add func(string, ...any)) {
-	if c.Retention.Daily < 0 || c.Retention.Weekly < 0 || c.Retention.Monthly < 0 {
-		add("retention: 保留份数不能为负")
+func validateRetention(prefix string, r Retention, add func(string, ...any)) {
+	if r.Daily < 0 || r.Weekly < 0 || r.Monthly < 0 {
+		add("%s: 保留份数不能为负", prefix)
 	}
-	if c.Retention.Daily == 0 && c.Retention.Weekly == 0 && c.Retention.Monthly == 0 {
-		add("retention: 三项不能同时为 0，否则清理时会删光所有快照")
+	if r.Daily == 0 && r.Weekly == 0 && r.Monthly == 0 {
+		add("%s: 三项不能同时为 0，否则清理时会删光所有快照", prefix)
 	}
 }
 
-// validateTargets 校验每个备份目标，并检查 ID 唯一性。
-func (c *Config) validateTargets(add func(string, ...any)) {
-	if len(c.Targets) == 0 {
-		add("targets: 至少需要一个备份目标")
+// validateTargets 校验一台机器上的备份目标，并检查 ID 唯一性。
+//
+// 唯一性是每台机器各自判断的：两台机器上有同名 volume 完全正常，
+// 它们在仓库里靠 host tag 区分。
+func validateTargets(prefix string, targets []Target, add func(string, ...any)) {
+	if len(targets) == 0 {
+		add("%s.targets: 至少需要一个备份目标", prefix)
 		return
 	}
 
-	seen := make(map[string]int, len(c.Targets))
-	for i, t := range c.Targets {
-		prefix := fmt.Sprintf("targets[%d]", i)
+	seen := make(map[string]int, len(targets))
+	for i, t := range targets {
+		itemPrefix := fmt.Sprintf("%s.targets[%d]", prefix, i)
 
 		allowed, ok := allowedFields[t.Type]
 		if !ok {
-			add("%s.type: 未知类型 %q", prefix, t.Type)
+			add("%s.type: 未知类型 %q", itemPrefix, t.Type)
 			continue
 		}
 
 		// 拒绝填在错误类型下的字段。静默忽略等于让用户以为配置生效了。
 		for _, f := range t.filledFields() {
 			if !allowed[f] {
-				add("%s: 字段 %q 不适用于类型 %q", prefix, f, t.Type)
+				add("%s: 字段 %q 不适用于类型 %q", itemPrefix, f, t.Type)
 			}
 		}
 
-		validateTargetRequired(prefix, t, add)
+		validateTargetRequired(itemPrefix, t, add)
 
 		id := t.ID()
 		if prev, dup := seen[id]; dup {
-			add("%s: 与 targets[%d] 重复（同一个 %q）", prefix, prev, id)
+			add("%s: 与 %s.targets[%d] 重复（同一个 %q）", itemPrefix, prefix, prev, id)
 			continue
 		}
 		seen[id] = i
