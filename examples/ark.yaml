@@ -46,17 +46,24 @@ hosts:
       compose_file: /root/ark-hub/docker-compose.yml
       project_name: ark-hub
     targets:
-      # hub 的状态库：任务记录、快照索引、各机器最近一次备份的结果。
+      # hub 的状态库必须单独作为一个 target。ark 会通过 SQLite online backup
+      # 导出可独立恢复的单文件副本，绝不会在 WAL 运行期间直接 tar ark.db。
       - type: files
         name: ark-state
         paths:
           - /var/lib/ark/ark.db
-      # 清单和 systemd unit。注意这里不含 repo.pass 和各机 SSH 私钥——
-      # 把开锁的钥匙和锁着的箱子放在同一个地方没有意义。
+      # 清单、known_hosts 和明确列出的 hub 服务配置。known_hosts 是服务器公钥，
+      # 可随清单备份；repo.pass、repo.env、SSH 私钥和其它解密/登录密钥绝不能加入。
+      # 不要把整个 /etc/ark 作为路径，否则会把凭证一起收入仓库。
       - type: files
         name: ark-config
         paths:
           - /etc/ark/ark.yaml
+          - /etc/ark/ssh/known_hosts
+          - /root/ark-hub/docker-compose.yml
+      # 其它 hub 服务数据也要逐项显式配置；下面只是示例卷名，部署时按实际名称修改。
+      - type: volume
+        name: ark_hub_data
       - type: image_digest
         services:
           - ark-hub

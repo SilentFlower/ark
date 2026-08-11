@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"P2-7 hub 自备份、对象锁和验收来源。"}
+{"file":"docs/design.md","reason":"ADR-006、012 的对象锁、离线密钥与 hub 重建边界。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"SQLite WAL 在线一致性备份硬约束。"}
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"hub 清单路径与密钥字段边界。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"doctor 凭证与外部系统检查规则。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"对象锁提示和凭证不进入输出。"}

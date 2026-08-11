@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"核对 hub targets、对象锁与真实验收边界。"}
+{"file":"docs/design.md","reason":"审计 ADR-006/012 的完整落实。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"审计 WAL 导出一致性和恢复语义。"}
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"审计示例清单严格性和密钥排除。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计 doctor/output 无敏感内容。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行并发 SQLite、CLI 和全仓检查。"}

@@ -38,6 +38,7 @@ type backupTestHarness struct {
 	finishErr       error
 	forgetCalls     []string
 	nowCalls        int
+	sourceFilenames []string
 }
 
 type backupEventCloser struct {
@@ -178,11 +179,15 @@ func (h *backupTestHarness) dependencies() backupDependencies {
 				Host:          host.Host,
 				TargetID:      target.ID(),
 				TargetType:    target.Type,
-				StdinFilename: plannedStdinFilename(host, target),
+				StdinFilename: plannedStdinFilename(host, target, "/state/ark.db"),
 				Reader:        io.NopCloser(strings.NewReader("data")),
 				Wait:          func() error { return nil },
 				ImageDigests:  map[string]string{"api": "repo/api@sha256:111"},
 			}, nil
+		},
+		exportState: func(context.Context, *store.Store) (io.ReadCloser, error) {
+			h.events = append(h.events, "state:export")
+			return io.NopCloser(strings.NewReader("sqlite-data")), nil
 		},
 		backupTarget: func(
 			_ context.Context,
@@ -193,6 +198,7 @@ func (h *backupTestHarness) dependencies() backupDependencies {
 		) (backup.TargetResult, error) {
 			key := source.Host + ":" + source.TargetID
 			h.events = append(h.events, "backup:"+key)
+			h.sourceFilenames = append(h.sourceFilenames, source.StdinFilename)
 			_ = source.Reader.Close()
 			_ = source.Wait()
 			status := h.targetStatuses[key]
@@ -375,6 +381,7 @@ func TestBackupCommand_DryRun只加载清单并输出纯JSON(t *testing.T) {
 			harness.events = append(harness.events, "load")
 			return harness.cfg, nil
 		},
+		statePath: "/state/ark.db",
 	}
 	configPath := "/etc/ark/ark.yaml"
 	cmd := newBackupCmdWithDependencies(&configPath, dependencies)
@@ -400,6 +407,82 @@ func TestBackupCommand_DryRun只加载清单并输出纯JSON(t *testing.T) {
 	}
 	if strings.Contains(output.String(), `"Daily"`) || !strings.Contains(output.String(), `"daily": 3`) {
 		t.Fatalf("retention JSON 字段不稳定: %s", output.String())
+	}
+}
+
+func TestRunBackup_Hub状态库使用在线导出而非普通Tar(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		executeErrors:  map[string]error{},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+	}
+	harness.cfg.Hosts[0].Targets = []config.Target{{
+		Type: config.TargetFiles, Name: "ark-state", Paths: []string{"/state/../state/ark.db"},
+	}}
+	hosts, err := selectBackupHosts(harness.cfg, "hub-01")
+	if err != nil {
+		t.Fatalf("selectBackupHosts 失败: %v", err)
+	}
+
+	summary, err := runBackup(context.Background(), harness.cfg, hosts, backupCommandOptions{}, harness.dependencies())
+	if err != nil {
+		t.Fatalf("runBackup 失败: %v", err)
+	}
+	if summary.Status != store.StatusOK {
+		t.Fatalf("summary 状态 = %s，期望 ok", summary.Status)
+	}
+	if !containsEvent(harness.events, "state:export") {
+		t.Fatalf("未调用状态库在线导出: %#v", harness.events)
+	}
+	if containsEvent(harness.events, "execute:hub-01:files/ark-state") {
+		t.Fatalf("状态库错误走了普通 files tar: %#v", harness.events)
+	}
+	if !reflect.DeepEqual(harness.sourceFilenames, []string{"hub-01/files/ark-state.db"}) {
+		t.Fatalf("状态库稳定文件名 = %#v", harness.sourceFilenames)
+	}
+}
+
+func TestBackupCommand_Hub状态库混合路径在加锁前拒绝(t *testing.T) {
+	harness := &backupTestHarness{cfg: testBackupConfig()}
+	harness.cfg.Hosts[0].Targets = []config.Target{{
+		Type:  config.TargetFiles,
+		Name:  "mixed",
+		Paths: []string{"/state/ark.db", "/etc/ark/ark.yaml"},
+	}}
+	dependencies := backupDependencies{
+		loadConfig: func(string) (*config.Config, error) {
+			harness.events = append(harness.events, "load")
+			return harness.cfg, nil
+		},
+		statePath: "/state/ark.db",
+	}
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, dependencies)
+	cmd.SetArgs([]string{"--dry-run", "--host", "hub-01"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "必须作为独立 files target") {
+		t.Fatalf("混合状态库 target 错误 = %v", err)
+	}
+	if !reflect.DeepEqual(harness.events, []string{"load"}) {
+		t.Fatalf("拒绝混合 target 前产生副作用: %#v", harness.events)
+	}
+}
+
+func TestStateDatabaseTarget_仅保护本地精确路径(t *testing.T) {
+	target := config.Target{Type: config.TargetFiles, Name: "ark-state", Paths: []string{"/var/lib/ark/../ark/ark.db"}}
+	if !isStateDatabaseTarget(config.Host{Host: "hub", Local: true}, target, store.DefaultPath) {
+		t.Fatal("清理后的本地状态库路径应被识别")
+	}
+	if isStateDatabaseTarget(config.Host{Host: "remote"}, target, store.DefaultPath) {
+		t.Fatal("远程同名路径不应被当作 hub 状态库")
+	}
+	other := target
+	other.Paths = []string{"/var/lib/ark/other.db"}
+	if isStateDatabaseTarget(config.Host{Host: "hub", Local: true}, other, store.DefaultPath) {
+		t.Fatal("其它本地数据库不应被误识别")
 	}
 }
 

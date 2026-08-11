@@ -122,7 +122,17 @@ func RunLocal(ctx context.Context, cfg *config.Config) *Report {
 	}
 
 	checkRepoAccess(ctx, r, cfg, envValues, resticOK && passwordOK && envOK)
+	checkObjectLock(r)
 	return r
+}
+
+// checkObjectLock 把 provider-neutral 无法自动核验的防删除前提保持为显式告警。
+func checkObjectLock(r *Report) {
+	r.add(
+		"repo.object_lock",
+		StatusWarn,
+		"无法自动核验对象锁；请在对象存储控制台确认已启用，并与 restic 长期保留策略对齐",
+	)
 }
 
 // checkBinary 检查外部命令是否存在且可执行，返回是否可用。

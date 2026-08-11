@@ -116,6 +116,38 @@ func TestDoctorCommand_AllJSON合并并保持失败语义(t *testing.T) {
 	}
 }
 
+func TestDoctorCommand_ObjectLockWarnJSON不阻断(t *testing.T) {
+	configPath := writeValidManifest(t)
+	cmd := newDoctorCmdWithRunners(
+		&configPath,
+		func(context.Context, *config.Config) *doctor.Report {
+			return &doctor.Report{Checks: []doctor.Check{{
+				Name: "repo.object_lock", Status: doctor.StatusWarn, Detail: "请在控制台人工确认",
+			}}}
+		},
+		func(context.Context, *config.Config, *config.Host) *doctor.Report {
+			t.Fatal("默认 doctor 不应执行 host 检查")
+			return nil
+		},
+	)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("对象锁 warn 不应阻断 doctor: %v", err)
+	}
+	var report doctor.Report
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatalf("对象锁 JSON 输出无效: %v\n%s", err, output.String())
+	}
+	if len(report.Checks) != 1 || report.Checks[0].Status != doctor.StatusWarn {
+		t.Fatalf("对象锁 JSON 报告 = %#v", report.Checks)
+	}
+}
+
 func TestDoctorCommand_Host与All互斥(t *testing.T) {
 	configPath := writeValidManifest(t)
 	called := false

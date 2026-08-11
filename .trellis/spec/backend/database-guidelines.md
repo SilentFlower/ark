@@ -28,8 +28,8 @@ ark 有两条必须隔离的数据库路径：
   `*sql.DB`、拼 SQL 或依赖 SQLite 实现细节。
 - `internal/store` 只负责连接、迁移、字段校验与 SQL；不得反向依赖
   config、doctor、backup 等业务包。
-- 生产默认路径是 `/var/lib/ark/ark.db`。在线一致性备份属于 P2-3，
-  不在状态库 CRUD 中临时实现。
+- 生产默认路径是 `/var/lib/ark/ark.db`。在线一致性导出属于 `Store` 的公开边界，
+  但不得向调用方暴露 `*sql.DB` 或 SQLite driver connection。
 
 ### 2. Signatures
 
@@ -52,6 +52,7 @@ func (s *Store) LastSuccessfulTargetBytes(
 ) (bytes int64, found bool, err error)
 func (s *Store) RecordDoctorReport(ctx context.Context, report DoctorReport) error
 func (s *Store) RecordVerification(ctx context.Context, verification Verification) error
+func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
 ```
 
 新增公开 API 时必须补齐 Javadoc 风格注释、输入校验、错误链与针对性测试。
@@ -80,7 +81,14 @@ func (s *Store) RecordVerification(ctx context.Context, verification Verificatio
 - 调用方写入 `error`、`report_json`、`detail_json` 前必须完成脱敏；
   状态库负责格式与约束校验，不负责猜测或清洗业务秘密。
 - WAL 模式下 `ark.db-wal` 和 `ark.db-shm` 是持久化协议的一部分。
-  禁止在运行中只复制 `ark.db` 主文件；P2-3 必须使用 SQLite 在线备份语义。
+  禁止在运行中只复制 `ark.db` 主文件；必须使用 `ExportSnapshot` 的 SQLite
+  Online Backup 语义。
+- `ExportSnapshot` 在同一物理连接上先建立 WAL 读快照，再通过 modernc v1.36.1
+  的 `NewBackup` / `Step` / `Finish` 分批复制。固定读快照防止持续 writer 让 backup
+  反复从头开始；WAL reader 不能长期阻塞 ark writer 或未来 ark-hub reader。
+- 导出临时目录固定 `0700`、文件固定 `0600`。副本必须归一化为 DELETE journal
+  单文件，并在返回 reader 前通过 `integrity_check` 与 `foreign_key_check`。
+  reader 的 `Close` 负责删除整个临时目录，关闭或清理错误必须返回给调用方。
 
 ### 4. Validation & Error Matrix
 
@@ -96,15 +104,22 @@ func (s *Store) RecordVerification(ctx context.Context, verification Verificatio
 | 写锁竞争超过 5 秒 | 返回保留 SQLite 错误链的失败 |
 | context 更早取消或超时 | 立即返回保留 context 与 SQLite 错误链的失败 |
 | `Close` 或连接恢复失败 | 返回错误，不静默吞掉资源清理失败 |
+| 导出期间源库持续写入 | 固定 WAL 读快照并完成一致副本，writer 仍可提交 |
+| Online Backup 返回 busy/locked | 25ms 间隔重试，单次无进展最多 5 秒，context 优先 |
+| 导出副本 integrity/foreign key 失败 | 不返回 reader，删除临时目录并返回阶段错误 |
+| 调用方关闭导出 reader | 关闭文件并删除临时目录；任一清理错误可见 |
 
 ### 5. Good / Base / Bad Cases
 
 - **Good**：两个 `Store` 实例打开同一文件，WAL 下读写并行；短暂写锁释放后
   操作成功，连接归还后 `busy_timeout` 仍是 5000ms。
+- **Good**：writer 持续更新 WAL 时导出副本，副本可独立只读打开、包含导出前已提交数据，
+  且不依赖 `-wal` / `-shm`。
 - **Base**：没有历史 target 记录时，调用方通过 `found=false` 展示“暂无基线”，
   而不是把它当作数据库错误。
 - **Bad**：向业务层暴露 `*sql.DB`、引入 ORM、把连接池限制为单连接、
-  运行中只复制 `ark.db`，或因为已有 SQLite 就用 Go 驱动直连被备份的 PostgreSQL。
+  运行中只复制 `ark.db`、把 WAL/SHM 拼成恢复材料，或因为已有 SQLite 就用 Go 驱动
+  直连被备份的 PostgreSQL。
 
 ### 6. Tests Required
 
@@ -121,7 +136,8 @@ go mod verify
 
 测试必须覆盖目录/文件权限、四张表与索引、每条物理连接的 PRAGMA、重复打开、
 高版本拒绝、迁移回滚、并发首次迁移、CRUD 与历史查询、外键及级联、非法输入、
-WAL 写期间读取、锁等待中的 context 取消，以及操作后连接配置恢复。
+WAL 写期间读取、锁等待中的 context 取消、操作后连接配置恢复，以及 Online Backup 的
+并发 writer、一致性/外键校验、0700/0600 权限、取消/失败清理、独立单文件恢复。
 
 ### 7. Wrong vs Correct
 
@@ -139,6 +155,18 @@ if err != nil {
 if err := state.Close(); err != nil {
     return err
 }
+```
+
+```go
+// 错误：运行中的 WAL 数据库只复制主文件，可能漏掉已提交页。
+reader, err := os.Open(store.DefaultPath)
+
+// 正确：让 Store 固定 WAL 读快照并返回受控的单文件导出流。
+reader, err := state.ExportSnapshot(ctx)
+if err != nil {
+    return err
+}
+defer reader.Close()
 ```
 
 上面的正确示例只适用于 ark 自身状态。备份 PostgreSQL、Redis 等业务数据库时，

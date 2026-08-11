@@ -133,6 +133,52 @@ func TestLoadAndValidate_Valid(t *testing.T) {
 	}
 }
 
+func TestExampleManifest_Hub自备份明确排除密钥(t *testing.T) {
+	examplePath := filepath.Join("..", "..", "examples", "ark.yaml")
+	cfg, err := LoadAndValidate(examplePath)
+	if err != nil {
+		t.Fatalf("示例清单校验失败: %v", err)
+	}
+	hub := hostByName(t, cfg, "hub-01")
+
+	paths := make(map[string]bool)
+	var stateTarget *Target
+	for i := range hub.Targets {
+		target := &hub.Targets[i]
+		for _, path := range target.Paths {
+			paths[path] = true
+		}
+		if target.Type == TargetFiles && target.Name == "ark-state" {
+			stateTarget = target
+		}
+	}
+	for _, required := range []string{
+		"/etc/ark/ark.yaml",
+		"/etc/ark/ssh/known_hosts",
+		"/root/ark-hub/docker-compose.yml",
+		"/var/lib/ark/ark.db",
+	} {
+		if !paths[required] {
+			t.Errorf("示例 hub targets 缺少 %q", required)
+		}
+	}
+	if stateTarget == nil || len(stateTarget.Paths) != 1 || stateTarget.Paths[0] != "/var/lib/ark/ark.db" {
+		t.Fatalf("状态库必须是独立 target，实际 %#v", stateTarget)
+	}
+
+	forbidden := []string{cfg.Repo.PasswordFile, cfg.Repo.EnvFile, "/etc/ark"}
+	for i := range cfg.Hosts {
+		if cfg.Hosts[i].SSH != nil {
+			forbidden = append(forbidden, cfg.Hosts[i].SSH.IdentityFile)
+		}
+	}
+	for _, path := range forbidden {
+		if paths[path] {
+			t.Errorf("示例 hub targets 不得包含敏感或宽泛路径 %q", path)
+		}
+	}
+}
+
 // TestLoad_AppliesDefaults 确认只写必填字段时全局默认值会被补上。
 func TestLoad_AppliesDefaults(t *testing.T) {
 	minimal := `

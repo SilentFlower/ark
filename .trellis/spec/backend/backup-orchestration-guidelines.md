@@ -12,6 +12,7 @@
 
 - 修改 `ark backup` 的参数、执行顺序、状态或退出语义；
 - 修改 config、doctor、Runner、restic、manifest、store 的编排连接；
+- 修改 hub 本地状态库 target 的识别、在线导出或对象锁 doctor 提示；
 - 修改全局 flock、保留策略或 prune 时机；
 - 修改 `ark install`、service/timer 模板、unit 校验、写入或陈旧 timer 回收。
 
@@ -39,6 +40,14 @@ func Install(ctx context.Context, cfg *config.Config, options systemd.InstallOpt
 /etc/systemd/system
 ```
 
+hub 状态库 target 的稳定输入输出：
+
+```text
+files target path: /var/lib/ark/ark.db
+restic stdin filename: <host>/files/<target-name>.db
+doctor check: repo.object_lock = warn
+```
+
 ### 3. Contracts
 
 非 dry-run 状态机顺序固定为：
@@ -54,10 +63,17 @@ load/validate -> select host -> nonblocking flock -> local doctor
 - `--dry-run` 只读取并静态校验 `ark.yaml`，输出 host、target、稳定 filename、tags、
   retention 和 manifest 信息；不得获取锁、运行 doctor/SSH/restic、打开状态库或写 unit。
 - `--host` 在获取锁前验证，只保留指定 host；未知 host 是工具错误。
+- 仅 `local: true` host 的 `files` target 在清理后的绝对路径精确匹配
+  `/var/lib/ark/ark.db` 时调用 `Store.ExportSnapshot`，不得走普通 tar。
+  状态库必须独占一个 target；与其它路径混合时在获取锁前拒绝。
+- 状态库导出仍走 `BackupTarget` 的 reader / Wait / Close 完整性链，稳定 filename 使用
+  `.db`；其它 files、volume 和数据库 target 的流式实现不得因此改成落盘模式。
 - `/run/ark.lock` 使用 `LOCK_EX|LOCK_NB`。冲突立即返回非零，不等待；全量 service、
   per-host service 和人工命令都通过同一 CLI 路径共享该锁。
 - 未指定 `--skip-doctor` 时，local fail 在建库和创建快照前中止；local/host warn
   进入整体 warn。host fail 为该 host 每个 target 写 fail/skipped 结果并继续下一 host。
+- `RunLocal` 固定输出 `repo.object_lock=warn`，说明 provider-neutral 条件下只能人工在
+  控制台核对对象锁与长期保留期。该检查不读取或输出仓库凭证，也不能伪装成 ok。
 - target 启动失败由 CLI 写合成的 fail `RunTarget`；进入 `BackupTarget` 后由完整性层
   写真实结果。调用 context 已取消时，合成结果与 FinishRun 使用最多 10 秒的
   `context.WithoutCancel` 收尾，失败事实不能被取消抹掉。
@@ -93,6 +109,10 @@ systemd 合同：
 | flock 冲突 | 立即非零，无 doctor/store/repo 调用 |
 | local doctor fail | 创建 run/快照前中止 |
 | local/host doctor warn | 继续执行，最终至少为 warn |
+| hub 状态库独占 files target | 使用 Online Backup，stdin filename 以 `.db` 结尾 |
+| hub 状态库与其它 path 混在同一 target | 获取锁前 fail closed，不执行 doctor/store/restic |
+| 远程 host 恰有同名路径 | 仍按普通远程 files target 处理，不误用 hub store |
+| 对象锁无法 provider-neutral 核验 | `repo.object_lock` 返回 warn，不阻断 doctor/backup |
 | host doctor fail | 该 host target 全部记录 fail/skipped，继续后续 host |
 | target Execute/BackupTarget fail | 记录 fail，继续同 host 后续 target |
 | manifest 保存失败 | run fail，不执行 forget/prune，target 快照保留 |
@@ -109,10 +129,14 @@ systemd 合同：
   manifest retention 完成后只 prune 一次，run/JSON/store 都是 warn。
 - **Base**：`ark backup --host web-01 --dry-run --json` 输出两个 target 的稳定路径和
   retention，不创建 `/run/ark.lock`，也不读取 repo env/password。
+- **Base**：hub 状态库 target 输出 `hub-01/files/ark-state.db`，而远程同名路径仍输出
+  普通 files tar；识别不跟随符号链接，也不靠 target name 猜测。
 - **Bad**：web-01 target 失败后仍对 web-01 执行 retention，可能在没有新可用备份时
   删除旧恢复点。
 - **Bad**：install 看到用户自建的同名 timer 后直接 rename 覆盖，或跟随 symlink
   读取并在回滚时替换成普通文件。
+- **Bad**：把 `/var/lib/ark/ark.db` 和 `/etc/ark/ark.yaml` 放进同一个 files target，
+  让状态库退回普通 tar，得到缺 WAL 页的“成功”坏备份。
 
 ### 6. Tests Required
 
@@ -125,6 +149,9 @@ systemd 合同：
 - `--host`、`--skip-doctor`、未知 host、dry-run 零副作用和 snake_case JSON；
 - flock 冲突立即失败、释放后可重取；取消后的合成结果使用收尾 context；
 - partial 输出后错误可被 `errors.Is(err, errBackupFailed)` 识别。
+- hub 状态库精确路径走 `exportState` 而不调用普通 `executeTarget`，filename 稳定为 `.db`；
+- 混合状态库路径在加锁前拒绝，远程同名路径不误判；
+- doctor 的 `repo.object_lock` 在人类和 JSON 输出中都是 warn，且 detail 不含凭证。
 
 `internal/systemd/unit_test.go` 至少覆盖：
 
@@ -165,3 +192,21 @@ err = errors.Join(err, repo.Prune(ctx))
 
 target 全部结束并成功写入 manifest 后，先按分组标记删除，最后只 prune 一次；失败 host
 不进入 `successfulHosts`。
+
+#### Wrong
+
+```go
+source, err := backup.Execute(ctx, host, target, runner) // 本地 ark.db 被 tar
+```
+
+#### Correct
+
+```go
+if isStateDatabaseTarget(host, target, store.DefaultPath) {
+    reader, err := state.ExportSnapshot(ctx)
+    // 构造稳定 .db source，后续仍交给 BackupTarget。
+}
+```
+
+状态库识别必须同时依赖 local host、files 类型、单一路径和清理后的绝对路径；只看文件名
+或 target name 会误伤远程机器，只看 `paths` 包含关系会放过混合 tar。

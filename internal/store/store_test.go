@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -444,6 +445,151 @@ func TestStore_WALAllowsReadDuringWrite(t *testing.T) {
 	}
 }
 
+func TestStore_ExportSnapshot_并发WAL写入时保持一致且自动清理(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	source := openTestStore(t, path)
+	writer := openTestStore(t, path)
+	now := time.Date(2026, 8, 12, 4, 17, 0, 0, time.UTC)
+	createRun(t, source, Run{
+		ID: "committed-run", Status: StatusRunning, StartedAt: now, ArkVersion: "dev",
+	})
+	if _, err := source.db.Exec(`
+		CREATE TABLE export_payload (id INTEGER PRIMARY KEY, content TEXT NOT NULL);
+		WITH RECURSIVE sequence(value) AS (
+			SELECT 1
+			UNION ALL
+			SELECT value + 1 FROM sequence WHERE value < 1024
+		)
+		INSERT INTO export_payload (content)
+		SELECT printf('%.*c', 4096, 'x') FROM sequence;
+	`); err != nil {
+		t.Fatalf("准备导出数据失败: %v", err)
+	}
+
+	stop := make(chan struct{})
+	started := make(chan struct{})
+	writerDone := make(chan struct{})
+	writerErrors := make(chan error, 1)
+	go func() {
+		defer close(writerDone)
+		first := true
+		for index := 0; ; index++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := writer.db.Exec(
+				"UPDATE runs SET error = ? WHERE id = 'committed-run'", fmt.Sprintf("write-%d", index),
+			); err != nil {
+				writerErrors <- err
+				return
+			}
+			if first {
+				close(started)
+				first = false
+			}
+		}
+	}()
+	<-started
+
+	exportCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	reader, err := source.ExportSnapshot(exportCtx)
+	cancel()
+	close(stop)
+	<-writerDone
+	if err != nil {
+		t.Fatalf("在线导出状态库失败: %v", err)
+	}
+	select {
+	case err := <-writerErrors:
+		t.Fatalf("并发 writer 失败: %v", err)
+	default:
+	}
+
+	exported, ok := reader.(*exportReadCloser)
+	if !ok {
+		t.Fatalf("导出 reader 类型 = %T，期望 *exportReadCloser", reader)
+	}
+	directoryInfo, err := os.Stat(exported.directory)
+	if err != nil {
+		t.Fatalf("读取导出目录权限失败: %v", err)
+	}
+	if got := directoryInfo.Mode().Perm(); got != 0o700 {
+		t.Errorf("导出目录权限 = %o，期望 700", got)
+	}
+	fileInfo, err := exported.file.Stat()
+	if err != nil {
+		t.Fatalf("读取导出文件权限失败: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("导出文件权限 = %o，期望 600", got)
+	}
+
+	copyDB, err := sql.Open("sqlite", readOnlyDataSourceName(exported.file.Name()))
+	if err != nil {
+		t.Fatalf("独立打开导出数据库失败: %v", err)
+	}
+	var integrity string
+	if err := copyDB.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+		t.Fatalf("执行 integrity_check 失败: %v", err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("integrity_check = %q，期望 ok", integrity)
+	}
+	var runCount int
+	if err := copyDB.QueryRow("SELECT COUNT(*) FROM runs WHERE id = 'committed-run'").Scan(&runCount); err != nil {
+		t.Fatalf("查询导出数据库已提交数据失败: %v", err)
+	}
+	if runCount != 1 {
+		t.Fatalf("导出数据库已提交 run 数量 = %d，期望 1", runCount)
+	}
+	if err := copyDB.Close(); err != nil {
+		t.Fatalf("关闭独立导出数据库失败: %v", err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(exported.file.Name() + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("导出数据库不应依赖 %s 文件: %v", suffix, err)
+		}
+	}
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		t.Fatalf("读取导出数据流失败: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("关闭导出数据流失败: %v", err)
+	}
+	if _, err := os.Stat(exported.directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("关闭后导出目录仍存在: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("重复关闭导出数据流失败: %v", err)
+	}
+}
+
+func TestStore_ExportSnapshot_取消和导出失败不残留临时文件(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(t.TempDir(), "ark.db")
+	state, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("打开状态库失败: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := state.exportSnapshot(ctx, root); !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消导出错误 = %v，期望保留 context.Canceled", err)
+	}
+	assertDirectoryEmpty(t, root)
+
+	if err := state.Close(); err != nil {
+		t.Fatalf("关闭状态库失败: %v", err)
+	}
+	if _, err := state.exportSnapshot(context.Background(), root); err == nil {
+		t.Fatal("关闭状态库后导出应失败")
+	}
+	assertDirectoryEmpty(t, root)
+}
+
 func TestStore_ContextCancellationStopsBusyWait(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ark.db")
 	locker := openTestStore(t, path)
@@ -549,6 +695,17 @@ func createRun(t *testing.T, store *Store, run Run) {
 	t.Helper()
 	if err := store.CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("创建运行记录 %q 失败: %v", run.ID, err)
+	}
+}
+
+func assertDirectoryEmpty(t *testing.T, path string) {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatalf("读取目录 %s 失败: %v", path, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("目录 %s 仍有残留: %#v", path, entries)
 	}
 }
 

@@ -387,7 +387,8 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
 
 ### P2-7 hub 自备份与对象锁
 
-**改动文件**：`examples/ark.yaml`、`docs/` 运维说明
+**改动文件**：`internal/store`、`internal/cli`、`internal/doctor`、
+`examples/ark.yaml`、`docs/operations.md`
 
 - 清单里的 `local: true` 条目实际配起来：备份 `/etc/ark/ark.yaml`、
   `/var/lib/ark/ark.db`，以及 hub 上其它服务的数据（dnsmgr 的 MySQL 等）。
@@ -396,6 +397,8 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
 - 在对象存储侧开启对象锁 / 仅追加保留，保留期与月备保留时长对齐。
   这一步是控制台操作，但**必须写进文档并在 `doctor` 的 hub 本地检查里加一条提示性检查**
   （能否检测到桶的保留策略取决于后端 API，取不到就输出 warn 提醒人工确认）。
+- SQLite 状态库必须通过 online backup 导出一致的单文件副本；禁止直接复制运行中的
+  `ark.db`，也禁止把旧 `-wal` / `-shm` 当作恢复材料。
 
 **验收**：用 hub 上那把有写权限的凭证尝试删除一个保留期内的对象，必须失败。
 

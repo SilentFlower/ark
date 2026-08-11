@@ -97,6 +97,16 @@ fi
 		t.Fatalf("RunLocal 出现失败检查: %#v", report.Checks)
 	}
 	assertCheckStatus(t, report, "repo.access", StatusOK)
+	objectLock := findCheck(t, report, "repo.object_lock")
+	if objectLock.Status != StatusWarn || !strings.Contains(objectLock.Detail, "控制台") ||
+		!strings.Contains(objectLock.Detail, "保留策略") {
+		t.Fatalf("对象锁检查 = %#v，期望稳定人工确认 warn", objectLock)
+	}
+	for _, secret := range []string{cfg.Repo.URL, passwordFile, "secret value"} {
+		if strings.Contains(objectLock.Detail, secret) {
+			t.Fatalf("对象锁告警泄漏敏感配置 %q: %s", secret, objectLock.Detail)
+		}
+	}
 	assertCheckStatus(t, report, "web-01 / ssh.identity_file", StatusOK)
 	assertCheckStatus(t, report, "web-01 / schedule.on_calendar", StatusOK)
 
@@ -110,6 +120,19 @@ fi
 	}
 	if _, err := os.Stat(leakPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("对象存储凭证泄漏给了非 restic 子进程: %v", err)
+	}
+}
+
+func TestCheckObjectLock_始终Warn且不伪装成已验证(t *testing.T) {
+	report := &Report{}
+	checkObjectLock(report)
+
+	check := findCheck(t, report, "repo.object_lock")
+	if check.Status != StatusWarn {
+		t.Fatalf("对象锁检查状态 = %s，期望 warn", check.Status)
+	}
+	if strings.Contains(check.Detail, "已启用") && !strings.Contains(check.Detail, "确认已启用") {
+		t.Fatalf("对象锁告警不应伪装成已验证: %s", check.Detail)
 	}
 }
 

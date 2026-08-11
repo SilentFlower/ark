@@ -266,12 +266,17 @@ hub 持有全部清单、状态库和密钥。**hub 的磁盘挂掉比任何一�
 备份 `/etc/ark/ark.yaml` 和 `/var/lib/ark/ark.db`，
 以及 hub 上其它服务的数据（例如 dnsmgr 的 MySQL）。
 
+状态库运行在 WAL 模式，不能只复制主文件。`ark backup` 对本地状态库路径做精确识别，
+通过 SQLite online backup 生成可独立恢复的单文件副本；恢复时只使用该副本，不拼接旧的
+`-wal` 或 `-shm`。其它 target 仍保持流式，不因此改成先落盘再上传。
+
 **但密钥不进备份。** SSH 私钥和 restic 密码不作为备份目标——
 把开锁的钥匙和锁着的箱子放在同一个地方没有意义。它们走离线介质。
 
 hub 的重建路径因此是：新机器 → 装 ark 和 restic → 从离线介质取回
 restic 密码和对象存储凭证 → `restic restore` 取回清单和状态库 →
 从离线介质取回 SSH 私钥 → 恢复完毕。这条路径必须在 P3 的实测中走一遍。
+具体运维清单、对象锁与定期人工验证见 `docs/operations.md`。
 
 ### ADR-013：ark 不做流量调度，与 dnsmgr 分进程协作
 

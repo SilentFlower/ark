@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -50,6 +51,7 @@ type backupDependencies struct {
 	ensureRepo      func(context.Context, *restic.Repo) error
 	newRunner       func(*config.Host) (sshexec.Runner, error)
 	executeTarget   func(context.Context, config.Host, config.Target, sshexec.Runner) (*backup.Result, error)
+	exportState     func(context.Context, *store.Store) (io.ReadCloser, error)
 	backupTarget    func(context.Context, string, *backup.Result, *restic.Repo, *store.Store) (backup.TargetResult, error)
 	saveManifest    func(context.Context, *restic.Repo, backup.Manifest) (restic.Snapshot, error)
 	forgetPolicy    func(context.Context, *restic.Repo, config.Retention, []string) error
@@ -125,7 +127,7 @@ func newBackupCmdWithDependencies(configPath *string, dependencies backupDepende
 				return err
 			}
 			if options.dryRun {
-				plan := buildBackupPlan(cfg, hosts)
+				plan := buildBackupPlan(cfg, hosts, dependencies.statePath)
 				return printBackupValue(cmd, options.asJSON, plan, printBackupPlan)
 			}
 
@@ -179,6 +181,9 @@ func defaultBackupDependencies() backupDependencies {
 		) (*backup.Result, error) {
 			return backup.Execute(ctx, host, target, runner)
 		},
+		exportState: func(ctx context.Context, state *store.Store) (io.ReadCloser, error) {
+			return state.ExportSnapshot(ctx)
+		},
 		backupTarget: backup.BackupTarget,
 		saveManifest: backup.SaveManifest,
 		forgetPolicy: func(
@@ -211,6 +216,9 @@ func loadBackupSelection(
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := validateStateDatabaseTargets(hosts, dependencies.statePath); err != nil {
+		return nil, nil, err
+	}
 	return cfg, hosts, nil
 }
 
@@ -222,6 +230,9 @@ func runBackup(
 	dependencies backupDependencies,
 ) (summary backupRunSummary, runErr error) {
 	if err := validateBackupDependencies(dependencies); err != nil {
+		return summary, err
+	}
+	if err := validateStateDatabaseTargets(hosts, dependencies.statePath); err != nil {
 		return summary, err
 	}
 	lock, err := dependencies.acquireLock(defaultBackupLockPath)
@@ -391,7 +402,7 @@ func runBackupHost(
 
 	hostFailed := false
 	for _, target := range host.Targets {
-		source, err := dependencies.executeTarget(ctx, *host, target, runner)
+		source, err := executeBackupSource(ctx, *host, target, runner, state, dependencies)
 		if err != nil {
 			hostFailed = true
 			result := backup.TargetResult{
@@ -548,6 +559,7 @@ func validateBackupDependencies(dependencies backupDependencies) error {
 		dependencies.finishRun == nil || dependencies.recordRunTarget == nil ||
 		dependencies.newRepo == nil || dependencies.ensureRepo == nil ||
 		dependencies.newRunner == nil || dependencies.executeTarget == nil ||
+		dependencies.exportState == nil ||
 		dependencies.backupTarget == nil || dependencies.saveManifest == nil ||
 		dependencies.forgetPolicy == nil || dependencies.prune == nil ||
 		dependencies.now == nil || dependencies.newRunID == nil ||
@@ -576,7 +588,7 @@ func selectBackupHosts(cfg *config.Config, hostName string) ([]*config.Host, err
 	return nil, fmt.Errorf("清单中不存在 host %q", hostName)
 }
 
-func buildBackupPlan(cfg *config.Config, hosts []*config.Host) backupPlan {
+func buildBackupPlan(cfg *config.Config, hosts []*config.Host, statePath string) backupPlan {
 	plan := backupPlan{
 		ConfigPath: cfg.Path(),
 		Hosts:      make([]backupPlanHost, 0, len(hosts)),
@@ -598,7 +610,7 @@ func buildBackupPlan(cfg *config.Config, hosts []*config.Host) backupPlan {
 			planHost.Targets = append(planHost.Targets, backupPlanTarget{
 				ID:       target.ID(),
 				Type:     target.Type,
-				Filename: plannedStdinFilename(*host, target),
+				Filename: plannedStdinFilename(*host, target, statePath),
 				Tags: []string{
 					"host:" + host.Host,
 					"target:" + target.ID(),
@@ -611,7 +623,7 @@ func buildBackupPlan(cfg *config.Config, hosts []*config.Host) backupPlan {
 	return plan
 }
 
-func plannedStdinFilename(host config.Host, target config.Target) string {
+func plannedStdinFilename(host config.Host, target config.Target, statePath string) string {
 	suffix := ".tar"
 	switch target.Type {
 	case config.TargetPostgres:
@@ -621,7 +633,77 @@ func plannedStdinFilename(host config.Host, target config.Target) string {
 	case config.TargetImageDigest:
 		suffix = ".json"
 	}
+	if isStateDatabaseTarget(host, target, statePath) {
+		suffix = ".db"
+	}
 	return host.Host + "/" + target.ID() + suffix
+}
+
+func executeBackupSource(
+	ctx context.Context,
+	host config.Host,
+	target config.Target,
+	runner sshexec.Runner,
+	state *store.Store,
+	dependencies backupDependencies,
+) (*backup.Result, error) {
+	if !isStateDatabaseTarget(host, target, dependencies.statePath) {
+		return dependencies.executeTarget(ctx, host, target, runner)
+	}
+
+	reader, err := dependencies.exportState(ctx, state)
+	if err != nil {
+		return nil, fmt.Errorf("在线导出 hub 状态库失败: %w", err)
+	}
+	return &backup.Result{
+		Host:          host.Host,
+		TargetID:      target.ID(),
+		TargetType:    target.Type,
+		StdinFilename: plannedStdinFilename(host, target, dependencies.statePath),
+		Reader:        reader,
+		Wait:          func() error { return nil },
+	}, nil
+}
+
+func validateStateDatabaseTargets(hosts []*config.Host, statePath string) error {
+	if strings.TrimSpace(statePath) == "" {
+		return fmt.Errorf("执行 backup 失败: 状态库路径不能为空")
+	}
+	for _, host := range hosts {
+		if host == nil || !host.Local {
+			continue
+		}
+		for _, target := range host.Targets {
+			matches := 0
+			for _, path := range target.Paths {
+				if sameCleanAbsolutePath(path, statePath) {
+					matches++
+				}
+			}
+			if matches > 0 && (target.Type != config.TargetFiles || len(target.Paths) != 1 || matches != 1) {
+				return fmt.Errorf(
+					"host %q 的状态库 %q 必须作为独立 files target 备份",
+					host.Host,
+					statePath,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func isStateDatabaseTarget(host config.Host, target config.Target, statePath string) bool {
+	return host.Local && target.Type == config.TargetFiles && len(target.Paths) == 1 &&
+		sameCleanAbsolutePath(target.Paths[0], statePath)
+}
+
+func sameCleanAbsolutePath(left, right string) bool {
+	leftAbsolute, leftErr := filepath.Abs(left)
+	rightAbsolute, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return filepath.Clean(leftAbsolute) == filepath.Clean(rightAbsolute)
 }
 
 func printBackupValue(
