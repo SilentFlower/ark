@@ -1,0 +1,68 @@
+{
+  "id": "p1-manifest-v2",
+  "name": "p1-manifest-v2",
+  "title": "P1-1 清单模型升级到多机（v2）",
+  "description": "把 ark.yaml 从单机模型改造为 hub 编排的多机模型（version: 2）：Config 顶层拆出 Repo/Defaults/Hosts，新增 Host 与 SSH 结构，指针区分默认值覆盖；同步适配 validate 命令输出与 examples/ark.yaml。对应 docs/roadmap.md P1-1 与 P1-4 的 validate 部分。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-11T09:08:38Z",
+      "contextKey": "claude_6f53cf11-9aa1-4295-b557-3e21e78626cc",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "baed8b19db86851560fe2a0e614422c40fbdcb72",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "baed8b19db86851560fe2a0e614422c40fbdcb72",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "7711cb20e4c43706cd30848ab92b8fafcdb3a8ae813753afa973d2a87d7da205"
+          }
+        ],
+        "fingerprint": "4e04152c9c3c1c4af53baeddf8da9508fde3b397d0d90e3fa7952d5f1633dbca"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-11T17:45:00+08:00",
+    "completedSteps": [
+      "清单模型升级到 v2（repo + defaults + hosts，新增 Host/SSH）",
+      "Load 改为两遍解析，v1 清单给出迁移提示",
+      "默认值继承改为指针 + ScheduleFor/RetentionFor 访问器",
+      "validate 输出改为逐 host 摘要",
+      "doctor 多机遍历过渡适配（远程检查记 warn）",
+      "examples/ark.yaml 重写为多机清单",
+      "config 测试整体重写，覆盖全部新增失败路径",
+      "README / design.md / roadmap.md 同步",
+      "新增 spec: backend/manifest-guidelines.md"
+    ],
+    "partialStep": null,
+    "nextStep": "P1-2 SSH 执行层 internal/sshexec/",
+    "notes": "doctor 远程检查待 P1-3；examples 用 files 备份 SQLite WAL 库 /var/lib/ark/ark.db 不含 -wal/-shm，P2-3 实现 files 执行器时须决定备份方式"
+  }
+}
