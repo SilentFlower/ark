@@ -10,24 +10,20 @@
 package doctor
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/envfile"
 )
 
 // commandTimeout 是单条探测命令的超时时间。
 // docker 或网络依赖异常时可能长时间无响应，不设超时会让整轮 doctor 卡死。
 const commandTimeout = 15 * time.Second
-
-var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Status 是单项检查的结果。
 type Status string
@@ -250,43 +246,7 @@ func checkRepoEnvFile(r *Report, path string) (map[string]string, bool) {
 
 // parseEnvFile 读取不执行 shell 展开、命令替换或变量插值的凭证文件。
 func parseEnvFile(path string) (map[string]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("打开凭证文件 %s 失败: %w", path, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	values := make(map[string]string)
-	scanner := bufio.NewScanner(f)
-	lineNumber := 0
-	for scanner.Scan() {
-		lineNumber++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "export ") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-		}
-
-		key, value, ok := strings.Cut(line, "=")
-		key = strings.TrimSpace(key)
-		if !ok || !envKeyPattern.MatchString(key) {
-			return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 环境变量格式无效", path, lineNumber)
-		}
-		value = strings.TrimSpace(value)
-		if value != "" && (value[0] == '\'' || value[0] == '"') {
-			if len(value) < 2 || value[len(value)-1] != value[0] {
-				return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 引号未闭合", path, lineNumber)
-			}
-			value = value[1 : len(value)-1]
-		}
-		values[key] = value
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("读取凭证文件 %s 失败: %w", path, err)
-	}
-	return values, nil
+	return envfile.Parse(path)
 }
 
 // checkRepoAccess 在所有本地前置条件通过后验证仓库可达且能够解锁。
@@ -313,34 +273,7 @@ func checkRepoAccess(ctx context.Context, r *Report, cfg *config.Config, envValu
 
 // mergeEnv 合并环境变量并保证每个 key 只出现一次，覆盖值优先。
 func mergeEnv(base []string, overrides map[string]string) []string {
-	values := make(map[string]string, len(base)+len(overrides))
-	order := make([]string, 0, len(base)+len(overrides))
-	for _, entry := range base {
-		key, value, ok := strings.Cut(entry, "=")
-		if !ok || key == "" {
-			continue
-		}
-		if _, exists := values[key]; !exists {
-			order = append(order, key)
-		}
-		values[key] = value
-	}
-
-	var newKeys []string
-	for key, value := range overrides {
-		if _, exists := values[key]; !exists {
-			newKeys = append(newKeys, key)
-		}
-		values[key] = value
-	}
-	sort.Strings(newKeys)
-	order = append(order, newKeys...)
-
-	merged := make([]string, 0, len(order))
-	for _, key := range order {
-		merged = append(merged, key+"="+values[key])
-	}
-	return merged
+	return envfile.Merge(base, overrides)
 }
 
 // runResticCatConfig 隔离凭证环境，并刻意不回显可能包含敏感信息的输出。

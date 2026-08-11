@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 P2-2 API 和本地 repo 验收。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计凭证隔离、argv、stdin/stdout 和 Wait 生命周期。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计敏感值不会进入日志或命令输出。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"审计初始化、JSON、Close 和子进程错误链。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 race、集成测试 skip 和构建检查。"}

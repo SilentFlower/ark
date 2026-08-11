@@ -287,6 +287,114 @@ out, err := runRunner(ctx, runner, "stat", "-c", "%f %a", "--", path)
 out, err := runRunner(ctx, runner, "stat", "-L", "-c", "%f %a", "--", path)
 ```
 
+### Scenario: restic 仓库命令边界
+
+#### 1. Scope / Trigger
+
+- 当上层需要初始化仓库、写入 stdin 快照、查询/删除快照、dump 文件或检查仓库时，
+  统一依赖 `internal/restic.Repo`，不得在 backup、restore 或 CLI 中重复构造 restic 命令。
+- 该边界同时负责凭证环境隔离、JSON 契约、退出码判定和 dump 子进程生命周期；
+  任一签名或行为变化都必须同步更新本节与测试。
+
+#### 2. Signatures
+
+```go
+type Snapshot struct {
+    ID       string
+    Time     time.Time
+    Hostname string
+    Paths    []string
+    Tags     []string
+}
+
+func New(cfg *config.Repo) (*Repo, error)
+func (r *Repo) EnsureInit(ctx context.Context) error
+func (r *Repo) BackupStdin(ctx context.Context, stdin io.Reader, filename string, tags []string) (Snapshot, error)
+func (r *Repo) Snapshots(ctx context.Context, tags []string) ([]Snapshot, error)
+func (r *Repo) Forget(ctx context.Context, policy config.Retention, tags []string) error
+func (r *Repo) ForgetSnapshot(ctx context.Context, id string) error
+func (r *Repo) Dump(ctx context.Context, snapshotID, path string) (io.ReadCloser, error)
+func (r *Repo) Check(ctx context.Context) error
+```
+
+#### 3. Contracts
+
+- `repo.env_file` 沿用受限 `KEY=VALUE` 语法；解析和环境合并由 `internal/envfile`
+  统一持有，doctor 与 restic 不得各写一套语义。
+- 父进程中的 `RESTIC_REPOSITORY`、`RESTIC_REPOSITORY_FILE`、`RESTIC_PASSWORD`、
+  `RESTIC_PASSWORD_FILE`、`RESTIC_PASSWORD_COMMAND` 先移除；清单再强制注入
+  `RESTIC_REPOSITORY` 与 `RESTIC_PASSWORD_FILE`。
+- env 文件不得设置 `RESTIC_PASSWORD`、`RESTIC_PASSWORD_COMMAND` 或
+  `RESTIC_REPOSITORY_FILE`；错误只报告 key 和文件路径，不报告 value。
+- `BackupStdin` 使用 `backup --json --stdin --stdin-filename`，标签逐项追加，
+  只接受唯一且含非空 `snapshot_id` 的 summary；不得整读 stdin 或落临时文件。
+- `Snapshots` 解析 JSON 数组，只暴露 ark 实际使用的稳定字段，并按时间、ID 升序返回。
+- `Forget` 映射非零 daily/weekly/monthly 值并统一 `--prune`；`ForgetSnapshot`
+  只删除明确 ID，不猜测其它快照。
+- `Dump` 的 `ReadCloser` 在读到 EOF 时执行 Wait；提前 Close 时关闭 pipe 后执行 Wait。
+  非零退出必须通过最终 Read 或 Close 返回，不能只暴露 stdout。
+- 实际 backup、forget、dump、check 只使用调用方 context，不套 doctor 的 15 秒超时。
+
+#### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+|---|---|
+| config 为空、URL/密码文件为空、后端类型不是 restic | `New` 返回中文错误，不启动命令 |
+| env 文件语法非法或含禁用控制变量 | 返回只含路径、行号或 key 的错误，不泄漏 value |
+| `cat config` 成功 | `EnsureInit` 幂等返回，不执行 init |
+| `cat config` 退出码为 10 | 才允许执行 init |
+| `cat config` 为 1、11、12 或未知退出码 | fail closed，不执行 init，保留错误链 |
+| filename、tag、snapshot ID、dump path 为空 | 立即返回参数错误 |
+| backup JSON 损坏、缺 summary、重复 summary 或缺 snapshot ID | 备份失败并完成 pipe/Wait 清理 |
+| restic stderr 可能含凭证 | 不无条件拼进错误；错误仍包含脱敏命令与退出状态 |
+| context 取消或超时 | 返回错误可被 `errors.Is` 识别 |
+| dump 非零退出或提前 Close | 最终 Read 或 Close 返回错误，不遗留子进程 |
+
+#### 5. Good / Base / Bad Cases
+
+- Good：父进程和 env 文件都带同名仓库变量时，只有清单 URL/密码文件与对象存储
+  凭证进入当前 restic 子进程，后续 ssh/docker 子进程看不到新增凭证。
+- Base：`EnsureInit` 连续调用两次，第一次只在退出码 10 时 init，第二次只执行
+  `cat config`；stdin backup 能从 JSON summary 返回快照 ID。
+- Bad：把退出码 1 一律当成“未初始化”，会在鉴权、网络或仓库损坏时错误执行 init。
+- Bad：`Dump` 直接返回 `StdoutPipe` 而不接管 Wait，会把截断或后端失败伪装成 EOF。
+
+#### 6. Tests Required
+
+- 精确断言所有 API 的 argv、重复 `--tag`、保留策略和 `--prune`。
+- 断言父进程冲突变量被移除、env 文件值只进入 restic、强制变量由清单覆盖，
+  且错误不含 env value 或 restic stderr 内容。
+- `EnsureInit` 覆盖成功、退出码 10 后 init 和密码错误不 init。
+- backup 覆盖 status + summary、损坏 JSON、非零退出、context 取消和流式 stdin。
+- snapshots 覆盖 JSON 字段和时间/ID 稳定排序。
+- dump 覆盖成功、最终 Read 非零退出、提前 Close 和运行中 context 取消。
+- 真实本地仓库测试覆盖 init → 重复 init → backup → snapshots → forget → check，
+  并由 `testing.Short()` 与 `exec.LookPath("restic")` 保护。
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```go
+if err := exec.CommandContext(ctx, "restic", "cat", "config").Run(); err != nil {
+    // 任何错误都 init，会把密码错误、锁冲突或损坏仓库误判成不存在。
+    return exec.CommandContext(ctx, "restic", "init").Run()
+}
+```
+
+##### Correct
+
+```go
+err := cmd.Run()
+if err == nil {
+    return nil
+}
+if code, ok := commandExitCode(err); !ok || code != 10 {
+    return wrapCommandError(ctx, display, err)
+}
+return repo.run(ctx, "init")
+```
+
 ### 可选参数用条件 append
 
 见上面的 `-p` 和 `--env-file`。不要为了省事传空字符串——

@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"P2-2 API、凭证、JSON 和集成测试的需求来源。"}
+{"file":"docs/design.md","reason":"ADR-001、ADR-009、ADR-010 的仓库与流式边界。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"argv、Env、超时、JSON 和输出脱敏契约。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"错误链、清理失败和用户可见失败规则。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"外部二进制集成测试与质量门禁。"}
