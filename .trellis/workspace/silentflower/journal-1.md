@@ -68,3 +68,38 @@ ark.yaml 从单机模型升级为 hub 编排的多机 v2 模型：顶层拆为 r
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: 完成 P1-3 远程 doctor
+
+**Date**: 2026-08-11
+**Task**: 完成 P1-3 远程 doctor
+**Branch**: `main`
+
+### Summary
+
+完成 hub 与 host doctor 拆分、远程环境检查和 CLI 范围选择；Full Check-All 通过并归档任务。
+
+### Main Changes
+
+- 新增 RunLocal 与 RunHost，统一 local/SSH Runner 检查与依赖降级
+- 新增 doctor --host/--all，并保持 JSON 与退出码兼容
+- 修复远程 stat 跟随符号链接语义并沉淀 code-spec
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6e77007` | (see git log) |
+
+### Testing
+
+- [OK] make check、race 定向测试、CLI 实际命令与 git diff 检查通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 开始 roadmap 下一项任务

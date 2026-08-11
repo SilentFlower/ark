@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
+- **Total Sessions**: 4
 - **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~70 | Active |
+| `journal-1.md` | ~105 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-08-11 | 完成 P1-3 远程 doctor | `6e77007` | `main` |
 | 3 | 2026-08-11 | 完成 P1-2 SSH 执行层 | `fd53cabd1308bb4bc37e91c137a2f296353899a2` | `main` |
 | 2 | 2026-08-11 | P1-1 清单模型升级到多机（v2） | `ca1078d` | `main` |
 | 1 | 2026-08-11 | Bootstrap backend spec from real code | `43faa59` | `main` |
