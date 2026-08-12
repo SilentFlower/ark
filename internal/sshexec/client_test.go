@@ -145,6 +145,7 @@ func TestNewSSH_RejectsInvalidConfig(t *testing.T) {
 		{name: "私钥是相对路径", mutate: func(c *config.SSH) { c.IdentityFile = "keys/id" }, wantSub: "绝对路径"},
 		{name: "known_hosts 为空", mutate: func(c *config.SSH) { c.KnownHostsFile = "" }, wantSub: "known_hosts_file"},
 		{name: "known_hosts 是相对路径", mutate: func(c *config.SSH) { c.KnownHostsFile = "known_hosts" }, wantSub: "绝对路径"},
+		{name: "主机密钥策略非法", mutate: func(c *config.SSH) { c.HostKeyPolicy = "no" }, wantSub: "host_key_policy"},
 	}
 
 	for _, tc := range tests {
@@ -189,7 +190,7 @@ func TestSSHRunner_RunBuildsArguments(t *testing.T) {
 		"-T",
 		"-o", "Compression=no",
 		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=yes",
+		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UserKnownHostsFile=/etc/ark/known hosts",
 		"-o", "IdentitiesOnly=yes",
 		"-i", "/etc/ark/keys/backup key",
@@ -201,6 +202,52 @@ func TestSSHRunner_RunBuildsArguments(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ssh argv = %#v，期望 %#v", got, want)
 	}
+	if containsValue(got, "StrictHostKeyChecking=no") {
+		t.Errorf("SSH argv 不得关闭主机密钥校验: %#v", got)
+	}
+}
+
+func TestSSHRunner_StrictHostKeyPolicy(t *testing.T) {
+	t.Setenv(helperModeEnv, "args")
+	cfg := validSSHConfig()
+	cfg.HostKeyPolicy = config.SSHHostKeyPolicyStrict
+	runner, err := newSSHRunner(cfg, helperCommand)
+	if err != nil {
+		t.Fatalf("构造严格模式 SSH Runner 失败: %v", err)
+	}
+
+	out, err := runner.Run(context.Background(), "true")
+	if err != nil {
+		t.Fatalf("执行伪 SSH 失败: %v", err)
+	}
+	var got []string
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("解析伪 SSH 参数失败: %v", err)
+	}
+	if !containsAdjacent(got, "-o", "StrictHostKeyChecking=yes") {
+		t.Errorf("严格模式 SSH argv = %#v，缺少 StrictHostKeyChecking=yes", got)
+	}
+	if containsValue(got, "StrictHostKeyChecking=no") {
+		t.Errorf("严格模式 SSH argv 不得关闭主机密钥校验: %#v", got)
+	}
+}
+
+func containsAdjacent(values []string, first, second string) bool {
+	for i := 0; i+1 < len(values); i++ {
+		if values[i] == first && values[i+1] == second {
+			return true
+		}
+	}
+	return false
+}
+
+func containsValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLocalRunner_RunPreservesArgv(t *testing.T) {
@@ -276,6 +323,21 @@ func TestRun_ReturnsOutputOnFailure(t *testing.T) {
 	}
 }
 
+func TestRun_HostKeyConflictIncludesRefreshHint(t *testing.T) {
+	t.Setenv(helperModeEnv, "output")
+	t.Setenv(helperStderrEnv, "REMOTE HOST IDENTIFICATION HAS CHANGED!")
+	t.Setenv(helperExitCodeEnv, "255")
+	runner, err := newSSHRunner(validSSHConfig(), helperCommand)
+	if err != nil {
+		t.Fatalf("构造 SSH Runner 失败: %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), "true")
+	if err == nil || !strings.Contains(err.Error(), "ark host-key refresh --host") {
+		t.Fatalf("主机密钥冲突错误 = %v，期望包含刷新指引", err)
+	}
+}
+
 func TestRun_ContextCanceledIsRecognizable(t *testing.T) {
 	t.Setenv(helperModeEnv, "block")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -340,6 +402,28 @@ func TestStream(t *testing.T) {
 		}
 		if !strings.Contains(waitErr.Error(), "remote failed") {
 			t.Errorf("Wait 错误 %q 中未包含 stderr 诊断", waitErr.Error())
+		}
+	})
+
+	t.Run("主机密钥冲突由 Wait 返回刷新指引", func(t *testing.T) {
+		t.Setenv(helperModeEnv, "output")
+		t.Setenv(helperStderrEnv, "Host key verification failed.")
+		t.Setenv(helperExitCodeEnv, "255")
+		runner, err := newSSHRunner(validSSHConfig(), helperCommand)
+		if err != nil {
+			t.Fatalf("构造 SSH Runner 失败: %v", err)
+		}
+
+		stdout, wait, err := runner.Stream(context.Background(), "stream")
+		if err != nil {
+			t.Fatalf("启动流命令失败: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, stdout); err != nil {
+			t.Fatalf("读取冲突命令 stdout 失败: %v", err)
+		}
+		waitErr := wait()
+		if waitErr == nil || !strings.Contains(waitErr.Error(), "ark host-key refresh --host") {
+			t.Fatalf("主机密钥冲突 Wait 错误 = %v，期望包含刷新指引", waitErr)
 		}
 	})
 
@@ -420,6 +504,21 @@ func TestFeed(t *testing.T) {
 		err = runner.Feed(context.Background(), strings.NewReader("data"), "restore")
 		if err == nil || !strings.Contains(err.Error(), "restore failed") {
 			t.Errorf("Feed 错误 = %v，期望包含 stderr 诊断", err)
+		}
+	})
+
+	t.Run("主机密钥冲突返回刷新指引", func(t *testing.T) {
+		t.Setenv(helperModeEnv, "output")
+		t.Setenv(helperStderrEnv, "REMOTE HOST IDENTIFICATION HAS CHANGED!")
+		t.Setenv(helperExitCodeEnv, "255")
+		runner, err := newSSHRunner(validSSHConfig(), helperCommand)
+		if err != nil {
+			t.Fatalf("构造 SSH Runner 失败: %v", err)
+		}
+
+		err = runner.Feed(context.Background(), strings.NewReader("data"), "restore")
+		if err == nil || !strings.Contains(err.Error(), "ark host-key refresh --host") {
+			t.Fatalf("主机密钥冲突 Feed 错误 = %v，期望包含刷新指引", err)
 		}
 	})
 

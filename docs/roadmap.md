@@ -89,6 +89,7 @@ type SSH struct {
     User           string
     IdentityFile   string  // 绝对路径
     KnownHostsFile string  // 绝对路径，必填
+    HostKeyPolicy  string  // accept-new（默认）或 strict
 }
 ```
 
@@ -96,7 +97,8 @@ type SSH struct {
 
 - `hostPattern` 与 `Target.ID()` 原样保留，`ID()` 的返回值前面加 host 段
   用作 `--stdin-filename`（见 P2-3）。
-- **`known_hosts_file` 必填**。缺了就报错，不给「跳过校验」的选项——
+- **`known_hosts_file` 必填**。默认 `accept-new` 只允许首次连接自动记录，已记录主机
+  的密钥变化仍会拒绝；`strict` 要求管理员预先写入。不给完全跳过校验的选项——
   hub 会把生产数据流经这条连接，中间人劫持意味着数据泄露和恢复投毒。
 - `Local: true` 与 `SSH` 非空必须互斥，校验时拒绝。
 - **host 名称全局唯一**，重复要报错（它是 restic tag 和恢复时的检索键）。
@@ -140,7 +142,7 @@ func NewLocal() Runner                        // local: true 的 host
   代价是多一个运行时依赖，`doctor` 的 hub 本地检查加一条检查。
 - 固定参数：`-o Compression=no`（restic 会压，SSH 再压是浪费 CPU）、
   `-o BatchMode=yes`（禁止交互式密码提示，否则会挂死）、
-  `-o StrictHostKeyChecking=yes`、`-o UserKnownHostsFile=<配置值>`。
+  `-o StrictHostKeyChecking=<accept-new|yes>`、`-o UserKnownHostsFile=<配置值>`。
 - **`Stream` 的 `Wait` 返回值就是 ADR-011 的第一道防线**，
   接口设计上要让调用方无法忽略它——不要提供一个「只拿 reader 不拿 wait」的重载。
 - **不要额外包 `bash -c`。** `ssh host cmd args...` 的远程端本来就由登录 shell 解析，
@@ -170,7 +172,8 @@ func RunHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report
 
 - `restic`、`ssh`、`systemd-analyze` 三个二进制存在且可执行
 - `repo.password_file`、`repo.env_file` 权限为 0600
-- 每个 host 的 `identity_file` 权限为 0600、`known_hosts_file` 存在
+- 每个 host 的 `identity_file` 权限为 0600；`strict` 要求 `known_hosts_file` 已存在，
+  默认 `accept-new` 允许文件尚不存在但父目录必须可写且可进入
 - 对象存储可达、restic 仓库能解锁（`restic cat config`）
 - 每个 host 的 `on_calendar` 表达式合法（沿用现有 `checkOnCalendar`）
 
@@ -401,6 +404,26 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
   `ark.db`，也禁止把旧 `-wal` / `-shm` 当作恢复材料。
 
 **验收**：用 hub 上那把有写权限的凭证尝试删除一个保留期内的对象，必须失败。
+
+---
+
+### P2-8 SSH 主机密钥易用性
+
+**改动文件**：`internal/config`、`internal/sshexec`、`internal/hostkey`、
+`internal/cli`、`internal/doctor`、`examples/ark.yaml`、`docs/operations.md`
+
+- SSH 主机密钥策略支持默认 `accept-new` 和显式 `strict`，不提供完全关闭校验的模式。
+- `sshexec` 映射为 OpenSSH 的 `StrictHostKeyChecking=accept-new|yes`；首次连接可以
+  建立信任，但已记录主机的密钥变化始终拒绝，并给出刷新命令提示。
+- 新增 `ark host-key refresh --host <name>`：默认只预览已记录与扫描到的 SHA256 指纹，
+  带外核对后显式加 `--apply` 才原子更新该主机记录。
+- 刷新只调用 `ssh-keyscan` / `ssh-keygen`，不读取身份私钥、不尝试账号认证；扫描结果
+  不是身份验证，不能替代云控制台或服务器本地核对。
+- `doctor` 根据策略检查信任库：`strict` 缺文件为 fail；默认策略缺文件时，只要父目录
+  可写且可进入就给 warn，让首次连接完成记录。
+
+**验收**：默认策略首次连接能建立信任；密钥变化仍被拒绝并提示刷新；预览零写入；
+`--apply` 只替换目标主机记录、保留其它记录并保持 `0600`；非法策略和本机 host 均被拒绝。
 
 ---
 

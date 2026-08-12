@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/silentflower/ark/internal/config"
+	"golang.org/x/sys/unix"
 )
 
 type fakeRunner struct {
@@ -133,6 +134,72 @@ func TestCheckObjectLock_始终Warn且不伪装成已验证(t *testing.T) {
 	}
 	if strings.Contains(check.Detail, "已启用") && !strings.Contains(check.Detail, "确认已启用") {
 		t.Fatalf("对象锁告警不应伪装成已验证: %s", check.Detail)
+	}
+}
+
+func TestCheckKnownHostsPath_按策略区分首次连接(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "known_hosts")
+	tests := []struct {
+		name   string
+		ssh    config.SSH
+		status Status
+	}{
+		{
+			name:   "accept-new 缺文件时告警",
+			ssh:    config.SSH{KnownHostsFile: missing},
+			status: StatusWarn,
+		},
+		{
+			name: "strict 缺文件时失败",
+			ssh: config.SSH{
+				KnownHostsFile: missing,
+				HostKeyPolicy:  config.SSHHostKeyPolicyStrict,
+			},
+			status: StatusFail,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := &Report{}
+			checkKnownHostsPath(report, "ssh.known_hosts_file", tc.ssh)
+			assertCheckStatus(t, report, "ssh.known_hosts_file", tc.status)
+		})
+	}
+}
+
+func TestCheckKnownHostsPath_AcceptNew父目录不可用时失败(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parent, []byte("file"), 0o600); err != nil {
+		t.Fatalf("创建父路径文件失败: %v", err)
+	}
+	report := &Report{}
+	checkKnownHostsPath(report, "ssh.known_hosts_file", config.SSH{
+		KnownHostsFile: filepath.Join(parent, "known_hosts"),
+	})
+	assertCheckStatus(t, report, "ssh.known_hosts_file", StatusFail)
+}
+
+func TestCheckKnownHostsPath_AcceptNew父目录不可写或进入时失败(t *testing.T) {
+	dir := t.TempDir()
+	called := false
+	report := &Report{}
+	checkKnownHostsPathWithAccess(report, "ssh.known_hosts_file", config.SSH{
+		KnownHostsFile: filepath.Join(dir, "known_hosts"),
+	}, func(path string, mode uint32) error {
+		called = true
+		if path != dir || mode != unix.W_OK|unix.X_OK {
+			t.Fatalf("Access 参数 = %q %d，期望 %q %d", path, mode, dir, unix.W_OK|unix.X_OK)
+		}
+		return os.ErrPermission
+	})
+	if !called {
+		t.Fatal("未检查父目录写入和进入权限")
+	}
+	check := findCheck(t, report, "ssh.known_hosts_file")
+	if check.Status != StatusFail || !strings.Contains(check.Detail, "不可写或不可进入") {
+		t.Fatalf("父目录权限检查 = %#v", check)
 	}
 }
 

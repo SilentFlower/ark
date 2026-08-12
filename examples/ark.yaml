@@ -74,8 +74,9 @@ hosts:
       address: 10.0.0.11:22 # 端口必须显式写出
       user: root
       identity_file: /etc/ark/ssh/web-01.key
-      # 必填，且没有「跳过校验」的开关：生产数据会流经这条连接，
-      # 不校验主机密钥意味着中间人既能窃取数据、也能在恢复时投毒。
+      # 必填的持久化信任库。默认 accept-new 只在首次连接自动记录主机密钥，
+      # 后续密钥变化仍会拒绝；高安全环境可显式配置 host_key_policy: strict。
+      # 没有完全跳过校验的开关。
       known_hosts_file: /etc/ark/ssh/known_hosts
     project:
       name: sub2api
@@ -124,6 +125,8 @@ hosts:
       user: root
       identity_file: /etc/ark/ssh/db-01.key
       known_hosts_file: /etc/ark/ssh/known_hosts
+      # strict 要求主机密钥已经由管理员预先写入信任库。
+      host_key_policy: strict
     project:
       name: pgcluster
       compose_file: /srv/pgcluster/docker-compose.yml

@@ -118,6 +118,8 @@ type Check struct {
 - 下一次计划运行时间。`doctor` 已经从 `systemd-analyze calendar`
   的输出里提取 `Next elapse` 展示（`internal/doctor/doctor.go:190`）——
   比复述表达式有用得多。
+- SSH 主机密钥刷新可以输出算法名和 `SHA256:` 指纹，供管理员带外核对；
+  必须同时明确扫描结果不是身份验证，且预览状态下未修改信任库。
 
 ---
 
@@ -135,6 +137,8 @@ type Check struct {
 - `project.env_file` 的内容（应用的数据库密码、加密密钥）。
 - 数据库转储的任何片段。它就是全量业务数据。
 - 传给外部命令的环境变量集合。打印 `cmd.Env` 会把凭证整个吐出来。
+- `known_hosts` 原始公钥行、身份私钥内容或扫描得到的原始 key blob。刷新命令只输出
+  算法名与 SHA256 指纹；JSON 输出也遵守同一边界。
 
 只输出**路径**，不输出内容：
 

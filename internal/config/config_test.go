@@ -128,6 +128,9 @@ func TestLoadAndValidate_Valid(t *testing.T) {
 	if web.SSH == nil || web.SSH.Address != "10.0.0.11:22" {
 		t.Errorf("web-01 的 ssh 配置 = %+v, 期望 address 为 10.0.0.11:22", web.SSH)
 	}
+	if got := web.SSH.EffectiveHostKeyPolicy(); got != SSHHostKeyPolicyAcceptNew {
+		t.Errorf("web-01 主机密钥策略 = %q, 期望默认值 %q", got, SSHHostKeyPolicyAcceptNew)
+	}
 	if len(web.Targets) != 5 {
 		t.Errorf("web-01 targets 数量 = %d, 期望 5", len(web.Targets))
 	}
@@ -364,6 +367,14 @@ func TestValidate_Errors(t *testing.T) {
 			wantSub: "known_hosts_file",
 		},
 		{
+			name: "主机密钥策略不允许关闭校验",
+			mutate: func(s string) string {
+				return strings.Replace(s, "      known_hosts_file: /etc/ark/known_hosts\n",
+					"      known_hosts_file: /etc/ark/known_hosts\n      host_key_policy: no\n", 1)
+			},
+			wantSub: "host_key_policy",
+		},
+		{
 			name: "identity_file 是相对路径",
 			mutate: func(s string) string {
 				return strings.Replace(s, "identity_file: /etc/ark/keys/web-01.key", "identity_file: keys/web-01.key", 1)
@@ -468,6 +479,25 @@ func TestValidate_Errors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("错误信息 %q 中未包含 %q", err.Error(), tc.wantSub)
+			}
+		})
+	}
+}
+
+func TestSSH_EffectiveHostKeyPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		ssh  SSH
+		want SSHHostKeyPolicy
+	}{
+		{name: "缺省接受首次连接", want: SSHHostKeyPolicyAcceptNew},
+		{name: "显式严格模式", ssh: SSH{HostKeyPolicy: SSHHostKeyPolicyStrict}, want: SSHHostKeyPolicyStrict},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.ssh.EffectiveHostKeyPolicy(); got != tc.want {
+				t.Errorf("EffectiveHostKeyPolicy() = %q, 期望 %q", got, tc.want)
 			}
 		})
 	}

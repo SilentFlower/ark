@@ -103,12 +103,13 @@ type sshRunner struct {
 	user           string
 	identityFile   string
 	knownHostsFile string
+	hostKeyPolicy  string
 	command        commandFunc
 }
 
 // NewSSH 创建通过系统 OpenSSH 连接目标机的 Runner。
 // @param cfg 已通过清单校验的 SSH 连接配置。
-// @return Runner 强制主机密钥校验并逐参数转义远程命令的 Runner。
+// @return Runner 按配置校验主机密钥并逐参数转义远程命令的 Runner。
 // @return error 配置缺失、地址非法或密钥路径不是绝对路径时的错误。
 func NewSSH(cfg config.SSH) (Runner, error) {
 	return newSSHRunner(cfg, exec.CommandContext)
@@ -141,6 +142,10 @@ func newSSHRunner(cfg config.SSH, command commandFunc) (*sshRunner, error) {
 	if !filepath.IsAbs(cfg.KnownHostsFile) {
 		return nil, fmt.Errorf("ssh.known_hosts_file: 必须是绝对路径，实际 %q", cfg.KnownHostsFile)
 	}
+	hostKeyPolicy, err := openSSHHostKeyPolicy(cfg.EffectiveHostKeyPolicy())
+	if err != nil {
+		return nil, err
+	}
 
 	return &sshRunner{
 		host:           host,
@@ -148,8 +153,21 @@ func newSSHRunner(cfg config.SSH, command commandFunc) (*sshRunner, error) {
 		user:           cfg.User,
 		identityFile:   cfg.IdentityFile,
 		knownHostsFile: cfg.KnownHostsFile,
+		hostKeyPolicy:  hostKeyPolicy,
 		command:        command,
 	}, nil
+}
+
+func openSSHHostKeyPolicy(policy config.SSHHostKeyPolicy) (string, error) {
+	switch policy {
+	case config.SSHHostKeyPolicyAcceptNew:
+		return "accept-new", nil
+	case config.SSHHostKeyPolicyStrict:
+		return "yes", nil
+	default:
+		return "", fmt.Errorf("ssh.host_key_policy: %q 非法，只允许 %q 或 %q", policy,
+			config.SSHHostKeyPolicyAcceptNew, config.SSHHostKeyPolicyStrict)
+	}
 }
 
 func (r *sshRunner) Run(ctx context.Context, argv ...string) (string, error) {
@@ -192,7 +210,7 @@ func (r *sshRunner) build(ctx context.Context, argv []string) (commandSpec, erro
 		"-T",
 		"-o", "Compression=no",
 		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=yes",
+		"-o", "StrictHostKeyChecking=" + r.hostKeyPolicy,
 		"-o", "UserKnownHostsFile=" + r.knownHostsFile,
 		"-o", "IdentitiesOnly=yes",
 		"-i", r.identityFile,
@@ -219,7 +237,11 @@ func validateArgv(argv []string) error {
 func run(ctx context.Context, spec commandSpec) (string, error) {
 	out, err := spec.cmd.CombinedOutput()
 	if err != nil {
-		return string(out), wrapCommandError(ctx, spec.display, err, "")
+		wrapped := wrapCommandError(ctx, spec.display, err, "")
+		if isHostKeyConflict(string(out)) {
+			wrapped = fmt.Errorf("%w；检测到 SSH 主机密钥冲突，请运行 ark host-key refresh --host <清单中的 host 名> 预览并确认新指纹", wrapped)
+		}
+		return string(out), wrapped
 	}
 	return string(out), nil
 }
@@ -263,9 +285,17 @@ func wrapCommandError(ctx context.Context, display string, err error, stderr str
 		return fmt.Errorf("执行命令 %s 失败: %w", display, ctxErr)
 	}
 	if detail := strings.TrimSpace(stderr); detail != "" {
+		if isHostKeyConflict(detail) {
+			detail += "；请运行 ark host-key refresh --host <清单中的 host 名> 预览并确认新指纹"
+		}
 		return fmt.Errorf("执行命令 %s 失败: %w: %s", display, err, detail)
 	}
 	return fmt.Errorf("执行命令 %s 失败: %w", display, err)
+}
+
+func isHostKeyConflict(detail string) bool {
+	return strings.Contains(detail, "REMOTE HOST IDENTIFICATION HAS CHANGED") ||
+		strings.Contains(detail, "Host key verification failed")
 }
 
 func shellQuote(s string) string {

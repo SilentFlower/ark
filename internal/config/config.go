@@ -75,6 +75,18 @@ const (
 	TargetImageDigest TargetType = "image_digest"
 )
 
+// SSHHostKeyPolicy 是 OpenSSH 主机密钥校验策略。
+type SSHHostKeyPolicy string
+
+const (
+	// SSHHostKeyPolicyAcceptNew 允许首次连接自动记录主机密钥，但拒绝已记录主机的密钥变化。
+	SSHHostKeyPolicyAcceptNew SSHHostKeyPolicy = "accept-new"
+	// SSHHostKeyPolicyStrict 要求主机密钥已经存在且完全匹配。
+	SSHHostKeyPolicyStrict SSHHostKeyPolicy = "strict"
+	// DefaultSSHHostKeyPolicy 是清单未显式声明时使用的主机密钥策略。
+	DefaultSSHHostKeyPolicy = SSHHostKeyPolicyAcceptNew
+)
+
 // Config 是 hub 的完整备份清单，描述它管理的全部机器。
 type Config struct {
 	Version  int      `yaml:"version"`
@@ -138,6 +150,18 @@ type SSH struct {
 	// 不提供任何「跳过主机密钥校验」的开关：hub 会把生产数据流经这条连接，
 	// 中间人劫持同时意味着数据泄露和恢复投毒。
 	KnownHostsFile string `yaml:"known_hosts_file"`
+	// HostKeyPolicy 控制首次连接是否允许 OpenSSH 自动记录主机密钥。
+	// 空值使用 DefaultSSHHostKeyPolicy；不提供完全关闭校验的取值。
+	HostKeyPolicy SSHHostKeyPolicy `yaml:"host_key_policy,omitempty"`
+}
+
+// EffectiveHostKeyPolicy 返回 SSH 配置实际生效的主机密钥策略。
+// @return SSHHostKeyPolicy 显式策略，或清单未填写时的安全易用默认值。
+func (s SSH) EffectiveHostKeyPolicy() SSHHostKeyPolicy {
+	if s.HostKeyPolicy == "" {
+		return DefaultSSHHostKeyPolicy
+	}
+	return s.HostKeyPolicy
 }
 
 // Project 定位被备份的 docker compose 项目。
@@ -521,6 +545,12 @@ func validateSSH(prefix string, s SSH, add func(string, ...any)) {
 			"不校验主机密钥意味着中间人既能窃取数据、也能在恢复时投毒", prefix)
 	} else if !filepath.IsAbs(s.KnownHostsFile) {
 		add("%s.known_hosts_file: 必须是绝对路径，实际 %q", prefix, s.KnownHostsFile)
+	}
+	switch s.HostKeyPolicy {
+	case "", SSHHostKeyPolicyAcceptNew, SSHHostKeyPolicyStrict:
+	default:
+		add("%s.host_key_policy: %q 非法，只允许 %q 或 %q", prefix,
+			s.HostKeyPolicy, SSHHostKeyPolicyAcceptNew, SSHHostKeyPolicyStrict)
 	}
 }
 

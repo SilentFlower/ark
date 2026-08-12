@@ -319,6 +319,7 @@ hosts:
       user: root
       identity_file: /etc/ark/ssh/web-01.key
       known_hosts_file: /etc/ark/ssh/known_hosts
+      host_key_policy: accept-new
     project:
       name: sub2api
       compose_file: /root/sub2api/deploy/docker-compose.yml
@@ -351,7 +352,10 @@ hosts:
 | `files` | 打包宿主机路径 | `name`, `paths` |
 | `image_digest` | 记录运行镜像 digest | `services` |
 
-**SSH 配置的硬性要求**：`known_hosts_file` 必填，严格校验主机指纹。
+**SSH 配置的硬性要求**：`known_hosts_file` 必填。默认策略 `accept-new`
+允许首次连接自动写入主机密钥，但已记录主机的密钥变化仍会拒绝；高安全环境可显式配置
+`host_key_policy: strict`，要求管理员预先建立信任。密钥轮换时先运行
+`ark host-key refresh --host <name>` 预览 SHA256 指纹，带外核对后再加 `--apply`。
 绝不允许 `StrictHostKeyChecking=no`——hub 会把生产数据流经这条连接，
 中间人劫持意味着数据泄露和恢复投毒。
 

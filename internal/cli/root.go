@@ -72,6 +72,7 @@ func newRootCmd() *cobra.Command {
 		newVersionCmd(),
 		newValidateCmd(&configPath),
 		newDoctorCmd(&configPath),
+		newHostKeyCmd(&configPath),
 		newBackupCmd(&configPath),
 		newInstallCmd(&configPath),
 	)

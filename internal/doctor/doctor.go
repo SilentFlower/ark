@@ -11,14 +11,17 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/envfile"
+	"golang.org/x/sys/unix"
 )
 
 // commandTimeout 是单条探测命令的超时时间。
@@ -110,7 +113,7 @@ func RunLocal(ctx context.Context, cfg *config.Config) *Report {
 		name := func(item string) string { return h.Host + " / " + item }
 		if h.SSH != nil {
 			checkLocalPath(r, name("ssh.identity_file"), h.SSH.IdentityFile, true, 0o077)
-			checkLocalPath(r, name("ssh.known_hosts_file"), h.SSH.KnownHostsFile, true, 0)
+			checkKnownHostsPath(r, name("ssh.known_hosts_file"), *h.SSH)
 		}
 
 		if systemdOK {
@@ -124,6 +127,56 @@ func RunLocal(ctx context.Context, cfg *config.Config) *Report {
 	checkRepoAccess(ctx, r, cfg, envValues, resticOK && passwordOK && envOK)
 	checkObjectLock(r)
 	return r
+}
+
+// checkKnownHostsPath 根据主机密钥策略检查信任库是否具备执行条件。
+// accept-new 允许 OpenSSH 在首次连接时创建文件，但目录必须已经安全可用；
+// strict 则继续要求文件预先存在，避免无人值守任务悄悄建立新信任。
+func checkKnownHostsPath(r *Report, name string, ssh config.SSH) {
+	checkKnownHostsPathWithAccess(r, name, ssh, unix.Access)
+}
+
+// checkKnownHostsPathWithAccess 注入 access，使 root 和普通用户环境下的权限失败测试可重复。
+func checkKnownHostsPathWithAccess(
+	r *Report,
+	name string,
+	ssh config.SSH,
+	access func(string, uint32) error,
+) {
+	path := ssh.KnownHostsFile
+	if path == "" {
+		r.add(name, StatusFail, "路径为空")
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
+		checkLocalPath(r, name, path, true, 0)
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		r.add(name, StatusFail, "无法访问 %s: %v", path, err)
+		return
+	}
+	if ssh.EffectiveHostKeyPolicy() == config.SSHHostKeyPolicyStrict {
+		r.add(name, StatusFail, "无法访问 %s: %v", path, os.ErrNotExist)
+		return
+	}
+
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if err != nil {
+		r.add(name, StatusFail, "首次连接需要创建 %s，但无法访问父目录 %s: %v", path, dir, err)
+		return
+	}
+	if !info.IsDir() {
+		r.add(name, StatusFail, "首次连接需要创建 %s，但父路径 %s 不是目录", path, dir)
+		return
+	}
+	// doctor 不创建探测文件；Access 让当前用户、ACL 和 root 语义都由内核判定，
+	// 避免只看 mode bits 后把实际可写目录误报为失败。
+	if err := access(dir, unix.W_OK|unix.X_OK); err != nil {
+		r.add(name, StatusFail, "首次连接需要创建 %s，但父目录 %s 不可写或不可进入", path, dir)
+		return
+	}
+	r.add(name, StatusWarn, "%s 尚不存在；默认 accept-new 会在首次连接时创建主机密钥记录", path)
 }
 
 // checkObjectLock 把 provider-neutral 无法自动核验的防删除前提保持为显式告警。

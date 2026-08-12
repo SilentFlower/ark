@@ -46,7 +46,24 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 期内时，`restic forget --prune` 可能无法删除或回收空间，这是预期行为。容量规划必须按
 对象锁保留期计算，不能把 prune 暂时失败误判为仓库损坏后关闭保护。
 
-## 4. 定期人工验证
+## 4. SSH 主机密钥维护
+
+每台远程主机都必须配置持久化的 `known_hosts_file`。默认 `host_key_policy: accept-new`
+允许 OpenSSH 在第一次连接时记录主机密钥，以降低新环境接入成本；一旦该主机已有记录，
+后续密钥变化仍会被拒绝。需要预先建立信任的环境可显式改为 `strict`。
+
+主机重装或密钥轮换时按以下顺序处理：
+
+1. 运行 `ark host-key refresh --host <name>`，只预览已记录指纹和当前扫描指纹；
+2. 通过云控制台、服务器本地终端或其它独立通道核对 SHA256 指纹；
+3. 确认一致后运行 `ark host-key refresh --host <name> --apply`；
+4. 再运行 `ark doctor --host <name>` 验证连接和目标环境。
+
+`ssh-keyscan` 只收集公开主机密钥，不会使用账号密码或 SSH 私钥，也不能证明远端身份。
+因此刷新命令默认不写文件，`--apply` 必须由管理员在带外核对后显式给出。任何场景都不要
+改成 `StrictHostKeyChecking=no`；这会让首次连接和后续密钥变化都失去保护。
+
+## 5. 定期人工验证
 
 建议每月至少执行一次：
 
@@ -58,7 +75,7 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 
 真实对象删除测试和控制台配置属于人工上线验收，不在自动测试或 auto-loop 中执行。
 
-## 5. hub 重建顺序
+## 6. hub 重建顺序
 
 1. 在新机器安装与清单匹配的 ark 和 restic；
 2. 从离线介质恢复 restic 密码和对象存储凭证；

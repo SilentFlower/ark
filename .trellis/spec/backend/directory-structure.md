@@ -45,6 +45,7 @@ roadmap 已经规划、但尚未创建的包（新建时按此归位，不要另
 | 包 | 职责 | 阶段 |
 |---|---|---|
 | `internal/sshexec/` | SSH / 本地命令执行层，上层执行器不区分远近 | P1-2 |
+| `internal/hostkey/` | SSH 主机密钥扫描、指纹生成与 known_hosts 原子刷新 | P2-8 |
 | `internal/store/` | SQLite 状态库（`/var/lib/ark/ark.db`） | P2-1 |
 | `internal/restic/` | restic CLI 的 Go 封装 | P2-2 |
 | `internal/backup/` | 各 target 执行器 + 流完整性 + 快照清单 | P2-3 / P2-4 / P2-5 |
@@ -76,10 +77,12 @@ int 交给 `os.Exit`。命令定义、flag 绑定、输出格式一律在 `inter
 
 ```
 cli  ──►  doctor  ──►  config
- └──────────────────────►
+ ├────►  hostkey
+ └────►  sshexec ──► config
 ```
 
-`config` 不认识任何其他内部包，`doctor` 只依赖 `config`，`cli` 依赖两者。
+`config` 不认识任何其他内部包；`hostkey` 只依赖标准库和 OpenSSH 工具；
+`doctor` 与 `sshexec` 依赖 `config`，`cli` 负责编排这些边界。
 新增包时保持这个方向：**越靠近数据模型的包依赖越少**。
 如果发现需要反向依赖（比如 `config` 想调用 `doctor`），说明职责切错了，
 应该重新划边界而不是加接口绕过去。

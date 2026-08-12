@@ -37,6 +37,7 @@ func LoadAndValidate(path string) (*Config, error) // 调用方通常用这个
 func (c *Config) Validate() error                  // 静态语义校验，不碰文件系统
 func (c *Config) ScheduleFor(h *Host) Schedule     // 生效值：host > defaults > 常量
 func (c *Config) RetentionFor(h *Host) Retention
+func (s SSH) EffectiveHostKeyPolicy() SSHHostKeyPolicy
 ```
 
 ### 3. Contracts
@@ -51,7 +52,8 @@ func (c *Config) RetentionFor(h *Host) Retention
 | host | `local` / `ssh` | 二选一，互斥且不可都缺 |
 | host | `schedule` / `retention` | 指针，`nil` 表示套用 `defaults` |
 | ssh | `address` | `host:port`，host 段非空，port 为 1–65535 的数字 |
-| ssh | `identity_file` / `known_hosts_file` | 绝对路径，`known_hosts_file` **必填且无跳过开关** |
+| ssh | `identity_file` / `known_hosts_file` | 绝对路径，`known_hosts_file` 必填 |
+| ssh | `host_key_policy` | 可选；空值等同 `accept-new`，也可显式写 `strict`；无跳过校验取值 |
 
 环境依赖：无。`Validate` 全程不读文件系统、不连网络（ADR-008）——
 文件存在性与权限属于 `doctor` 的职责。
@@ -71,6 +73,7 @@ func (c *Config) RetentionFor(h *Host) Retention
 | `address` 无 host（`:22`） | `…缺少主机名或 IP` |
 | `address` 端口非数字（`h:ssh`） | `…的端口必须是 1-65535 之间的数字` |
 | 缺 `known_hosts_file` | `…不能为空。生产数据会流经这条连接，不校验主机密钥意味着中间人既能窃取数据、也能在恢复时投毒` |
+| `host_key_policy` 不是 `accept-new` / `strict` | `…非法，只允许 "accept-new" 或 "strict"` |
 | `retention` 三项同时为 0 | `…三项不能同时为 0，否则清理时会删光所有快照` |
 
 ### 5. Good/Base/Bad Cases
@@ -93,6 +96,7 @@ func (c *Config) RetentionFor(h *Host) Retention
 - 每条互斥或必填规则各一条；
 - 默认值继承：未覆盖的机器拿到 `defaults`、覆盖的机器拿到自己的值、
   显式写 `retention: {daily: 3}` 时 `weekly` / `monthly` 保持 0；
+- 主机密钥策略覆盖空值默认 `accept-new`、显式 `strict` 和非法值拒绝；
 - 错误信息包含出错机器的 host 名（多机清单里没有 host 名的错误无法定位）。
 
 ---

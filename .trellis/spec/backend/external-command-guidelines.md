@@ -107,8 +107,10 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 - `NewLocal` 使用 `exec.CommandContext(ctx, argv[0], argv[1:]...)`，不经过 shell。
 - `NewSSH` 接收 `config.SSH` 的 `address`、`user`、`identity_file`、
   `known_hosts_file`，并固定 `-T`、`Compression=no`、`BatchMode=yes`、
-  `StrictHostKeyChecking=yes`、`UserKnownHostsFile`、`IdentitiesOnly=yes`、
+  `StrictHostKeyChecking=<accept-new|yes>`、`UserKnownHostsFile`、`IdentitiesOnly=yes`、
   `-i`、`-p`、`-l` 和 `--`。
+- `host_key_policy` 空值按 `accept-new` 生效，允许首次连接记录新主机，但仍拒绝已记录
+  主机的密钥变化；显式 `strict` 映射为 `yes`。不得映射或开放 `no`。
 - SSH 远程 argv 的每个元素分别做 POSIX 单引号转义，最终只向系统 `ssh`
   传递一条远程命令串；不得增加第二层 `bash -c`。
 - `Run` 等待结束并返回 stdout/stderr 合并输出；非零退出时仍返回已产生的输出。
@@ -132,6 +134,8 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 | `address` 不是 `host:port`、host 为空、端口越界 | `NewSSH` 返回包含字段上下文的错误 |
 | user 为空 | `NewSSH` 返回 `ssh.user` 校验错误 |
 | identity / known_hosts 为空或不是绝对路径 | `NewSSH` 返回对应字段校验错误，不读取文件 |
+| `host_key_policy` 非法 | `NewSSH` 返回中文错误，不执行 ssh |
+| 已记录主机的密钥变化 | 三种入口均失败，并提示用 `ark host-key refresh --host <name>` 预览 |
 | 命令启动失败 | 返回带命令上下文且保留 `%w` 的错误 |
 | context 取消或超时 | 返回错误可被 `errors.Is` 识别 |
 | `Run` 非零退出 | 返回合并输出和非 nil error |
@@ -151,6 +155,8 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 
 - 单元测试断言本地 argv 原样传递，shell 元字符不会创建额外文件。
 - 单元测试断言 SSH 的全部固定选项、host/port/user/路径和最终远程命令串。
+- 主机密钥策略测试覆盖默认 `accept-new`、显式 `strict`、非法值和冲突刷新提示，
+  并断言 argv 永远不出现 `StrictHostKeyChecking=no`。
 - 转义测试覆盖空字符串、空格、`;`、`$(...)`、换行和单引号。
 - `Run` 覆盖成功、合并输出、非零退出和 context 取消。
 - `Stream` 覆盖 stdout/stderr 隔离、成功、非零退出、SIGKILL 和 context 超时；
@@ -190,6 +196,103 @@ if err := consume(stdout); err != nil {
 return wait()
 ```
 
+### Scenario: SSH 主机密钥预览与显式刷新
+
+#### 1. Scope / Trigger
+
+- 主机重装、密钥轮换或首次建立严格信任时，统一使用 `internal/hostkey.Refresh`；
+  CLI、doctor 和备份代码不得各自拼 `ssh-keyscan` / `ssh-keygen` 更新逻辑。
+- 本边界只处理公开主机密钥和本地信任库，不读取 SSH 身份私钥、不发起账号认证，
+  也不把扫描结果当作远端身份已验证。
+
+#### 2. Signatures
+
+```go
+type Fingerprint struct {
+    Algorithm string
+    SHA256    string
+}
+
+type Result struct {
+    Address        string
+    KnownHostsFile string
+    Existing       []Fingerprint
+    Scanned        []Fingerprint
+    Applied        bool
+}
+
+func Refresh(ctx context.Context, address, knownHostsFile string, apply bool) (Result, error)
+```
+
+#### 3. Contracts
+
+- `address` 必须是显式 `host:port`；端口 22 使用 host token，其它端口使用
+  `[host]:port`，让扫描、查询和删除命中 OpenSSH 的同一记录。
+- 查询现有记录使用 `ssh-keygen -F`，扫描使用 `ssh-keyscan -T 10 -p <port> -- <host>`，指纹使用
+  `ssh-keygen -lf -`；每条命令都有 15 秒 context 超时。
+- 默认 `apply=false` 只返回旧指纹与扫描指纹，文件系统零写入。CLI 必须提醒管理员通过
+  云控制台、服务器本地终端或其它独立通道核对，不能把 `ssh-keyscan` 说成身份验证。
+- `apply=true` 只替换目标 token 的记录，保留同一文件中的其它主机。更新必须使用
+  同目录 `0600` 临时文件、同步内容、原子 rename 和目录 sync；任何失败都必须恢复原状态，
+  包括 rename 后目录 sync 失败时恢复原文件，或删除本次首次创建的文件。
+- 目标信任库已存在时必须通过 `Lstat` 确认是普通文件且不是符号链接；不得跟随链接覆盖
+  其它文件。扫描结果为空、格式非法或外部命令失败时不得写入。
+- `ssh-keygen -R` 的任何非零退出都表示更新失败；不得把退出码 1 当作“未命中”忽略，
+  因为 OpenSSH 对损坏的 known_hosts 也可能返回该退出码。
+- 人类和 JSON 输出只包含地址、路径、算法、SHA256 指纹和是否应用；不得输出原始公钥行、
+  私钥内容或凭证。`--apply` 不表示扫描已自动可信，只表示管理员完成了显式授权。
+
+#### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+|---|---|
+| 地址或 known_hosts 路径非法 | 返回中文错误，不执行更新 |
+| known_hosts 是符号链接或非普通文件 | 拒绝刷新，原目标不变 |
+| `ssh-keyscan` 为空、超时或失败 | 返回错误，零写入 |
+| 仅预览 | `Applied=false`，文件内容和元数据不变 |
+| 原子替换失败 | 返回错误，原文件内容保持不变，临时文件被清理 |
+| rename 后目录 sync 失败 | 返回错误，恢复原文件或原先不存在的状态，并再次同步目录 |
+| CLI host 未知或为 local | 返回工具错误，不扫描网络 |
+
+#### 5. Good / Base / Bad Cases
+
+- Good：预览发现新旧指纹不同，管理员在云控制台核对后加 `--apply`，只更新该主机，
+  其它主机记录不变，文件权限为 `0600`。
+- Base：首次连接前信任库不存在；默认策略由 SSH 自动创建，或管理员先通过刷新命令建立。
+- Bad：看到密钥变化后直接删除整份 known_hosts 或改成 `StrictHostKeyChecking=no`，会同时
+  丢失其它主机信任并允许后续中间人攻击。
+
+#### 6. Tests Required
+
+- 单元测试覆盖预览零写入、首次创建、仅替换目标记录、保留其它记录和 `0600` 权限。
+- 失败测试覆盖空扫描、命令失败、符号链接、非普通文件、rename/目录 sync 失败和临时文件清理。
+- CLI 测试覆盖未知/local host、`--apply`、纯 JSON、人类输出只含指纹且不含原始公钥。
+- 测试替身必须精确断言 `ssh-keyscan` / `ssh-keygen` argv；需要真实 OpenSSH 的测试用
+  `testing.Short()` 或二进制存在性保护，默认测试不依赖网络。
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```go
+// 扫描成功不等于远端身份已验证，也不能通过删除整份信任库绕过冲突。
+_ = os.Remove(knownHostsFile)
+_, _ = hostkey.Refresh(ctx, address, knownHostsFile, true)
+```
+
+##### Correct
+
+```go
+preview, err := hostkey.Refresh(ctx, address, knownHostsFile, false)
+if err != nil {
+    return err
+}
+// 管理员通过云控制台或服务器本地终端核对 preview.Scanned 后，
+// CLI 的显式 --apply 路径才允许写入。
+_, err = hostkey.Refresh(ctx, address, knownHostsFile, true)
+return err
+```
+
 ### Scenario: doctor 的 hub 与 host 环境探测
 
 #### 1. Scope / Trigger
@@ -214,6 +317,8 @@ CLI 范围固定为：`ark doctor` 只调用 `RunLocal`；`--host <name>` 只调
 
 - `RunLocal` 只检查 hub：`restic`、`ssh`、`systemd-analyze`、仓库密码与 env 文件、
   SSH identity/known_hosts、OnCalendar 语法，以及 `restic cat config` 仓库解锁。
+- SSH identity 始终要求存在且权限不宽于 `0600`。`strict` 要求 known_hosts 已存在；
+  默认 `accept-new` 在文件缺失时检查父目录可写且可进入，满足则 warn 而非 fail。
 - 仓库密码、repo env 和 SSH identity 权限不得宽于 `0600`。repo env 只接受
   `KEY=VALUE`、可选 `export `、空行和整行注释；不得执行 shell 展开、命令替换或
   变量插值，错误不得包含 value。
@@ -238,6 +343,9 @@ CLI 范围固定为：`ark doctor` 只调用 `RunLocal`；`--host <name>` 只调
 | `RunLocal` 的 config 为空 | 记录 `config` fail，不 panic |
 | `RunHost` 的 config 或 host 为空 | 记录可定位的 fail，不 panic |
 | restic、密码文件或 repo env 前置检查失败 | 前置项 fail，`repo.access` warn 并跳过解锁 |
+| `strict` 的 known_hosts 缺失 | 本地检查 fail |
+| `accept-new` 的 known_hosts 缺失且父目录可写、可进入 | 本地检查 warn，允许首次连接创建 |
+| `accept-new` 的 known_hosts 父目录不存在、不是目录或无写入/进入权限 | 本地检查 fail |
 | SSH 登录失败 | connection fail；clock、docker、compose、项目文件和全部 target 为 warn |
 | docker 不可用 | docker fail；compose 与依赖 docker 的 target 为 warn；项目文件和 files target 继续 |
 | compose 文件或服务解析失败 | 对应项 fail；service/image target 为 warn；volume/files target 独立检查 |
@@ -258,8 +366,8 @@ CLI 范围固定为：`ark doctor` 只调用 `RunLocal`；`--host <name>` 只调
 
 #### 6. Tests Required
 
-- `RunLocal` 覆盖二进制、密钥权限、OnCalendar、repo env 严格解析、环境覆盖、
-  `restic cat config` 成败，以及敏感值不进入错误或其它子进程。
+- `RunLocal` 覆盖二进制、密钥权限、两种主机密钥策略及父目录权限、OnCalendar、
+  repo env 严格解析、环境覆盖、`restic cat config` 成败，以及敏感值不进入错误或其它子进程。
 - `RunHost` 用可控 Runner 覆盖 local/SSH 选择、登录失败降级、docker/compose 依赖、
   service/volume/path/image target、60 秒边界和每条命令 15 秒超时。
 - 文件元数据测试必须断言远程 argv 精确包含 `stat -L -c "%f %a" --`，并用符号链接
