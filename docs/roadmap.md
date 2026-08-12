@@ -328,9 +328,9 @@ func (r *Repo) Check(ctx context.Context) error
 
 **验收**（这条必须真的做，不能只写代码）：
 
-- [ ] 备份进行中 `kill -9` 掉远程 `pg_dump`，本次 target 必须报失败
-- [ ] 上述情况下，仓库里**不能残留**那个被截断的快照
-- [ ] 人为造一个体积腰斩的 dump，必须产生 warn
+- [x] 备份进行中 `kill -9` 掉远程 `pg_dump`，本次 target 必须报失败
+- [x] 上述情况下，仓库里**不能残留**那个被截断的快照
+- [x] 人为造一个体积腰斩的 dump，必须产生 warn
 
 ---
 
