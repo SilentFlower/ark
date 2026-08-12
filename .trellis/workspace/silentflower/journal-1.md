@@ -186,3 +186,25 @@ P2-2 至 P2-7 已完成质量检查和本地业务提交；本次完成决策审
 ### Next Steps
 
 - 继续 p2-live-validation，在真实服务器验证首次接受、变更拒绝和显式刷新
+
+
+## Session 8: 完成 P2 真实流 Close 生命周期修复与实机验收
+
+**Date**: 2026-08-12
+**Task**: 完成 P2 真实流 Close 生命周期修复与实机验收
+**Branch**: `main`
+
+### Summary
+
+修复真实 StdoutPipe Wait 后 Close 误报、restic summary 后失败快照在 target 与 manifest 两个入口的精确撤销、systemd restic 缓存目录和 doctor 失败项脱敏；完成真实服务器全量备份、故障注入、恢复与对象锁验收，Full Check-All 与全部质量门禁通过。归档后回到 p2-live-validation 收尾；对象锁测试 volume 待保留期结束删除，管理口令需轮换。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b76f930` | (see git log) |
+| `3f84631` | (see git log) |
+
+### Status
+
+[OK] **Completed**
