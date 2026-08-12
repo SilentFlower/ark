@@ -1,0 +1,38 @@
+{
+  "id": "p2-live-validation",
+  "name": "p2-live-validation",
+  "title": "P2 真实环境验收",
+  "description": "在真实 hub、目标机与对象存储上验证完整备份、流截断撤销、systemd、hub 自备份和对象锁。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-11-p2-backup-ready",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-12T14:10:00+08:00",
+    "completedSteps": [
+      "完成隔离真实环境基线与安全门禁",
+      "完成全量备份、SSH 主机密钥、systemd、flock、流截断、体积告警、hub 自备份与对象锁场景验收",
+      "修复实机发现的流生命周期、失败快照清理、systemd 缓存目录与 doctor 脱敏问题并复验",
+      "完成 Full Check-All、规范复核与 P2 roadmap 验收状态更新"
+    ],
+    "partialStep": null,
+    "nextStep": "归档 p2-live-validation，随后进入父任务 p2-backup-ready 的 P2 集成复核",
+    "notes": "实机验收全部通过；唯一对象锁残留在保留期到期后可删除，管理密码需由用户轮换。"
+  }
+}

@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"逐项核对所有 P2 真实验收 checkbox。"}
+{"file":"docs/design.md","reason":"审计完整备份链和对象锁/离线密钥 ADR。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计真实流、Wait、凭证与命令证据。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"审计 pg_dump、Redis 与 SQLite 一致性。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计验收证据不含密钥或业务数据。"}

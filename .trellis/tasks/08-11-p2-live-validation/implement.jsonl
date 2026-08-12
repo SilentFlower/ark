@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"P2-3/4/6/7 的真实机器、截断、systemd 和对象锁验收来源。"}
+{"file":"docs/design.md","reason":"ADR-006、009、010、011、012 的真实验证边界。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"真实 SSH/restic 命令、凭证和流退出证据。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"数据库逻辑备份和 SQLite WAL 一致性验证。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"外部二进制/真实环境测试与失败可见性。"}
