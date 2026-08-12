@@ -115,7 +115,9 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
   传递一条远程命令串；不得增加第二层 `bash -c`。
 - `Run` 等待结束并返回 stdout/stderr 合并输出；非零退出时仍返回已产生的输出。
 - `Stream` 只暴露 stdout。调用方必须先读到 EOF，再调用且只调用一次 `Wait`；
-  stderr 仅在失败时进入诊断，不能混入业务数据。
+  stderr 仅在失败时进入诊断，不能混入业务数据。`exec.Cmd.Wait` 会关闭 `StdoutPipe`，
+  因此调用方在成功 `Wait` 后释放 Reader 时，包装层只归一化 `os.ErrClosed`；Wait 前的
+  已关闭错误和其它 Close 错误仍必须返回。
 - `Feed` 把 reader 直接连接到 stdin，不得整读或落临时文件；stdout 丢弃，
   stderr 仅用于失败诊断。
 - 三种模式都使用调用方 context，本包不统一设置时长。取消或超时错误必须保留
@@ -140,6 +142,8 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 | context 取消或超时 | 返回错误可被 `errors.Is` 识别 |
 | `Run` 非零退出 | 返回合并输出和非 nil error |
 | `Stream` 非零退出或被信号终止 | stdout 读取结束后，`Wait` 返回非 nil error |
+| `Stream` 读到 EOF、Wait 成功后 Close 返回 `os.ErrClosed` | Close 归一化为 nil，不误报完整数据流失败 |
+| `Stream` Wait 前 Close 返回 `os.ErrClosed` 或其它错误 | 原样返回，不能扩大忽略范围 |
 | `Feed` 非零退出 | 返回包含 stderr 诊断的非 nil error |
 
 #### 5. Good / Base / Bad Cases
@@ -147,7 +151,7 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 - Good：远程参数包含 `safe; $(touch /tmp/x); x'y with spaces`，远端 `printf`
   原样输出该值，且 `/tmp/x` 不存在。
 - Base：`Stream(ctx, "pg_dump", "-d", database)` 返回纯 stdout，调用方读完后
-  `Wait()` 为 nil。
+  `Wait()` 为 nil，随后 Close 不因 `exec.Cmd` 已回收 pipe 而失败。
 - Bad：调用方只读 stdout、不调用 `Wait`，会把 SSH 中断或远程命令失败误判为成功。
 - Bad：把恢复输入先 `io.ReadAll`，会让大体积备份占满内存并破坏流式约束。
 
@@ -160,7 +164,8 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 - 转义测试覆盖空字符串、空格、`;`、`$(...)`、换行和单引号。
 - `Run` 覆盖成功、合并输出、非零退出和 context 取消。
 - `Stream` 覆盖 stdout/stderr 隔离、成功、非零退出、SIGKILL 和 context 超时；
-  断言失败由 `Wait` 返回。
+  断言失败由 `Wait` 返回；使用真实本地 `exec.Cmd.StdoutPipe` 覆盖 EOF → Wait → Close，
+  并断言只在 Wait 后归一化 `os.ErrClosed`，其它 Close 错误仍可见。
 - `Feed` 覆盖大输入原样传递、非零退出和 context 超时。
 - localhost SSH 集成测试用 `testing.Short()` 和四个可选环境变量保护，并实际断言
   正常执行、参数不注入、远程非零退出和远程进程被 kill。
@@ -189,11 +194,16 @@ stdout, wait, err := runner.Stream(ctx, "docker", "compose", "exec", "-T",
 if err != nil {
     return err
 }
-// 调用方先消费 stdout，再用 wait 校验 SSH 与远程命令的最终退出状态。
-if err := consume(stdout); err != nil {
-    return err
+// 消费失败时先关闭 stdout 解除上游阻塞，再 Wait 回收；成功时先 Wait 确认完整性。
+consumeErr := consume(stdout)
+if consumeErr != nil {
+    closeErr := stdout.Close()
+    waitErr := wait()
+    return errors.Join(consumeErr, closeErr, waitErr)
 }
-return wait()
+waitErr := wait()
+closeErr := stdout.Close()
+return errors.Join(waitErr, closeErr)
 ```
 
 ### Scenario: SSH 主机密钥预览与显式刷新
@@ -438,6 +448,9 @@ func (r *Repo) Check(ctx context.Context) error
   `RESTIC_REPOSITORY_FILE`；错误只报告 key 和文件路径，不报告 value。
 - `BackupStdin` 使用 `backup --json --stdin --stdin-filename`，标签逐项追加，
   只接受唯一且含非空 `snapshot_id` 的 summary；不得整读 stdin 或落临时文件。
+- `BackupStdin` 必须先解析 summary，再关闭 stdout 并等待命令。若 summary 已给出 snapshot ID
+  但 Close 或 Wait 随后失败，返回值必须同时保留该 `Snapshot` 与 error，让调用方精确撤销；
+  没有 ID 时调用方不得猜测快照。
 - `Snapshots` 解析 JSON 数组，只暴露 ark 实际使用的稳定字段，并按时间、ID 升序返回。
 - `Forget` 映射非零 daily/weekly/monthly 值并统一 `--prune`；`ForgetSnapshot`
   只删除明确 ID，不猜测其它快照。
@@ -458,6 +471,7 @@ func (r *Repo) Check(ctx context.Context) error
 | `cat config` 为 1、11、12 或未知退出码 | fail closed，不执行 init，保留错误链 |
 | filename、tag、snapshot ID、dump path 为空 | 立即返回参数错误 |
 | backup JSON 损坏、缺 summary、重复 summary 或缺 snapshot ID | 备份失败并完成 pipe/Wait 清理 |
+| backup 已输出含 ID 的 summary，随后 Close 或 Wait 失败 | 返回该 Snapshot 和非 nil error，由调用方精确撤销 |
 | restic stderr 可能含凭证 | 不无条件拼进错误；错误仍包含脱敏命令与退出状态 |
 | context 取消或超时 | 返回错误可被 `errors.Is` 识别 |
 | dump 非零退出或提前 Close | 最终 Read 或 Close 返回错误，不遗留子进程 |
@@ -468,6 +482,8 @@ func (r *Repo) Check(ctx context.Context) error
   凭证进入当前 restic 子进程，后续 ssh/docker 子进程看不到新增凭证。
 - Base：`EnsureInit` 连续调用两次，第一次只在退出码 10 时 init，第二次只执行
   `cat config`；stdin backup 能从 JSON summary 返回快照 ID。
+- Good：backup 输出唯一 summary 后以非零状态退出，返回值仍携带该 snapshot ID 和错误，
+  上层可删除这一个已提交但不可用的快照。
 - Bad：把退出码 1 一律当成“未初始化”，会在鉴权、网络或仓库损坏时错误执行 init。
 - Bad：`Dump` 直接返回 `StdoutPipe` 而不接管 Wait，会把截断或后端失败伪装成 EOF。
 
@@ -478,7 +494,8 @@ func (r *Repo) Check(ctx context.Context) error
 - 断言父进程冲突变量被移除、env 文件值只进入 restic、强制变量由清单覆盖，
   且错误不含 env value 或 restic stderr 内容。
 - `EnsureInit` 覆盖成功、退出码 10 后 init 和密码错误不 init。
-- backup 覆盖 status + summary、损坏 JSON、非零退出、context 取消和流式 stdin。
+- backup 覆盖 status + summary、损坏 JSON、非零退出、context 取消和流式 stdin；额外断言
+  summary 后非零退出会同时返回 snapshot ID 和可识别错误。
 - snapshots 覆盖 JSON 字段和时间/ID 稳定排序。
 - dump 覆盖成功、最终 Read 非零退出、提前 Close 和运行中 context 取消。
 - 真实本地仓库测试覆盖 init → 重复 init → backup → snapshots → forget → check，
@@ -677,6 +694,8 @@ func BackupTarget(
   直接使用执行器的 `StdinFilename`，调用层不得改名。
 - `BackupStdin` 成功后必须调用且只调用一次 Wait。Wait 非零且 snapshot ID 明确时，
   必须精确 `ForgetSnapshot(id)`；撤销失败与 Wait/Close 错误使用 `errors.Join` 并列返回。
+- `BackupStdin` 自身返回 error 时也要检查返回的 snapshot ID：ID 非空表示 restic 已提交并
+  输出 summary，必须在 Close → Wait 回收上游后精确撤销；ID 为空时不得猜测或按 tag 删除。
 - counting reader 只统计 restic 实际读取的字节，不整读、不缓存、不落临时文件。
 - 历史基线来自 `LastSuccessfulTargetBytes(host, targetID)`。无历史或历史为 0 不比较；
   `current * 2 < previous` 才 warn，恰好 50% 不 warn。实现使用向上取整的一半避免乘法溢出。
@@ -693,7 +712,9 @@ func BackupTarget(
 | 条件 | 最终行为 |
 |---|---|
 | ctx、run ID、source、repo、store 或内部依赖无效 | 启动备份前返回参数错误 |
-| restic 失败 | Close + Wait 回收；不猜 snapshot、不撤销；记录 fail |
+| restic 失败且 snapshot ID 为空 | Close + Wait 回收；不猜 snapshot、不撤销；记录 fail |
+| restic 失败且返回 snapshot ID | Close + Wait 回收；精确撤销该 snapshot；记录 fail |
+| restic 与 forget 同时失败 | 两条错误链都可 `errors.Is`，脱敏摘要只列失败阶段 |
 | restic 成功但 snapshot ID 为空 | Wait + Close 后记录 fail，不调用 forget |
 | restic 成功且 Wait 失败 | 精确撤销该 snapshot；记录 fail |
 | Wait 与 forget 同时失败 | 两条错误链都可 `errors.Is`，脱敏摘要只列失败阶段 |
@@ -709,6 +730,8 @@ func BackupTarget(
 
 - Good：restic 返回 snapshot 后，远程 pg_dump Wait 非零；代码只撤销这个 ID，
   Store 记录 fail，返回错误同时识别 Wait 和可选 forget 错误。
+- Good：restic 已输出 snapshot summary 后因上游流错误返回非零；代码仍只撤销返回的 ID，
+  不留下状态库不可见的坏快照。
 - Base：首次备份没有历史，正常记录 ok；后续恰好 50% 仍是 ok，49% 才是 warn。
 - Bad：`BackupStdin` 返回 nil 就直接标记成功，会把 SSH 截断产生的快照留作恢复输入。
 - Bad：把 `cause.Error()` 原样写数据库，会把上游 stderr 或底层存储详情扩散到 hub/API。
@@ -718,7 +741,8 @@ func BackupTarget(
 - 断言成功调用顺序、稳定 filename、三类标签、bytes、duration、snapshot ID、
   image digest 拷贝和完整 `RunTarget` 字段。
 - 阈值表覆盖无历史、零基线、高于一半、恰好一半、低于一半、奇数基线和 int64 最大值。
-- restic 失败断言 Close → Wait 且不 forget；Wait 失败断言 Wait → Close → 精确 forget。
+- restic 失败断言 Close → Wait；无 ID 时不 forget，有 ID 时精确 forget；Wait 失败断言
+  Wait → Close → 精确 forget。
 - Wait/Close/Forget 多错误用 `errors.Is` 分别识别，底层动作各只调用一次。
 - 覆盖 snapshot ID 缺失、history 失败、record 失败、context 取消及取消后的收尾写库。
 - secret sentinel 必须仍存在于返回错误链，但不得出现在 `TargetResult.Error` 或
@@ -741,8 +765,17 @@ if err == nil {
 
 ```go
 snapshot, backupErr := repo.BackupStdin(ctx, counter, source.StdinFilename, tags)
+if backupErr != nil {
+    closeErr := source.Reader.Close()
+    waitErr := source.Wait()
+    var forgetErr error
+    if snapshot.ID != "" {
+        forgetErr = repo.ForgetSnapshot(ctx, snapshot.ID)
+    }
+    return failedResult, errors.Join(backupErr, closeErr, waitErr, forgetErr)
+}
 waitErr := source.Wait()
-if backupErr == nil && waitErr != nil {
+if waitErr != nil {
     forgetErr := repo.ForgetSnapshot(ctx, snapshot.ID)
     return failedResult, errors.Join(waitErr, forgetErr)
 }

@@ -257,6 +257,11 @@ func serviceUnit(description, execStart string) string {
 		"",
 		"[Service]",
 		"Type=oneshot",
+		// restic 需要 HOME 或 XDG_CACHE_HOME 才能启动；system service 不保证继承 HOME，
+		// 由 systemd 创建受限缓存目录可以避免依赖调用者环境，也不把缓存放进 root home。
+		"CacheDirectory=ark",
+		"CacheDirectoryMode=0700",
+		"Environment=XDG_CACHE_HOME=/var/cache/ark",
 		"ExecStart=" + execStart,
 		"",
 	}, "\n")

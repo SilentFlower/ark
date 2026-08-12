@@ -365,12 +365,31 @@ func TestRunBackup_LocalDoctor失败不打开状态库或仓库(t *testing.T) {
 		t.Fatalf("selectBackupHosts 失败: %v", err)
 	}
 	_, err = runBackup(context.Background(), harness.cfg, hosts, backupCommandOptions{}, harness.dependencies())
-	if err == nil || !strings.Contains(err.Error(), "doctor") {
+	if err == nil || !strings.Contains(err.Error(), "失败项: local") {
 		t.Fatalf("错误 = %v", err)
 	}
 	want := []string{"lock:" + defaultBackupLockPath, "doctor:local", "unlock"}
 	if !reflect.DeepEqual(harness.events, want) {
 		t.Fatalf("调用 = %#v，期望 %#v", harness.events, want)
+	}
+}
+
+func TestDoctorFailureNames_仅返回失败项名称(t *testing.T) {
+	report := &doctor.Report{Checks: []doctor.Check{
+		{Name: "repo.access", Status: doctor.StatusFail, Detail: "secret-value"},
+		{Name: "repo.object_lock", Status: doctor.StatusWarn, Detail: "人工确认"},
+		{Name: "restic", Status: doctor.StatusOK, Detail: "restic 0.19.1"},
+	}}
+
+	got := doctorFailureNames(report)
+	if !reflect.DeepEqual(got, []string{"repo.access"}) {
+		t.Fatalf("失败项名称 = %#v", got)
+	}
+	if strings.Contains(strings.Join(got, ","), "secret-value") {
+		t.Fatal("失败项摘要不应包含检查详情")
+	}
+	if got := doctorFailureNames(nil); !reflect.DeepEqual(got, []string{"doctor 报告为空"}) {
+		t.Fatalf("空报告失败项 = %#v", got)
 	}
 }
 

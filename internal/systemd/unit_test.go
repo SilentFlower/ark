@@ -55,6 +55,17 @@ func TestBuildUnits_生成全量模板与每HostTimer(t *testing.T) {
 	if !strings.Contains(byName["ark-backup@.service"], "backup --host %i") {
 		t.Errorf("实例 service 未按 host 调用:\n%s", byName["ark-backup@.service"])
 	}
+	for _, name := range []string{"ark-backup.service", "ark-backup@.service"} {
+		for _, want := range []string{
+			"CacheDirectory=ark",
+			"CacheDirectoryMode=0700",
+			"Environment=XDG_CACHE_HOME=/var/cache/ark",
+		} {
+			if !strings.Contains(byName[name], want) {
+				t.Errorf("service %s 缺少 %q:\n%s", name, want, byName[name])
+			}
+		}
+	}
 	for name, schedule := range map[string]string{
 		"ark-backup@hub-01.timer": "*-*-* 04:17:00",
 		"ark-backup@web-01.timer": "*-*-* 05:23:00",

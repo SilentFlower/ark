@@ -8,13 +8,16 @@ package sshexec
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/silentflower/ark/internal/config"
 )
@@ -30,7 +33,7 @@ type Runner interface {
 	// Stream 启动命令并把纯 stdout 交给调用方读取。
 	// @param ctx 控制命令的取消与超时。
 	// @param argv 命令名及其参数，至少包含命令名。
-	// @return io.ReadCloser 命令 stdout；调用方必须先读完它。
+	// @return io.ReadCloser 命令 stdout；调用方必须先读完，并可在 Wait 后安全关闭。
 	// @return func() error 读取结束后必须调用一次的 Wait，用于获取真实退出状态。
 	// @return error 命令创建或启动失败时的错误。
 	Stream(ctx context.Context, argv ...string) (io.ReadCloser, func() error, error)
@@ -47,6 +50,25 @@ type commandFunc func(context.Context, string, ...string) *exec.Cmd
 type commandSpec struct {
 	cmd     *exec.Cmd
 	display string
+}
+
+type commandStdout struct {
+	reader io.ReadCloser
+	waited atomic.Bool
+}
+
+func (r *commandStdout) Read(p []byte) (int, error) {
+	return r.reader.Read(p)
+}
+
+func (r *commandStdout) Close() error {
+	err := r.reader.Close()
+	// exec.Cmd.Wait 会主动关闭 StdoutPipe。上层遵守 ADR-011 在 Wait 后释放 Reader 时，
+	// 这个已关闭状态表示资源已经回收，不应把完整快照误报为失败。
+	if r.waited.Load() && errors.Is(err, os.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 type localRunner struct {
@@ -247,10 +269,11 @@ func run(ctx context.Context, spec commandSpec) (string, error) {
 }
 
 func stream(ctx context.Context, spec commandSpec) (io.ReadCloser, func() error, error) {
-	stdout, err := spec.cmd.StdoutPipe()
+	pipe, err := spec.cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("连接命令 %s 的 stdout 失败: %w", spec.display, err)
 	}
+	stdout := &commandStdout{reader: pipe}
 
 	var stderr bytes.Buffer
 	spec.cmd.Stderr = &stderr
@@ -261,7 +284,9 @@ func stream(ctx context.Context, spec commandSpec) (io.ReadCloser, func() error,
 	}
 
 	wait := func() error {
-		if err := spec.cmd.Wait(); err != nil {
+		err := spec.cmd.Wait()
+		stdout.waited.Store(true)
+		if err != nil {
 			return wrapCommandError(ctx, spec.display, err, stderr.String())
 		}
 		return nil

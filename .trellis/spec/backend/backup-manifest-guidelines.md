@@ -57,6 +57,10 @@ schema v1 顶层 JSON 固定字段：
 同时间 ID 升序的最后一项，然后 dump 固定文件名。snapshot metadata 的唯一 path 可带
 restic 的前导 `/`，归一化后必须等于固定文件名。
 
+`SaveManifest` 消费 `BackupStdin` 的 `(Snapshot, error)` 组合契约：备份失败但返回 ID 时，
+必须用原 context 精确 `ForgetSnapshot(id)`，避免失败清单成为 `LoadLatestManifest` 的最新候选；
+撤销失败与原始备份错误使用 `errors.Join` 并列返回。没有精确 ID 时不得按 tag 猜测删除。
+
 同 schema 新增可选字段时，旧程序应忽略未知字段以保持向后兼容；未知或高于当前支持的
 `schema_version` 必须拒绝，并同时报告实际版本与支持版本。破坏性字段变更必须升 schema。
 
@@ -71,6 +75,9 @@ restic 的前导 `/`，归一化后必须等于固定文件名。
 | 同一 `(host,target_id)` 重复 | 校验失败 |
 | ok/warn target 缺少 snapshot ID | 校验失败；fail 可保留空 ID 或已撤销 ID |
 | target 的 Host 与所属 ManifestHost 不一致 | 校验失败 |
+| manifest backup 失败且返回 snapshot ID | 精确撤销该 ID，仍返回原始 backup error |
+| manifest backup 与精确撤销同时失败 | 返回错误可分别 `errors.Is` 两条错误链 |
+| manifest backup 失败且没有 snapshot ID | 返回失败，不调用 forget、不猜测候选 |
 | 无 `ark-manifest` 候选 | `found=false, error=nil` |
 | 候选缺 ID、时间、固定 path、manifest tag 或唯一 run tag | 读取失败 |
 | dump JSON 非法、过大或 run ID 与 tag 不一致 | 读取失败 |
@@ -80,9 +87,12 @@ restic 的前导 `/`，归一化后必须等于固定文件名。
 
 - **Good**：多 host、多 target，包含 ok/warn/fail 和 image digest map；JSON 往返后
   `TargetResult` 的 snapshot、bytes、duration、status、error 均不变。
+- **Good**：restic 已提交 manifest 并输出 ID 后返回非零；`SaveManifest` 只撤销该 ID，
+  原始错误与可选撤销错误仍可识别。
 - **Base**：仓库没有任何 `ark-manifest` snapshot，返回 `found=false`，调用方可继续首次备份。
 - **Bad**：最新 snapshot 的 tag 是 `run:run-2`，dump 内容却写 `run_id=run-1`；必须失败，
   不能回退到更旧 manifest 掩盖仓库不一致。
+- **Bad**：`SaveManifest` 丢弃失败返回中的 ID，会让报告失败的清单仍进入最新恢复候选。
 
 ### 6. Tests Required
 
@@ -92,7 +102,8 @@ restic 的前导 `/`，归一化后必须等于固定文件名。
 - map key 的稳定输出顺序；
 - schema、主键、UTC 时间、时间倒序、负数、重复 target、类型与状态非法；
 - 同 schema 未知可选字段可读取，未知 schema 明确拒绝；
-- `SaveManifest` 精确 filename、tag、payload 与空 snapshot ID；
+- `SaveManifest` 精确 filename、tag、payload 与空 snapshot ID；失败返回带 ID 时精确撤销，
+  覆盖撤销成功、双错误链和无 ID 不调用 forget；
 - 多 snapshot 乱序输入下按时间和 ID 选择最新项；
 - 无 snapshot 正常分支，以及 path/tag/run/dump/JSON 各类不一致失败；
 - `make check`、相关包 `-race`、常规构建与 `CGO_ENABLED=0` 构建。
@@ -125,3 +136,27 @@ duration, err := time.ParseDuration(wire.Duration)
 
 先宽松读取 `schema_version` 并拒绝不支持版本，再按已知 v1 字段解码和显式 `Validate`；
 同 schema 的额外可选字段由旧程序忽略。
+
+#### Wrong
+
+```go
+snapshot, err := repo.BackupStdin(ctx, payload, ManifestFilename, tags)
+if err != nil {
+    return restic.Snapshot{}, err // 丢失可能已经提交的 snapshot.ID
+}
+```
+
+#### Correct
+
+```go
+snapshot, backupErr := repo.BackupStdin(ctx, payload, ManifestFilename, tags)
+if backupErr != nil {
+    var forgetErr error
+    if snapshot.ID != "" {
+        forgetErr = repo.ForgetSnapshot(ctx, snapshot.ID)
+    }
+    return restic.Snapshot{}, errors.Join(backupErr, forgetErr)
+}
+```
+
+失败 manifest 不能成为恢复输入；只有 `BackupStdin` 返回的精确 ID 可以用于撤销。

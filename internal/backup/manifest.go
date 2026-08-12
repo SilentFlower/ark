@@ -77,9 +77,10 @@ type manifestTargetWire struct {
 }
 
 type manifestRepository struct {
-	backupStdin func(context.Context, io.Reader, string, []string) (restic.Snapshot, error)
-	snapshots   func(context.Context, []string) ([]restic.Snapshot, error)
-	dump        func(context.Context, string, string) (io.ReadCloser, error)
+	backupStdin    func(context.Context, io.Reader, string, []string) (restic.Snapshot, error)
+	forgetSnapshot func(context.Context, string) error
+	snapshots      func(context.Context, []string) ([]restic.Snapshot, error)
+	dump           func(context.Context, string, string) (io.ReadCloser, error)
 }
 
 // Validate 校验 manifest 的版本、主键、时间和 target 结果约束。
@@ -199,12 +200,15 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 // @param repo 已初始化的 restic 仓库。
 // @param manifest 本次 run 的完整最终结果。
 // @return restic.Snapshot 新 manifest 快照的稳定字段。
-// @return error 参数、manifest 校验、JSON 编码或 restic 存储失败时的错误。
+// @return error 参数、manifest 校验、JSON 编码、restic 存储或失败快照撤销错误。
 func SaveManifest(ctx context.Context, repo *restic.Repo, manifest Manifest) (restic.Snapshot, error) {
 	if repo == nil {
 		return restic.Snapshot{}, fmt.Errorf("保存 manifest 失败: restic repo 不能为空")
 	}
-	return saveManifest(ctx, manifest, manifestRepository{backupStdin: repo.BackupStdin})
+	return saveManifest(ctx, manifest, manifestRepository{
+		backupStdin:    repo.BackupStdin,
+		forgetSnapshot: repo.ForgetSnapshot,
+	})
 }
 
 // LoadLatestManifest 按 manifest 标签读取时间与 ID 排序后的最新一份清单。
@@ -231,7 +235,7 @@ func saveManifest(
 	if ctx == nil {
 		return restic.Snapshot{}, fmt.Errorf("保存 manifest 失败: context 不能为空")
 	}
-	if repository.backupStdin == nil {
+	if repository.backupStdin == nil || repository.forgetSnapshot == nil {
 		return restic.Snapshot{}, fmt.Errorf("保存 manifest 失败: 仓库依赖不完整")
 	}
 	payload, err := json.Marshal(manifest)
@@ -246,7 +250,19 @@ func saveManifest(
 		[]string{ManifestTag, manifestRunTag(manifest.RunID)},
 	)
 	if err != nil {
-		return restic.Snapshot{}, fmt.Errorf("保存 manifest 到 restic 失败: %w", err)
+		backupErr := fmt.Errorf("保存 manifest 到 restic 失败: %w", err)
+		if strings.TrimSpace(snapshot.ID) == "" {
+			return restic.Snapshot{}, backupErr
+		}
+		// restic 可能已经提交 manifest 后才返回非零；失败结果不能留作最新恢复清单。
+		forgetErr := repository.forgetSnapshot(ctx, snapshot.ID)
+		if forgetErr != nil {
+			return restic.Snapshot{}, errors.Join(
+				backupErr,
+				fmt.Errorf("撤销失败的 manifest 快照 %q 失败: %w", snapshot.ID, forgetErr),
+			)
+		}
+		return restic.Snapshot{}, backupErr
 	}
 	if strings.TrimSpace(snapshot.ID) == "" {
 		return restic.Snapshot{}, fmt.Errorf("保存 manifest 到 restic 失败: 未返回 snapshot ID")

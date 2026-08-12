@@ -72,6 +72,7 @@ load/validate -> select host -> nonblocking flock -> local doctor
   per-host service 和人工命令都通过同一 CLI 路径共享该锁。
 - 未指定 `--skip-doctor` 时，local fail 在建库和创建快照前中止；local/host warn
   进入整体 warn。host fail 为该 host 每个 target 写 fail/skipped 结果并继续下一 host。
+  doctor 失败错误只列 `Check.Name`，不得复制可能包含外部命令详情或敏感值的 `Detail`。
 - `RunLocal` 固定输出 `repo.object_lock=warn`，说明 provider-neutral 条件下只能人工在
   控制台核对对象锁与长期保留期。该检查不读取或输出仓库凭证，也不能伪装成 ok。
 - target 启动失败由 CLI 写合成的 fail `RunTarget`；进入 `BackupTarget` 后由完整性层
@@ -80,7 +81,8 @@ load/validate -> select host -> nonblocking flock -> local doctor
 - 任一 target/host/manifest/retention/prune/FinishRun 失败使 run fail；target warn 或
   doctor warn 在无失败时使 run warn。所有持久化错误文本只写阶段级脱敏摘要，返回 error
   仍保留底层错误链。
-- partial 仍保存 manifest；manifest 保存失败保留已产生 target 快照并跳过 retention/prune。
+- partial 仍保存 manifest；manifest 保存失败保留已产生 target 快照并跳过 retention/prune；
+  若失败返回中带 manifest snapshot ID，`SaveManifest` 必须先精确撤销该 manifest 快照。
 - 只有无 fail 的 host 才应用自己的 `RetentionFor(host)`；manifest 使用 defaults retention。
   所有 `ForgetPolicy` 完成后只调用一次 `Prune`。
 - `--json` 的 stdout 只含 snake_case JSON。backup 已输出成功/warn/fail 摘要后，失败通过
@@ -91,6 +93,9 @@ systemd 合同：
 - 生成 `ark-backup.service`、`ark-backup@.service` 和每 host 一个
   `ark-backup@<host>.timer`。service 固定 `Type=oneshot`；timer 使用
   `ScheduleFor(host)`、`Persistent=true`、`RandomizedDelaySec=600`。
+- 两种 service 都固定 `CacheDirectory=ark`、`CacheDirectoryMode=0700` 和
+  `Environment=XDG_CACHE_HOME=/var/cache/ark`，由 systemd 创建受管缓存目录；不得依赖
+  system service 继承交互 shell 的 `HOME`。
 - unit 只含 ark 二进制绝对路径、清单绝对路径和 host 参数，不读取或嵌入密码、对象存储
   env、SSH 私钥或项目 env 内容。
 - 所有 unit 先写入目标目录内的临时目录并 fsync，再整体执行
@@ -107,19 +112,20 @@ systemd 合同：
 | dry-run + 任意 host | 只 load/validate 和输出计划，无其它调用 |
 | 未知 `--host` | 获取锁前返回错误 |
 | flock 冲突 | 立即非零，无 doctor/store/repo 调用 |
-| local doctor fail | 创建 run/快照前中止 |
+| local doctor fail | 创建 run/快照前中止；错误只列失败检查项名称，不含 Detail |
 | local/host doctor warn | 继续执行，最终至少为 warn |
 | hub 状态库独占 files target | 使用 Online Backup，stdin filename 以 `.db` 结尾 |
 | hub 状态库与其它 path 混在同一 target | 获取锁前 fail closed，不执行 doctor/store/restic |
 | 远程 host 恰有同名路径 | 仍按普通远程 files target 处理，不误用 hub store |
 | 对象锁无法 provider-neutral 核验 | `repo.object_lock` 返回 warn，不阻断 doctor/backup |
-| host doctor fail | 该 host target 全部记录 fail/skipped，继续后续 host |
+| host doctor fail | 错误只列失败检查项名称；该 host target 全部记录 fail/skipped，继续后续 host |
 | target Execute/BackupTarget fail | 记录 fail，继续同 host 后续 target |
 | manifest 保存失败 | run fail，不执行 forget/prune，target 快照保留 |
 | 某 host 有 target fail | 该 host 不执行 retention；成功 host 可执行 |
 | retention 失败 | 继续其它 retention 和最终单次 prune，run fail |
 | FinishRun 失败 | 返回非零，摘要降为 fail，不伪造成成功 |
 | unit verify 失败 | 旧 unit 完全不变 |
+| system service 没有 HOME | 使用 `/var/cache/ark` 作为 `XDG_CACHE_HOME`，restic 可启动 |
 | rename/delete/fsync 失败 | 回滚全部目标 unit；回滚错误与原错误组合 |
 | 同名非受管 unit 或 symlink | fail closed，不覆盖、不删除 |
 
@@ -131,6 +137,8 @@ systemd 合同：
   retention，不创建 `/run/ark.lock`，也不读取 repo env/password。
 - **Base**：hub 状态库 target 输出 `hub-01/files/ark-state.db`，而远程同名路径仍输出
   普通 files tar；识别不跟随符号链接，也不靠 target name 猜测。
+- **Base**：systemd 在没有 `HOME` 的 system service 中创建 `/var/cache/ark`，权限 0700，
+  restic 使用 `XDG_CACHE_HOME` 正常执行。
 - **Bad**：web-01 target 失败后仍对 web-01 执行 retention，可能在没有新可用备份时
   删除旧恢复点。
 - **Bad**：install 看到用户自建的同名 timer 后直接 rename 覆盖，或跟随 symlink
@@ -151,11 +159,13 @@ systemd 合同：
 - partial 输出后错误可被 `errors.Is(err, errBackupFailed)` 识别。
 - hub 状态库精确路径走 `exportState` 而不调用普通 `executeTarget`，filename 稳定为 `.db`；
 - 混合状态库路径在加锁前拒绝，远程同名路径不误判；
-- doctor 的 `repo.object_lock` 在人类和 JSON 输出中都是 warn，且 detail 不含凭证。
+- doctor 的 `repo.object_lock` 在人类和 JSON 输出中都是 warn；local/host fail 摘要只包含
+  失败项名称，不复制 Detail。
 
 `internal/systemd/unit_test.go` 至少覆盖：
 
 - 全量 service、模板 service、per-host schedule、Persistent 和随机延迟；
+- 两种 service 都包含 `CacheDirectory=ark`、0700 mode 和 `/var/cache/ark` 环境；
 - unit 不含密码/env/私钥内容；
 - 真实 `systemd-analyze verify`，由 `testing.Short` 和 `LookPath` 保护；
 - verify 前不改旧文件，rename 中途失败完整回滚；

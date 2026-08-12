@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -12,8 +13,25 @@ import (
 
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/restic"
+	"github.com/silentflower/ark/internal/sshexec"
 	"github.com/silentflower/ark/internal/store"
 )
+
+const (
+	integrityStreamHelperEnv     = "ARK_INTEGRITY_STREAM_HELPER"
+	integrityStreamHelperPayload = "ARK_INTEGRITY_STREAM_PAYLOAD"
+)
+
+func TestIntegrityStreamHelper(t *testing.T) {
+	if os.Getenv(integrityStreamHelperEnv) != "1" {
+		return
+	}
+	if _, err := io.WriteString(os.Stdout, os.Getenv(integrityStreamHelperPayload)); err != nil {
+		os.Exit(125)
+	}
+	// 子进程必须直接退出，避免测试框架额外输出混入备份数据流。
+	os.Exit(0)
+}
 
 type integrityHarness struct {
 	events         []string
@@ -169,6 +187,41 @@ func TestBackupTarget_SuccessPersistsExactResult(t *testing.T) {
 	}
 	if probe.waitCalls != 1 || probe.closeCalls != 1 {
 		t.Errorf("Wait=%d Close=%d，期望均为 1", probe.waitCalls, probe.closeCalls)
+	}
+}
+
+func TestBackupTarget_RealStdoutPipeWaitThenCloseSucceeds(t *testing.T) {
+	const payload = "real command stdout"
+	t.Setenv(integrityStreamHelperEnv, "1")
+	t.Setenv(integrityStreamHelperPayload, payload)
+
+	reader, wait, err := sshexec.NewLocal().Stream(
+		context.Background(),
+		os.Args[0],
+		"-test.run=^TestIntegrityStreamHelper$",
+	)
+	if err != nil {
+		t.Fatalf("启动真实本地流失败: %v", err)
+	}
+	target := config.Target{Type: config.TargetFiles, Name: "etc", Paths: []string{"/etc/hosts"}}
+	source := streamResult(testHost(), target, ".tar", reader, wait)
+	harness := &integrityHarness{
+		snapshot: restic.Snapshot{ID: "snapshot-real-pipe"},
+		times:    testIntegrityTimes(),
+	}
+
+	result, err := backupTarget(context.Background(), "run-real-pipe", source, harness.dependencies())
+	if err != nil {
+		t.Fatalf("真实 StdoutPipe 备份失败: %v", err)
+	}
+	if result.Status != store.StatusOK || result.Bytes != int64(len(payload)) ||
+		result.SnapshotID != "snapshot-real-pipe" {
+		t.Errorf("TargetResult = %#v", result)
+	}
+	for _, event := range harness.events {
+		if strings.HasPrefix(event, "forget:") {
+			t.Errorf("完整快照不应被撤销，调用事件 = %#v", harness.events)
+		}
 	}
 }
 
@@ -339,6 +392,47 @@ func TestBackupTarget_ResticFailureCleansUpWithoutForgetting(t *testing.T) {
 	}
 	if result.Status != store.StatusFail || result.SnapshotID != "" {
 		t.Errorf("TargetResult = %#v", result)
+	}
+}
+
+func TestBackupTarget_ResticFailureForgetsReturnedSnapshot(t *testing.T) {
+	backupErr := errors.New("restic failed after summary")
+	forgetErr := errors.New("forget failed")
+	tests := []struct {
+		name      string
+		forgetErr error
+		wantStage string
+	}{
+		{name: "撤销成功"},
+		{name: "撤销失败可见", forgetErr: forgetErr, wantStage: "撤销坏快照失败"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			harness := &integrityHarness{
+				snapshot:  restic.Snapshot{ID: "snapshot-partial"},
+				backupErr: backupErr,
+				forgetErr: tc.forgetErr,
+				times:     testIntegrityTimes(),
+			}
+			source, _ := newIntegritySource(&harness.events, "partial", nil, nil)
+
+			result, err := backupTarget(context.Background(), "run-1", source, harness.dependencies())
+			if !errors.Is(err, backupErr) {
+				t.Fatalf("错误 = %v，期望保留 %v", err, backupErr)
+			}
+			if tc.forgetErr != nil && !errors.Is(err, tc.forgetErr) {
+				t.Fatalf("错误 = %v，期望保留 %v", err, tc.forgetErr)
+			}
+			wantEvents := []string{"backup", "close", "wait", "forget:snapshot-partial", "record"}
+			if !reflect.DeepEqual(harness.events, wantEvents) {
+				t.Fatalf("调用顺序 = %#v，期望 %#v", harness.events, wantEvents)
+			}
+			if result.Status != store.StatusFail || result.SnapshotID != "snapshot-partial" ||
+				!strings.Contains(result.Error, tc.wantStage) {
+				t.Errorf("TargetResult = %#v", result)
+			}
+		})
 	}
 }
 

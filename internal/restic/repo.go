@@ -174,7 +174,9 @@ func (r *Repo) BackupStdin(ctx context.Context, stdin io.Reader, filename string
 		wrapCommandError(ctx, display, waitErr),
 	)
 	if err != nil {
-		return Snapshot{}, err
+		// restic 可能已经提交 snapshot 并输出 summary，随后才因上游流错误返回非零。
+		// 保留已解析的 ID，调用方才能精确撤销这个不可用快照。
+		return snapshot, err
 	}
 	return snapshot, nil
 }

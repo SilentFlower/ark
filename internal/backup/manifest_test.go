@@ -160,6 +160,7 @@ func TestSaveManifest_使用固定文件名与Tags(t *testing.T) {
 			gotPayload, readErr = io.ReadAll(reader)
 			return restic.Snapshot{ID: "manifest-snapshot"}, readErr
 		},
+		forgetSnapshot: func(context.Context, string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("saveManifest 失败: %v", err)
@@ -186,12 +187,65 @@ func TestSaveManifest_使用固定文件名与Tags(t *testing.T) {
 	}
 }
 
+func TestSaveManifest_备份失败时精确撤销已提交Snapshot(t *testing.T) {
+	manifest := testManifest()
+	backupErr := errors.New("restic 收尾失败")
+
+	t.Run("撤销成功仍返回备份错误", func(t *testing.T) {
+		var gotSnapshotID string
+		_, err := saveManifest(context.Background(), manifest, manifestRepository{
+			backupStdin: func(context.Context, io.Reader, string, []string) (restic.Snapshot, error) {
+				return restic.Snapshot{ID: "failed-manifest"}, backupErr
+			},
+			forgetSnapshot: func(_ context.Context, snapshotID string) error {
+				gotSnapshotID = snapshotID
+				return nil
+			},
+		})
+		if !errors.Is(err, backupErr) {
+			t.Fatalf("错误 = %v，期望保留备份错误", err)
+		}
+		if gotSnapshotID != "failed-manifest" {
+			t.Fatalf("撤销 snapshot ID = %q，期望 failed-manifest", gotSnapshotID)
+		}
+	})
+
+	t.Run("撤销失败保留两条错误链", func(t *testing.T) {
+		forgetErr := errors.New("forget 失败")
+		_, err := saveManifest(context.Background(), manifest, manifestRepository{
+			backupStdin: func(context.Context, io.Reader, string, []string) (restic.Snapshot, error) {
+				return restic.Snapshot{ID: "failed-manifest"}, backupErr
+			},
+			forgetSnapshot: func(context.Context, string) error { return forgetErr },
+		})
+		if !errors.Is(err, backupErr) || !errors.Is(err, forgetErr) {
+			t.Fatalf("错误 = %v，期望保留备份与撤销错误", err)
+		}
+	})
+
+	t.Run("无ID时不猜测撤销", func(t *testing.T) {
+		_, err := saveManifest(context.Background(), manifest, manifestRepository{
+			backupStdin: func(context.Context, io.Reader, string, []string) (restic.Snapshot, error) {
+				return restic.Snapshot{}, backupErr
+			},
+			forgetSnapshot: func(context.Context, string) error {
+				t.Fatal("没有精确 snapshot ID 时不应撤销")
+				return nil
+			},
+		})
+		if !errors.Is(err, backupErr) {
+			t.Fatalf("错误 = %v，期望保留备份错误", err)
+		}
+	})
+}
+
 func TestSaveManifest_拒绝无SnapshotID和无效输入(t *testing.T) {
 	manifest := testManifest()
 	_, err := saveManifest(context.Background(), manifest, manifestRepository{
 		backupStdin: func(context.Context, io.Reader, string, []string) (restic.Snapshot, error) {
 			return restic.Snapshot{}, nil
 		},
+		forgetSnapshot: func(context.Context, string) error { return nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "snapshot ID") {
 		t.Fatalf("错误 = %v", err)

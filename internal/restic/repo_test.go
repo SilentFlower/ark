@@ -58,6 +58,9 @@ func TestResticHelperProcess(t *testing.T) {
 		fmt.Fprintln(os.Stdout, `{"message_type":"status","bytes_done":4}`)
 		fmt.Fprintln(os.Stdout, `{"message_type":"summary","backup_start":"2026-08-12T01:02:03Z","snapshot_id":"snapshot-123","total_bytes_processed":4}`)
 		os.Exit(0)
+	case "backup-summary-fail":
+		fmt.Fprintln(os.Stdout, `{"message_type":"summary","backup_start":"2026-08-12T01:02:03Z","snapshot_id":"snapshot-failed","total_bytes_processed":4}`)
+		os.Exit(7)
 	case "backup-malformed":
 		fmt.Fprint(os.Stdout, `{`)
 		os.Exit(0)
@@ -240,6 +243,17 @@ func TestBackupStdin_流式输入并解析Summary(t *testing.T) {
 }
 
 func TestBackupStdin_JSON或命令错误均可见且不泄漏输出(t *testing.T) {
+	t.Run("summary后非零退出仍返回快照ID", func(t *testing.T) {
+		repo := newTestRepo(t, testRepoConfig(), helperCommand(t, nil, helperPlan{mode: "backup-summary-fail"}))
+		snapshot, err := repo.BackupStdin(context.Background(), strings.NewReader("data"), "file", nil)
+		if err == nil || !strings.Contains(err.Error(), "exit status 7") {
+			t.Fatalf("错误 = %v，期望命令非零退出", err)
+		}
+		if snapshot.ID != "snapshot-failed" {
+			t.Fatalf("snapshot = %#v，期望保留已提交快照 ID", snapshot)
+		}
+	})
+
 	t.Run("JSON损坏", func(t *testing.T) {
 		repo := newTestRepo(t, testRepoConfig(), helperCommand(t, nil, helperPlan{mode: "backup-malformed"}))
 		_, err := repo.BackupStdin(context.Background(), strings.NewReader("data"), "file", nil)

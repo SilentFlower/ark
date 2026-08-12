@@ -250,8 +250,11 @@ func runBackup(
 	failures := &backupFailureSet{}
 	if !options.skipDoctor {
 		report := dependencies.runLocalDoctor(ctx, cfg)
-		if report == nil || report.Failed() {
-			return summary, fmt.Errorf("本地 doctor 未通过，备份已在创建快照前中止")
+		if failureNames := doctorFailureNames(report); len(failureNames) > 0 {
+			return summary, fmt.Errorf(
+				"本地 doctor 未通过（失败项: %s），备份已在创建快照前中止",
+				strings.Join(failureNames, ", "),
+			)
 		}
 		if reportHasWarnings(report) {
 			failures.warnings = true
@@ -379,8 +382,12 @@ func runBackupHost(
 	manifestHost := backup.ManifestHost{Host: host.Host, Targets: make([]backup.TargetResult, 0, len(host.Targets))}
 	if !skipDoctor {
 		report := dependencies.runHostDoctor(ctx, cfg, host)
-		if report == nil || report.Failed() {
-			cause := fmt.Errorf("host %q doctor 未通过", host.Host)
+		if failureNames := doctorFailureNames(report); len(failureNames) > 0 {
+			cause := fmt.Errorf(
+				"host %q doctor 未通过（失败项: %s）",
+				host.Host,
+				strings.Join(failureNames, ", "),
+			)
 			failures.add(cause, cause.Error())
 			return recordSkippedTargets(
 				ctx, runID, host, "host doctor 未通过，未执行", state, manifestHost, failures, dependencies,
@@ -821,4 +828,18 @@ func reportHasWarnings(report *doctor.Report) bool {
 	}
 	_, warn, _ := report.Counts()
 	return warn > 0
+}
+
+// doctorFailureNames 只返回失败检查项的名称，避免把可能含外部命令输出的 Detail 写入 journal。
+func doctorFailureNames(report *doctor.Report) []string {
+	if report == nil {
+		return []string{"doctor 报告为空"}
+	}
+	failures := make([]string, 0)
+	for _, check := range report.Checks {
+		if check.Status == doctor.StatusFail {
+			failures = append(failures, check.Name)
+		}
+	}
+	return failures
 }

@@ -28,6 +28,18 @@ const (
 	helperOutputFileEnv = "ARK_SSHEXEC_HELPER_OUTPUT_FILE"
 )
 
+type closeErrorReadCloser struct {
+	err error
+}
+
+func (r *closeErrorReadCloser) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (r *closeErrorReadCloser) Close() error {
+	return r.err
+}
+
 func helperCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
 	helperArgs := []string{"-test.run=TestHelperProcess", "--", name}
 	helperArgs = append(helperArgs, args...)
@@ -350,6 +362,44 @@ func TestRun_ContextCanceledIsRecognizable(t *testing.T) {
 }
 
 func TestStream(t *testing.T) {
+	t.Run("真实 pipe 在 Wait 后可关闭", func(t *testing.T) {
+		t.Setenv(helperModeEnv, "output")
+		t.Setenv(helperStdoutEnv, "payload")
+		ssh, err := newSSHRunner(validSSHConfig(), helperCommand)
+		if err != nil {
+			t.Fatalf("构造 SSH Runner 失败: %v", err)
+		}
+		runners := []struct {
+			name   string
+			runner Runner
+		}{
+			{name: "本地", runner: newLocalRunner(helperCommand)},
+			{name: "SSH", runner: ssh},
+		}
+
+		for _, tc := range runners {
+			t.Run(tc.name, func(t *testing.T) {
+				stdout, wait, err := tc.runner.Stream(context.Background(), "stream")
+				if err != nil {
+					t.Fatalf("启动流命令失败: %v", err)
+				}
+				got, err := io.ReadAll(stdout)
+				if err != nil {
+					t.Fatalf("读取 stdout 失败: %v", err)
+				}
+				if string(got) != "payload" {
+					t.Errorf("stdout = %q，期望 payload", got)
+				}
+				if err := wait(); err != nil {
+					t.Fatalf("等待流命令失败: %v", err)
+				}
+				if err := stdout.Close(); err != nil {
+					t.Fatalf("Wait 后关闭 stdout 失败: %v", err)
+				}
+			})
+		}
+	})
+
 	t.Run("stdout 与 stderr 分离", func(t *testing.T) {
 		t.Setenv(helperModeEnv, "output")
 		t.Setenv(helperStdoutEnv, "payload")
@@ -402,6 +452,9 @@ func TestStream(t *testing.T) {
 		}
 		if !strings.Contains(waitErr.Error(), "remote failed") {
 			t.Errorf("Wait 错误 %q 中未包含 stderr 诊断", waitErr.Error())
+		}
+		if err := stdout.Close(); err != nil {
+			t.Fatalf("非零退出 Wait 后关闭 stdout 失败: %v", err)
 		}
 	})
 
@@ -467,6 +520,31 @@ func TestStream(t *testing.T) {
 			t.Errorf("Wait 错误 = %v，期望可识别 DeadlineExceeded", waitErr)
 		}
 	})
+}
+
+func TestCommandStdout_CloseOnlyNormalizesWaitOwnedClosedError(t *testing.T) {
+	closeErr := errors.New("close failed")
+	tests := []struct {
+		name   string
+		waited bool
+		err    error
+		want   error
+	}{
+		{name: "Wait 前已关闭错误仍可见", err: os.ErrClosed, want: os.ErrClosed},
+		{name: "Wait 后已关闭错误归一化", waited: true, err: os.ErrClosed},
+		{name: "Wait 后真实关闭错误仍可见", waited: true, err: closeErr, want: closeErr},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout := &commandStdout{reader: &closeErrorReadCloser{err: tc.err}}
+			stdout.waited.Store(tc.waited)
+			err := stdout.Close()
+			if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Errorf("Close 错误 = %v，期望 %v", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestFeed(t *testing.T) {
@@ -569,7 +647,9 @@ func TestSSHIntegration_Localhost(t *testing.T) {
 		if err != nil {
 			t.Fatalf("读取 localhost SSH stdout 失败: %v", err)
 		}
-		return string(data), wait()
+		waitErr := wait()
+		closeErr := stdout.Close()
+		return string(data), errors.Join(waitErr, closeErr)
 	}
 
 	t.Run("正常执行", func(t *testing.T) {

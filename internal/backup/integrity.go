@@ -127,16 +127,24 @@ func backupTarget(
 	}
 
 	if backupErr != nil {
+		var forgetErr error
+		if strings.TrimSpace(snapshot.ID) != "" {
+			// restic 可能在提交 snapshot 并输出 summary 后，才因上游流错误返回非零。
+			// 只要拿到了精确 ID，就必须撤销，不能留下状态库不可见的截断快照。
+			forgetErr = dependencies.forgetSnapshot(ctx, snapshot.ID)
+		}
 		failure := errors.Join(
 			fmt.Errorf("备份 target %q 到 restic 失败: %w", source.TargetID, backupErr),
 			wrapTargetCloseError(source.TargetID, closeErr),
 			wrapTargetWaitError(source.TargetID, waitErr),
+			wrapForgetError(snapshot.ID, forgetErr),
 		)
 		safeMessage := targetFailureSummary(
 			source.TargetID,
 			"restic 备份失败",
 			stageIfError(closeErr, "关闭数据流失败"),
 			stageIfError(waitErr, "上游命令失败"),
+			stageIfError(forgetErr, "撤销坏快照失败"),
 		)
 		return persistTargetResult(
 			ctx, runID, startedAt, result, store.StatusFail, failure, safeMessage, dependencies,
