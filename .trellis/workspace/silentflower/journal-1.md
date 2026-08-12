@@ -208,3 +208,38 @@ P2-2 至 P2-7 已完成质量检查和本地业务提交；本次完成决策审
 ### Status
 
 [OK] **Completed**
+
+
+## Session 9: 完成 P2 真实环境验收
+
+**Date**: 2026-08-12
+**Task**: 完成 P2 真实环境验收
+**Branch**: `main`
+
+### Summary
+
+完成隔离实机备份链验收、缺陷修复复验、Full Check-All 与任务归档准备；验收覆盖 SSH 主机密钥、systemd、flock、截断快照撤销、体积告警、hub 自备份和对象锁。
+
+### Main Changes
+
+- 归档 p2-live-validation，并生成包含部署刷新、密码轮换和对象锁残留清理的 release.md
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b76f930` | (see git log) |
+| `f19fcdc` | (see git log) |
+| `b2454a2` | (see git log) |
+
+### Testing
+
+- [OK] make check、关键包 10 轮 race、普通/静态构建和实机场景全部通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 进入父任务 p2-backup-ready 执行 P2 集成复核

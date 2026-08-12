@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
+- **Total Sessions**: 9
 - **Last Active**: 2026-08-12
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~210 | Active |
+| `journal-1.md` | ~245 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-08-12 | 完成 P2 真实环境验收 | `b76f930`, `f19fcdc`, `b2454a2` | `main` |
 | 8 | 2026-08-12 | 完成 P2 真实流 Close 生命周期修复与实机验收 | `b76f930`, `3f84631` | `main` |
 | 7 | 2026-08-12 | 完成 P2 SSH 主机密钥易用性 | `2ff5a01`, `8a17ed9` | `main` |
 | 6 | 2026-08-12 | 归档 P2 备份可用 wave 子任务 | `8421ea6826b4c87cf2cea11118bc5b178f5892a6`, `ed9a8acc78d860904c0b1f6285a6088ff36a613d`, `62d9e4ead415365c9e1abc523b54fc0a0f47d70e`, `717e9e8adfd5f820de5602be2193677980655bf8`, `c33dbbe45d343b4e1d9bf10445b7ef90e19fb1ce`, `e7d17008eecdbf61bae248ff58b8faff976dd86a` | `main` |
