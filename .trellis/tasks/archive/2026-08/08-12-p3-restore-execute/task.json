@@ -3,7 +3,7 @@
   "name": "p3-restore-execute",
   "title": "P3-2 恢复执行",
   "description": "实现严格顺序、幂等、拒绝隐式覆盖、破坏前备份和跨主机恢复的 ark restore 执行链。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "silentflower",
   "assignee": "silentflower",
   "createdAt": "2026-08-12",
-  "completedAt": null,
+  "completedAt": "2026-08-12",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -22,5 +22,14 @@
   "parent": "08-12-p3-restore-ready",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-12T10:33:35Z",
+    "completedSteps": [
+      "auto-loop: 本地提交完成 .:ed05aa8"
+    ],
+    "partialStep": null,
+    "nextStep": "auto-loop 已本地提交并置为本地完成态；需要用户显式运行 finish-work/archive 完成归档",
+    "notes": "run_id=auto-20260812075738; task=.trellis/tasks/08-12-p3-restore-execute; commit=ed05aa83d849a58ea3b613717d72cb2c49b6b125; commits=.:ed05aa83d849a58ea3b613717d72cb2c49b6b125; status=completed"
+  }
 }
