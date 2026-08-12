@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"约束 Runner.Stream 的 stdout、Wait、Close 生命周期和真实命令测试。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"约束 BackupTarget 的 reader、Wait、Close 完整性链和失败状态语义。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"约束预期错误归一化、真实错误传播和 errors.Is 语义。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"约束风险驱动测试、竞态检查、注释和提交质量门槛。"}

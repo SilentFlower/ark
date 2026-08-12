@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"检查 Runner.Stream 生命周期、命令退出状态和集成测试覆盖。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"检查 BackupTarget 完整性链、snapshot 状态和回收顺序。"}
+{"file":".trellis/spec/backend/backup-manifest-guidelines.md","reason":"检查 manifest 失败快照撤销和最新恢复候选一致性。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"检查错误归一化边界、错误链和失败可见性。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行格式、vet、race 测试和风险场景审查。"}

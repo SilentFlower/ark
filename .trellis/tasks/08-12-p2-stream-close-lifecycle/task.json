@@ -1,0 +1,39 @@
+{
+  "id": "p2-stream-close-lifecycle",
+  "name": "p2-stream-close-lifecycle",
+  "title": "P2 真实流 Close 生命周期修复",
+  "description": "修复真实 exec.Cmd StdoutPipe 在 Wait 后再次 Close 被误判失败的问题，并补齐真实 pipe 集成测试与坏快照撤销语义。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-11-p2-backup-ready",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-12T05:39:14Z",
+    "completedSteps": [
+      "修复真实 StdoutPipe Wait 后 Close 误报并补齐 local/SSH 回归测试",
+      "保留 restic summary 后失败的 snapshot ID，并在 target 与 manifest 入口精确撤销",
+      "补齐 systemd restic 缓存目录与 doctor 失败项脱敏摘要",
+      "完成真实服务器全量备份、故障注入、systemd、flock、恢复与对象锁验收",
+      "通过 Full Check-All、race、make check、普通与无 CGO 构建并同步代码规范"
+    ],
+    "partialStep": null,
+    "nextStep": "使用 trellis-finish-work 归档当前任务，再回到 p2-live-validation 完成父任务收尾",
+    "notes": "实机环境已清理；仅保留受 WORM 截止时间保护的 MinIO Docker volume，管理口令应轮换。"
+  }
+}
