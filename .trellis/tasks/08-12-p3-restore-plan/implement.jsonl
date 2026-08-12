@@ -1,0 +1,7 @@
+{"file":"docs/roadmap.md","reason":"P3-1 Plan、dry-run、snapshot 与跨主机入口的需求来源。"}
+{"file":"docs/design.md","reason":"恢复步骤顺序、--to 语义和只读 dry-run 约束。"}
+{"file":".trellis/spec/backend/backup-manifest-guidelines.md","reason":"manifest schema、latest 选择、snapshot metadata 与失败语义。"}
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"source/destination host、Project、Target.ID 与静态校验契约。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"internal/restore 与 cli/backup/restic 的职责及依赖方向。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"人类输出、纯 JSON 和敏感信息红线。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"导出 API 注释、race、外部依赖替身和提交门禁。"}

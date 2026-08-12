@@ -23,6 +23,8 @@ const (
 	ManifestFilename = "ark-manifest.json"
 	// ManifestTag 标识只包含 ark manifest 的 restic 快照。
 	ManifestTag = "ark-manifest"
+	// LatestManifestSelector 表示按创建时间与 ID 选择最新 manifest 快照。
+	LatestManifestSelector = "latest"
 
 	manifestMaximumBytes = 16 << 20
 )
@@ -227,6 +229,28 @@ func LoadLatestManifest(ctx context.Context, repo *restic.Repo) (Manifest, bool,
 	})
 }
 
+// LoadManifestSelection 按 latest 或唯一 snapshot ID 前缀读取 manifest，并返回精确快照元数据。
+// @param ctx 控制 restic 快照查询和 dump 取消；本方法不附加固定超时。
+// @param repo 已初始化的 restic 仓库。
+// @param selector latest、完整 snapshot ID 或可唯一匹配的 snapshot ID 前缀。
+// @return Manifest 通过元数据、内容与 run 一致性校验的 manifest。
+// @return restic.Snapshot 实际读取的精确 manifest 快照元数据。
+// @return bool 是否存在 manifest；仅 latest 且仓库无 manifest 时返回 false。
+// @return error 参数、选择歧义、快照元数据、dump、JSON 或一致性校验失败时的错误。
+func LoadManifestSelection(
+	ctx context.Context,
+	repo *restic.Repo,
+	selector string,
+) (Manifest, restic.Snapshot, bool, error) {
+	if repo == nil {
+		return Manifest{}, restic.Snapshot{}, false, fmt.Errorf("读取 manifest 失败: restic repo 不能为空")
+	}
+	return loadManifestSelection(ctx, selector, manifestRepository{
+		snapshots: repo.Snapshots,
+		dump:      repo.Dump,
+	})
+}
+
 func saveManifest(
 	ctx context.Context,
 	manifest Manifest,
@@ -274,18 +298,72 @@ func loadLatestManifest(
 	ctx context.Context,
 	repository manifestRepository,
 ) (Manifest, bool, error) {
+	manifest, _, found, err := loadManifestSelection(ctx, LatestManifestSelector, repository)
+	return manifest, found, err
+}
+
+func loadManifestSelection(
+	ctx context.Context,
+	selector string,
+	repository manifestRepository,
+) (Manifest, restic.Snapshot, bool, error) {
 	if ctx == nil {
-		return Manifest{}, false, fmt.Errorf("读取 manifest 失败: context 不能为空")
+		return Manifest{}, restic.Snapshot{}, false, fmt.Errorf("读取 manifest 失败: context 不能为空")
 	}
 	if repository.snapshots == nil || repository.dump == nil {
-		return Manifest{}, false, fmt.Errorf("读取 manifest 失败: 仓库依赖不完整")
+		return Manifest{}, restic.Snapshot{}, false, fmt.Errorf("读取 manifest 失败: 仓库依赖不完整")
+	}
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return Manifest{}, restic.Snapshot{}, false, fmt.Errorf("读取 manifest 失败: snapshot 选择器不能为空")
 	}
 	snapshots, err := repository.snapshots(ctx, []string{ManifestTag})
 	if err != nil {
-		return Manifest{}, false, fmt.Errorf("查询 manifest 快照失败: %w", err)
+		return Manifest{}, restic.Snapshot{}, false, fmt.Errorf("查询 manifest 快照失败: %w", err)
 	}
+	candidate, found, err := selectManifestSnapshot(snapshots, selector)
+	if err != nil || !found {
+		return Manifest{}, restic.Snapshot{}, found, err
+	}
+	manifest, err := readManifestSnapshot(ctx, candidate, repository)
+	if err != nil {
+		return Manifest{}, restic.Snapshot{}, false, err
+	}
+	return manifest, candidate, true, nil
+}
+
+func selectManifestSnapshot(
+	snapshots []restic.Snapshot,
+	selector string,
+) (restic.Snapshot, bool, error) {
 	if len(snapshots) == 0 {
-		return Manifest{}, false, nil
+		if selector == LatestManifestSelector {
+			return restic.Snapshot{}, false, nil
+		}
+		return restic.Snapshot{}, false, fmt.Errorf("manifest snapshot %q 不存在", selector)
+	}
+
+	if selector != LatestManifestSelector {
+		var prefixMatches []restic.Snapshot
+		for _, snapshot := range snapshots {
+			if snapshot.ID == selector {
+				return snapshot, true, nil
+			}
+			if strings.HasPrefix(snapshot.ID, selector) {
+				prefixMatches = append(prefixMatches, snapshot)
+			}
+		}
+		switch len(prefixMatches) {
+		case 0:
+			return restic.Snapshot{}, false, fmt.Errorf("manifest snapshot %q 不存在", selector)
+		case 1:
+			return prefixMatches[0], true, nil
+		default:
+			return restic.Snapshot{}, false, fmt.Errorf(
+				"manifest snapshot %q 匹配多个候选，必须提供更长的 ID",
+				selector,
+			)
+		}
 	}
 
 	ordered := append([]restic.Snapshot(nil), snapshots...)
@@ -295,38 +373,45 @@ func loadLatestManifest(
 		}
 		return ordered[i].Time.Before(ordered[j].Time)
 	})
-	candidate := ordered[len(ordered)-1]
+	return ordered[len(ordered)-1], true, nil
+}
+
+func readManifestSnapshot(
+	ctx context.Context,
+	candidate restic.Snapshot,
+	repository manifestRepository,
+) (Manifest, error) {
 	runID, err := validateManifestSnapshot(candidate)
 	if err != nil {
-		return Manifest{}, false, err
+		return Manifest{}, err
 	}
 
 	reader, err := repository.dump(ctx, candidate.ID, ManifestFilename)
 	if err != nil {
-		return Manifest{}, false, fmt.Errorf("读取 manifest 快照 %q 失败: %w", candidate.ID, err)
+		return Manifest{}, fmt.Errorf("读取 manifest 快照 %q 失败: %w", candidate.ID, err)
 	}
 	payload, readErr := io.ReadAll(io.LimitReader(reader, manifestMaximumBytes+1))
 	closeErr := reader.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
-		return Manifest{}, false, fmt.Errorf("读取 manifest 快照 %q 内容失败: %w", candidate.ID, err)
+		return Manifest{}, fmt.Errorf("读取 manifest 快照 %q 内容失败: %w", candidate.ID, err)
 	}
 	if len(payload) > manifestMaximumBytes {
-		return Manifest{}, false, fmt.Errorf("manifest 快照 %q 超过 %d 字节限制", candidate.ID, manifestMaximumBytes)
+		return Manifest{}, fmt.Errorf("manifest 快照 %q 超过 %d 字节限制", candidate.ID, manifestMaximumBytes)
 	}
 
 	var manifest Manifest
 	if err := json.Unmarshal(payload, &manifest); err != nil {
-		return Manifest{}, false, fmt.Errorf("解析 manifest 快照 %q 失败: %w", candidate.ID, err)
+		return Manifest{}, fmt.Errorf("解析 manifest 快照 %q 失败: %w", candidate.ID, err)
 	}
 	if manifest.RunID != runID {
-		return Manifest{}, false, fmt.Errorf(
+		return Manifest{}, fmt.Errorf(
 			"manifest 快照 %q 的 run tag %q 与内容 run_id %q 不一致",
 			candidate.ID,
 			runID,
 			manifest.RunID,
 		)
 	}
-	return manifest, true, nil
+	return manifest, nil
 }
 
 func manifestToWire(manifest Manifest) manifestWire {

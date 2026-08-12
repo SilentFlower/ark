@@ -25,14 +25,24 @@ schema version 或错误语义。
 const ManifestSchemaVersion = 1
 const ManifestFilename = "ark-manifest.json"
 const ManifestTag = "ark-manifest"
+const LatestManifestSelector = "latest"
 
 func (m Manifest) Validate() error
 func SaveManifest(ctx context.Context, repo *restic.Repo, manifest Manifest) (restic.Snapshot, error)
 func LoadLatestManifest(ctx context.Context, repo *restic.Repo) (Manifest, bool, error)
+func LoadManifestSelection(
+    ctx context.Context,
+    repo *restic.Repo,
+    selector string,
+) (Manifest, restic.Snapshot, bool, error)
 ```
 
 `LoadLatestManifest` 的 `bool=false, error=nil` 表示仓库里尚无 manifest，是正常首次运行
 分支；存在候选快照但元数据或内容损坏必须返回错误，不能伪装成“暂无备份”。
+
+`LoadManifestSelection` 额外返回实际读取的 `restic.Snapshot`，供恢复计划保留精确
+manifest snapshot ID。`selector` 接受 `latest`、完整 ID 或唯一 ID 前缀；显式选择不存在、
+匹配多个或候选损坏时必须返回错误，不能回退到最新或其它 manifest。
 
 ### 3. Contracts
 
@@ -57,6 +67,10 @@ schema v1 顶层 JSON 固定字段：
 同时间 ID 升序的最后一项，然后 dump 固定文件名。snapshot metadata 的唯一 path 可带
 restic 的前导 `/`，归一化后必须等于固定文件名。
 
+显式选择同样只在带 `ark-manifest` 查询结果内匹配，不能把 target snapshot ID 当作
+manifest。完整 ID 优先于前缀；前缀必须唯一。选中候选后仍执行固定 path、manifest tag、
+唯一 run tag、内容 schema 和 `run_id` 一致性校验，任一失败都 fail closed。
+
 `SaveManifest` 消费 `BackupStdin` 的 `(Snapshot, error)` 组合契约：备份失败但返回 ID 时，
 必须用原 context 精确 `ForgetSnapshot(id)`，避免失败清单成为 `LoadLatestManifest` 的最新候选；
 撤销失败与原始备份错误使用 `errors.Join` 并列返回。没有精确 ID 时不得按 tag 猜测删除。
@@ -79,6 +93,11 @@ restic 的前导 `/`，归一化后必须等于固定文件名。
 | manifest backup 与精确撤销同时失败 | 返回错误可分别 `errors.Is` 两条错误链 |
 | manifest backup 失败且没有 snapshot ID | 返回失败，不调用 forget、不猜测候选 |
 | 无 `ark-manifest` 候选 | `found=false, error=nil` |
+| latest 且无候选 | `found=false, error=nil` |
+| 显式 selector 为空 | 错误指出 snapshot 选择器不能为空 |
+| 显式 ID/前缀无匹配 | 错误指出该 manifest snapshot 不存在 |
+| 显式前缀匹配多个候选 | 错误要求提供更长 ID，不调用 Dump |
+| 显式候选损坏 | 返回候选校验错误，不回退到其它 manifest |
 | 候选缺 ID、时间、固定 path、manifest tag 或唯一 run tag | 读取失败 |
 | dump JSON 非法、过大或 run ID 与 tag 不一致 | 读取失败 |
 | restic Snapshots、Dump、Read/Close 失败 | 保留底层错误链并返回失败 |
@@ -89,9 +108,11 @@ restic 的前导 `/`，归一化后必须等于固定文件名。
   `TargetResult` 的 snapshot、bytes、duration、status、error 均不变。
 - **Good**：restic 已提交 manifest 并输出 ID 后返回非零；`SaveManifest` 只撤销该 ID，
   原始错误与可选撤销错误仍可识别。
+- **Good**：`selector=def` 唯一匹配 `def222`，返回 manifest 与完整 `Snapshot{ID:"def222"}`。
 - **Base**：仓库没有任何 `ark-manifest` snapshot，返回 `found=false`，调用方可继续首次备份。
 - **Bad**：最新 snapshot 的 tag 是 `run:run-2`，dump 内容却写 `run_id=run-1`；必须失败，
   不能回退到更旧 manifest 掩盖仓库不一致。
+- **Bad**：`selector=abc` 同时匹配 `abc111` 和 `abc222`；必须报歧义且不 dump 任一候选。
 - **Bad**：`SaveManifest` 丢弃失败返回中的 ID，会让报告失败的清单仍进入最新恢复候选。
 
 ### 6. Tests Required
@@ -105,6 +126,8 @@ restic 的前导 `/`，归一化后必须等于固定文件名。
 - `SaveManifest` 精确 filename、tag、payload 与空 snapshot ID；失败返回带 ID 时精确撤销，
   覆盖撤销成功、双错误链和无 ID 不调用 forget；
 - 多 snapshot 乱序输入下按时间和 ID 选择最新项；
+- 显式完整 ID、唯一前缀、无匹配、前缀歧义和选择失败零 Dump；
+- 选择成功返回的 snapshot metadata 与实际 Dump ID 完全一致；
 - 无 snapshot 正常分支，以及 path/tag/run/dump/JSON 各类不一致失败；
 - `make check`、相关包 `-race`、常规构建与 `CGO_ENABLED=0` 构建。
 
@@ -160,3 +183,24 @@ if backupErr != nil {
 ```
 
 失败 manifest 不能成为恢复输入；只有 `BackupStdin` 返回的精确 ID 可以用于撤销。
+
+#### Wrong
+
+```go
+manifest, found, err := LoadLatestManifest(ctx, repo)
+// 用户指定的 ID 没找到时静默使用 latest。
+```
+
+#### Correct
+
+```go
+manifest, snapshot, found, err := LoadManifestSelection(ctx, repo, selector)
+if err != nil {
+    return err
+}
+if !found {
+    return fmt.Errorf("restic 仓库中不存在 manifest 快照")
+}
+```
+
+恢复计划必须保存 `snapshot.ID`，且显式选择失败后立即返回；不得把 latest 当作兜底。

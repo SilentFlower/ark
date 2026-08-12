@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 P3-1 的 Plan 完整性与 dry-run 零副作用。"}
+{"file":"docs/design.md","reason":"审计恢复顺序、source/to/snapshot 语义和人工清单。"}
+{"file":".trellis/spec/backend/backup-manifest-guidelines.md","reason":"审计 manifest 读取兼容性、选择稳定性和损坏失败。"}
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"审计清单映射与错误路径。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计 JSON 纯度与凭证脱敏。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 restore/backup/cli 测试与全仓门禁。"}

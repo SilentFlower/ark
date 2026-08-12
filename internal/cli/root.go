@@ -74,6 +74,7 @@ func newRootCmd() *cobra.Command {
 		newDoctorCmd(&configPath),
 		newHostKeyCmd(&configPath),
 		newBackupCmd(&configPath),
+		newRestoreCmd(&configPath),
 		newInstallCmd(&configPath),
 	)
 	return root

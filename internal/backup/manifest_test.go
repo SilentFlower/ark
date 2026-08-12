@@ -294,6 +294,75 @@ func TestLoadLatestManifest_按时间与ID确定最新并核对Run(t *testing.T)
 	}
 }
 
+func TestLoadManifestSelection_显式ID唯一匹配并返回快照元数据(t *testing.T) {
+	manifest := testManifest()
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("编码测试 manifest 失败: %v", err)
+	}
+	base := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	snapshots := []restic.Snapshot{
+		{ID: "abc111", Time: base, Paths: []string{"/" + ManifestFilename}, Tags: []string{ManifestTag, "run:old"}},
+		{ID: "def222", Time: base.Add(time.Hour), Paths: []string{"/" + ManifestFilename}, Tags: []string{ManifestTag, "run:run-1"}},
+	}
+	var dumped string
+	got, snapshot, found, err := loadManifestSelection(context.Background(), "def", manifestRepository{
+		snapshots: func(context.Context, []string) ([]restic.Snapshot, error) {
+			return snapshots, nil
+		},
+		dump: func(_ context.Context, snapshotID string, _ string) (io.ReadCloser, error) {
+			dumped = snapshotID
+			return io.NopCloser(strings.NewReader(string(payload))), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("loadManifestSelection 失败: %v", err)
+	}
+	if !found || !reflect.DeepEqual(got, manifest) {
+		t.Fatalf("got=%#v found=%v", got, found)
+	}
+	if snapshot.ID != "def222" || dumped != "def222" {
+		t.Fatalf("选择 snapshot=%#v dump=%q", snapshot, dumped)
+	}
+}
+
+func TestLoadManifestSelection_显式选择失败时不回退(t *testing.T) {
+	base := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	snapshots := []restic.Snapshot{
+		{ID: "abc111", Time: base},
+		{ID: "abc222", Time: base.Add(time.Hour)},
+	}
+	tests := []struct {
+		name     string
+		selector string
+		wantErr  string
+	}{
+		{name: "空选择器", selector: " ", wantErr: "不能为空"},
+		{name: "不存在", selector: "missing", wantErr: "不存在"},
+		{name: "前缀歧义", selector: "abc", wantErr: "匹配多个"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dumped := false
+			_, _, found, err := loadManifestSelection(context.Background(), tc.selector, manifestRepository{
+				snapshots: func(context.Context, []string) ([]restic.Snapshot, error) {
+					return snapshots, nil
+				},
+				dump: func(context.Context, string, string) (io.ReadCloser, error) {
+					dumped = true
+					return nil, nil
+				},
+			})
+			if found || err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("found=%v err=%v，期望包含 %q", found, err, tc.wantErr)
+			}
+			if dumped {
+				t.Fatal("选择失败后不应回退并 dump 其它 manifest")
+			}
+		})
+	}
+}
+
 func TestLoadLatestManifest_无快照是正常分支(t *testing.T) {
 	got, found, err := loadLatestManifest(context.Background(), manifestRepository{
 		snapshots: func(context.Context, []string) ([]restic.Snapshot, error) { return nil, nil },
