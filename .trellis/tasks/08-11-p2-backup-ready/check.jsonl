@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"反向核对全部 P2 验收是否由子任务覆盖。"}
+{"file":"docs/design.md","reason":"核对跨子任务数据链、ADR 和人工验收边界。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"审计备份主链、状态聚合、失败传播、systemd 和凭证脱敏边界。"}
+{"file":".trellis/spec/backend/backup-manifest-guidelines.md","reason":"审计 manifest、snapshot ID 追踪和失败快照精确撤销契约。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行最终全仓质量检查。"}

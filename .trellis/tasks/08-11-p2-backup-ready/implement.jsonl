@@ -1,0 +1,4 @@
+{"file":"docs/roadmap.md","reason":"P2-2 至 P2-8、实机缺陷修复和最终阶段状态的范围、顺序、硬约束与验收来源。"}
+{"file":"docs/design.md","reason":"P2 数据流、ADR-001 至 ADR-012 和阶段依赖的架构来源。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"父子任务对应包边界与依赖方向。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"批次质量门禁和外部二进制测试跳过规则。"}

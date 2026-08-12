@@ -1,0 +1,48 @@
+{
+  "id": "p2-backup-ready",
+  "name": "p2-backup-ready",
+  "title": "P2 备份可用",
+  "description": "统筹 P2-2 至 P2-8 的代码交付、实机缺陷修复、真实环境验收与最终集成复核。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-11-p2-restic",
+    "08-11-p2-target-executors",
+    "08-11-p2-stream-integrity",
+    "08-11-p2-manifest",
+    "08-11-p2-backup-cli",
+    "08-11-p2-hub-protection",
+    "08-11-p2-live-validation",
+    "08-12-p2-ssh-host-key-usability",
+    "08-12-p2-stream-close-lifecycle"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-12T14:48:02+08:00",
+    "completedSteps": [
+      "核对九个 P2 子任务的归档、提交与 Check-All 证据",
+      "完成备份数据主链和发布边界集成复核",
+      "通过全仓门禁、restic 生命周期测试与 Full Check-All",
+      "更新 P2 roadmap、验收记录和上线操作单"
+    ],
+    "partialStep": null,
+    "nextStep": "归档父任务",
+    "notes": "P2-2 至 P2-8、实机缺陷修复和真实环境验收均已完成；父任务等待显式 finish-work 归档。"
+  }
+}
