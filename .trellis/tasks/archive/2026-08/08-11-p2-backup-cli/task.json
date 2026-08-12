@@ -3,7 +3,7 @@
   "name": "p2-backup-cli",
   "title": "P2-6 backup CLI 与 systemd",
   "description": "实现 ark backup 编排、单实例锁、失败隔离、保留策略、systemd service/timer 生成和 ark install。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "silentflower",
   "assignee": "silentflower",
   "createdAt": "2026-08-11",
-  "completedAt": null,
+  "completedAt": "2026-08-11",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -22,5 +22,14 @@
   "parent": "08-11-p2-backup-ready",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-11T17:51:34Z",
+    "completedSteps": [
+      "auto-loop: 本地提交完成 .:c33dbbe"
+    ],
+    "partialStep": null,
+    "nextStep": "auto-loop 已本地提交并置为本地完成态；需要用户显式运行 finish-work/archive 完成归档",
+    "notes": "run_id=auto-20260811155456; task=.trellis/tasks/08-11-p2-backup-cli; commit=c33dbbe45d343b4e1d9bf10445b7ef90e19fb1ce; commits=.:c33dbbe45d343b4e1d9bf10445b7ef90e19fb1ce; status=completed"
+  }
 }
