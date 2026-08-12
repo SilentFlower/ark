@@ -265,3 +265,40 @@ P2-2 至 P2-7 已完成质量检查和本地业务提交；本次完成决策审
 ### Status
 
 [OK] **Completed**
+
+
+## Session 11: 完成 P3 Wave A 恢复计划与执行
+
+**Date**: 2026-08-12
+**Task**: 完成 P3 Wave A 恢复计划与执行
+**Branch**: `main`
+
+### Summary
+
+P3-1 恢复 dry-run 与 P3-2 可重跑恢复执行已完成全量检查并归档；修复 P3-2 auto-loop 完成态落盘缺失，父任务保留 P3-3 至 P3-5 待推进。
+
+### Main Changes
+
+- 实现并提交恢复 Plan、只读 dry-run 与严格 manifest/digest 校验
+- 实现带冲突保护、安全备份、幂等续跑和健康校验的恢复执行
+- 归档 P3-1 与 P3-2，保留 P3 父任务及后续验收任务
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `39206c8a4b47adbd7ecc7abd5d66a57c3a113f99` | (see git log) |
+| `ed05aa83d849a58ea3b613717d72cb2c49b6b125` | (see git log) |
+
+### Testing
+
+- [OK] make check、make build、无 CGO 构建、go mod verify、git diff --check 均通过
+- [OK] restore/cli/doctor/backup race 测试 count=10 通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动 P3-3 跨机重建实测，使用已提供的隔离服务器完成真实恢复验收
