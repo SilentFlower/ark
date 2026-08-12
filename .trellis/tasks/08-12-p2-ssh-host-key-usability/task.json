@@ -1,0 +1,39 @@
+{
+  "id": "p2-ssh-host-key-usability",
+  "name": "p2-ssh-host-key-usability",
+  "title": "P2 SSH 主机密钥易用性",
+  "description": "默认接受首次连接主机密钥，保留严格模式，并提供显式刷新变更密钥的安全工作流。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-11-p2-backup-ready",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-12T10:02:00+08:00",
+    "completedSteps": [
+      "实现默认 accept-new 与显式 strict 主机密钥策略",
+      "实现 host-key refresh 预览和显式原子更新",
+      "补齐 doctor 策略检查与失败回滚测试",
+      "通过 Check-All、构建与规范更新",
+      "提交并推送业务变更"
+    ],
+    "partialStep": null,
+    "nextStep": "归档当前任务后继续 p2-live-validation 真实环境验收",
+    "notes": "Check-All 无剩余 findings；业务提交 2ff5a01 已推送。"
+  }
+}

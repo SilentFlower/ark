@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"清单字段、默认值、兼容性和静态校验契约。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"OpenSSH、ssh-keyscan、ssh-keygen 的 argv、流和错误边界。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"确定主机密钥刷新逻辑的包边界和依赖方向。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"主机密钥冲突、扫描失败和原子写入错误传播。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"指纹可见性与凭证、私钥、环境变量输出红线。"}
+{"file":"docs/design.md","reason":"ADR-002 和现有 SSH 严格校验设计背景。"}

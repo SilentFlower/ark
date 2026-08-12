@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"审计 schema v2 兼容、默认策略和错误路径。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计命令注入、超时、stderr 和 SSH 参数一致性。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"审计预览、应用、失败回滚和操作指引。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计输出只含指纹与路径，不泄露敏感信息。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行单元、集成、构建和 diff 质量门。"}
+{"file":"docs/roadmap.md","reason":"核对 P2 子任务顺序和真实环境验收依赖。"}
