@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,32 @@ func RunHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report
 		return r
 	}
 	return runHost(ctx, cfg, host, runner, time.Now)
+}
+
+// RunRestoreHost 检查恢复目标机在项目文件尚未落地前具备连接、时钟、Docker 与 Compose 能力。
+// @param ctx 控制每条目标机探测命令的取消和超时。
+// @param cfg 已完成静态校验的完整备份清单。
+// @param host 要作为恢复目标检查的 host。
+// @return *Report 恢复前环境检查报告；不会要求待恢复文件、服务或 volume 已存在。
+func RunRestoreHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report {
+	r := &Report{}
+	if cfg == nil {
+		r.add("config", StatusFail, "清单为空")
+		return r
+	}
+	if host == nil {
+		r.add("host", StatusFail, "host 为空")
+		return r
+	}
+
+	runner, err := runnerForHost(host)
+	if err != nil {
+		name := hostCheckName(host, "connection")
+		r.add(name, StatusFail, "创建执行器失败: %v", err)
+		addRestoreConnectionDependentWarnings(r, host)
+		return r
+	}
+	return runRestoreHost(ctx, host, runner, time.Now)
 }
 
 // runnerForHost 只负责 local / SSH 执行器选择，业务检查不关心连接形态。
@@ -100,6 +127,36 @@ func runHost(
 	return r
 }
 
+func runRestoreHost(
+	ctx context.Context,
+	host *config.Host,
+	runner sshexec.Runner,
+	now func() time.Time,
+) *Report {
+	r := &Report{}
+	name := func(item string) string { return hostCheckName(host, item) }
+
+	if host.Local {
+		r.add(name("connection"), StatusOK, "本机执行")
+	} else {
+		if _, err := runRunner(ctx, runner, "true"); err != nil {
+			r.add(name("connection"), StatusFail, "SSH 登录失败: %v", err)
+			addRestoreConnectionDependentWarnings(r, host)
+			return r
+		}
+		r.add(name("connection"), StatusOK, "SSH 登录成功")
+	}
+
+	checkClock(ctx, r, name("clock"), runner, now)
+	dockerOK := checkRunnerVersion(ctx, r, name("docker"), runner, "docker", "--version")
+	if dockerOK {
+		checkRunnerVersion(ctx, r, name("docker compose"), runner, "docker", "compose", "version")
+	} else {
+		r.add(name("docker compose"), StatusWarn, "docker 不可用，跳过检查")
+	}
+	return r
+}
+
 func hostCheckName(host *config.Host, item string) string {
 	hostName := host.Host
 	if hostName == "" {
@@ -121,6 +178,13 @@ func addConnectionDependentWarnings(r *Report, host *config.Host) {
 	r.add(name("compose.services"), StatusWarn, "%s", reason)
 	for _, target := range host.Targets {
 		r.add(name("target "+target.ID()), StatusWarn, "%s", reason)
+	}
+}
+
+func addRestoreConnectionDependentWarnings(r *Report, host *config.Host) {
+	name := func(item string) string { return hostCheckName(host, item) }
+	for _, item := range []string{"clock", "docker", "docker compose"} {
+		r.add(name(item), StatusWarn, "连接不可用，跳过检查")
 	}
 }
 
@@ -324,6 +388,7 @@ func checkHostTargets(
 	servicesOK bool,
 ) {
 	name := func(item string) string { return hostCheckName(host, item) }
+	imageDigestFound := false
 	for _, target := range host.Targets {
 		item := name("target " + target.ID())
 		switch target.Type {
@@ -352,12 +417,15 @@ func checkHostTargets(
 			}
 			r.add(item, StatusOK, "%d 个路径均存在", len(target.Paths))
 		case config.TargetImageDigest:
+			imageDigestFound = true
 			if !servicesOK {
 				r.add(item, StatusWarn, "compose 服务列表不可用，跳过服务检查")
 				continue
 			}
+			configured := make(map[string]bool, len(target.Services))
 			var unknown []string
 			for _, service := range target.Services {
+				configured[service] = true
 				if !services[service] {
 					unknown = append(unknown, service)
 				}
@@ -366,8 +434,22 @@ func checkHostTargets(
 				r.add(item, StatusFail, "compose 中不存在服务: %s", strings.Join(unknown, ", "))
 				continue
 			}
+			var missing []string
+			for service := range services {
+				if !configured[service] {
+					missing = append(missing, service)
+				}
+			}
+			sort.Strings(missing)
+			if len(missing) > 0 {
+				r.add(item, StatusFail, "以下 compose 服务未纳入 image digest: %s", strings.Join(missing, ", "))
+				continue
+			}
 			r.add(item, StatusOK, "%d 个服务均已定义", len(target.Services))
 		}
+	}
+	if servicesOK && len(services) > 0 && !imageDigestFound {
+		r.add(name("target image_digest"), StatusFail, "未配置 image_digest target，无法保证灾难恢复使用备份时镜像")
 	}
 }
 

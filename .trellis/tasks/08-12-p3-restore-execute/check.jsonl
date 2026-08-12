@@ -1,0 +1,7 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 P3-2 全部硬性要求和 P3-3 前置验收。"}
+{"file":"docs/design.md","reason":"审计恢复顺序、--force、安全备份和人工清单。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计 Run/Feed/Dump 生命周期、argv 与失败传播。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"审计 PostgreSQL/Redis 数据恢复与就绪判定。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"审计锁、doctor 与 pre-restore backup 复用。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计输出纯度与敏感信息。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行目标包、race、构建与全仓门禁。"}

@@ -376,6 +376,51 @@ func TestRunHost_完整检查并保持参数边界(t *testing.T) {
 	assertRunnerCall(t, runner.calls, []string{"stat", "-L", "-c", "%f %a", "--", filesPath})
 }
 
+func TestRunRestoreHost_不要求待恢复资源预先存在(t *testing.T) {
+	host := &config.Host{
+		Host: "web-01",
+		Project: config.Project{
+			ComposeFile: "/srv/new/compose.yaml",
+			EnvFile:     "/srv/new/.env",
+		},
+		Targets: []config.Target{
+			{Type: config.TargetVolume, Name: "missing-volume"},
+			{Type: config.TargetFiles, Name: "config", Paths: []string{"/srv/new/compose.yaml"}},
+		},
+	}
+	runner := &fakeRunner{t: t}
+	runner.run = func(argv []string) (string, error) {
+		switch {
+		case reflect.DeepEqual(argv, []string{"true"}):
+			return "", nil
+		case reflect.DeepEqual(argv, []string{"date", "+%s"}):
+			return "1000\n", nil
+		case reflect.DeepEqual(argv, []string{"docker", "--version"}):
+			return "Docker 28\n", nil
+		case reflect.DeepEqual(argv, []string{"docker", "compose", "version"}):
+			return "Docker Compose v2\n", nil
+		default:
+			return "", fmt.Errorf("恢复 doctor 不应探测待恢复资源: %q", argv)
+		}
+	}
+	report := runRestoreHost(context.Background(), host, runner,
+		fixedTimes(t, time.Unix(1000, 0), time.Unix(1000, 0)))
+
+	if report.Failed() || len(report.Checks) != 4 {
+		t.Fatalf("恢复 doctor 报告 = %#v", report.Checks)
+	}
+	for _, name := range []string{
+		"web-01 / connection", "web-01 / clock", "web-01 / docker", "web-01 / docker compose",
+	} {
+		assertCheckStatus(t, report, name, StatusOK)
+	}
+	for _, call := range runner.calls {
+		if call[0] == "stat" || (len(call) >= 3 && reflect.DeepEqual(call[:3], []string{"docker", "volume", "inspect"})) {
+			t.Fatalf("恢复 doctor 探测了待恢复资源: %q", call)
+		}
+	}
+}
+
 func TestRunHost_连接失败时后续检查全部降级(t *testing.T) {
 	host := &config.Host{
 		Host: "web-01",
@@ -501,6 +546,30 @@ func TestCheckServiceTarget_服务不存在时失败(t *testing.T) {
 	report := &Report{}
 	checkServiceTarget(report, "web-01 / target redis/redis", "redis", map[string]bool{"api": true}, true)
 	assertCheckStatus(t, report, "web-01 / target redis/redis", StatusFail)
+}
+
+func TestCheckHostTargets_ImageDigest漏掉Compose服务时失败(t *testing.T) {
+	report := &Report{}
+	host := &config.Host{
+		Host: "web-01",
+		Targets: []config.Target{{
+			Type: config.TargetImageDigest, Services: []string{"api"},
+		}},
+	}
+	checkHostTargets(context.Background(), report, host, &fakeRunner{t: t},
+		map[string]bool{"api": true, "db": true}, true, true)
+	check := findCheck(t, report, "web-01 / target image_digest")
+	if check.Status != StatusFail || !strings.Contains(check.Detail, "db") {
+		t.Fatalf("检查结果 = %#v", check)
+	}
+}
+
+func TestCheckHostTargets_缺少ImageDigestTarget时失败(t *testing.T) {
+	report := &Report{}
+	host := &config.Host{Host: "web-01"}
+	checkHostTargets(context.Background(), report, host, &fakeRunner{t: t},
+		map[string]bool{"api": true}, true, true)
+	assertCheckStatus(t, report, "web-01 / target image_digest", StatusFail)
 }
 
 func TestCheckClock_六十秒边界(t *testing.T) {

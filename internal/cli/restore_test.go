@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,10 +13,39 @@ import (
 
 	"github.com/silentflower/ark/internal/backup"
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/doctor"
 	"github.com/silentflower/ark/internal/restic"
 	"github.com/silentflower/ark/internal/restore"
+	"github.com/silentflower/ark/internal/sshexec"
 	"github.com/silentflower/ark/internal/store"
 )
+
+type restoreNoopRunner struct{}
+
+func (restoreNoopRunner) Run(context.Context, ...string) (string, error) { return "", nil }
+
+func (restoreNoopRunner) Stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
+	return io.NopCloser(strings.NewReader("")), func() error { return nil }, nil
+}
+
+func (restoreNoopRunner) Feed(context.Context, io.Reader, ...string) error { return nil }
+
+type restoreEventCloser struct {
+	events *[]string
+}
+
+func (c *restoreEventCloser) Close() error {
+	*c.events = append(*c.events, "unlock")
+	return nil
+}
+
+type restoreErrorWriter struct {
+	err error
+}
+
+func (w restoreErrorWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
 
 func testRestoreCommandInputs() (*config.Config, backup.Manifest, restic.Snapshot) {
 	project := config.Project{
@@ -61,7 +92,7 @@ func testRestoreCommandInputs() (*config.Config, backup.Manifest, restic.Snapsho
 			Host: "web-01",
 			Targets: []backup.TargetResult{
 				{Host: "web-01", TargetID: "files/config", TargetType: config.TargetFiles, Status: store.StatusOK, SnapshotID: "files-snapshot"},
-				{Host: "web-01", TargetID: "image_digest", TargetType: config.TargetImageDigest, Status: store.StatusOK, SnapshotID: "image-snapshot", ImageDigests: map[string]string{"api": "registry.invalid/api@sha256:111"}},
+				{Host: "web-01", TargetID: "image_digest", TargetType: config.TargetImageDigest, Status: store.StatusOK, SnapshotID: "image-snapshot", ImageDigests: map[string]string{"api": "registry.invalid/api@sha256:1111111111111111111111111111111111111111111111111111111111111111"}},
 				{Host: "web-01", TargetID: "postgres/db/app", TargetType: config.TargetPostgres, Status: store.StatusOK, SnapshotID: "postgres-snapshot"},
 			},
 		}},
@@ -164,7 +195,7 @@ func TestRestoreCommand_人类输出包含完整审计信息且不泄漏凭证(t
 		"阶段 health",
 		"files-snapshot",
 		"postgres-snapshot",
-		"registry.invalid/api@sha256:111",
+		"registry.invalid/api@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		"默认拒绝覆盖",
 		"确认 DNS 指向目标主机",
 	} {
@@ -202,7 +233,7 @@ func TestRestoreCommand_参数错误不调用依赖(t *testing.T) {
 		want string
 	}{
 		{name: "缺少 host", args: []string{"--dry-run"}, want: "--host"},
-		{name: "缺少 dry-run", args: []string{"--host", "web-01"}, want: "仅支持 --dry-run"},
+		{name: "dry-run 与 force 冲突", args: []string{"--host", "web-01", "--dry-run", "--force"}, want: "不能与"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,6 +250,269 @@ func TestRestoreCommand_参数错误不调用依赖(t *testing.T) {
 				t.Fatal("参数错误后不应调用任何依赖")
 			}
 		})
+	}
+}
+
+func TestRestoreCommand_真实恢复按锁和Doctor顺序执行且JSON仅输出结果(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	configPath := "/etc/ark/test.yaml"
+	var events []string
+	dependencies := restoreDependencies{
+		loadConfig: func(path string) (*config.Config, error) {
+			events = append(events, "load:"+path)
+			return cfg, nil
+		},
+		acquireLock: func(path string) (io.Closer, error) {
+			events = append(events, "lock:"+path)
+			return &restoreEventCloser{events: &events}, nil
+		},
+		runLocalDoctor: func(context.Context, *config.Config) *doctor.Report {
+			events = append(events, "doctor:local")
+			return &doctor.Report{}
+		},
+		runRestoreDoctor: func(_ context.Context, _ *config.Config, host *config.Host) *doctor.Report {
+			events = append(events, "doctor:"+host.Host)
+			return &doctor.Report{}
+		},
+		newRepo: func(*config.Repo) (*restic.Repo, error) {
+			events = append(events, "repo")
+			return nil, nil
+		},
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			events = append(events, "manifest")
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(host *config.Host) (sshexec.Runner, error) {
+			events = append(events, "runner:"+host.Host)
+			return restoreNoopRunner{}, nil
+		},
+		execute: func(
+			_ context.Context,
+			plan restore.Plan,
+			_ *restic.Repo,
+			_ sshexec.Runner,
+			options restore.ExecuteOptions,
+		) (restore.Result, error) {
+			events = append(events, "execute")
+			if options.Force || options.OnPlanReady != nil || options.SafetyBackup == nil {
+				t.Fatalf("JSON 执行选项错误: %#v", options)
+			}
+			return restore.Result{
+				ManifestSnapshotID: plan.ManifestSnapshotID,
+				RunID:              plan.RunID,
+				SourceHost:         plan.SourceHost,
+				DestinationHost:    plan.DestinationHost,
+				Status:             store.StatusOK,
+			}, nil
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("真实 restore 失败: %v", err)
+	}
+	wantEvents := []string{
+		"load:/etc/ark/test.yaml", "lock:/run/ark.lock", "repo", "manifest",
+		"doctor:local", "doctor:web-02", "runner:web-02", "execute", "unlock",
+	}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("调用顺序 = %#v，期望 %#v", events, wantEvents)
+	}
+	var result restore.Result
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("JSON 结果无效: %v\n%s", err, output.String())
+	}
+	if result.Status != store.StatusOK || strings.Contains(output.String(), "恢复计划") {
+		t.Fatalf("JSON 输出 = %s", output.String())
+	}
+}
+
+func TestRestoreCommand_执行失败输出脱敏结果并返回哨兵(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	configPath := "unused"
+	wantErr := errors.New("底层包含敏感 stderr")
+	dependencies := restoreDependencies{
+		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
+		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+		runLocalDoctor:   func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report { return &doctor.Report{} },
+		newRepo:          func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		execute: func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error) {
+			return restore.Result{Status: store.StatusFail, Error: "恢复未完成"}, wantErr
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--json"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, errRestoreFailed) || !errors.Is(err, wantErr) {
+		t.Fatalf("错误链 = %v", err)
+	}
+	if strings.Contains(output.String(), "敏感 stderr") || !strings.Contains(output.String(), `"error": "恢复未完成"`) {
+		t.Fatalf("失败输出未脱敏: %s", output.String())
+	}
+}
+
+func TestRestoreCommand_执行与结果输出同时失败仍保留哨兵(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	configPath := "unused"
+	runErr := errors.New("底层包含敏感 stderr")
+	writeErr := errors.New("writer failed")
+	dependencies := restoreDependencies{
+		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
+		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+		runLocalDoctor:   func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report { return &doctor.Report{} },
+		newRepo:          func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		execute: func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error) {
+			return restore.Result{Status: store.StatusFail, Error: "恢复未完成"}, runErr
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	cmd.SetOut(restoreErrorWriter{err: writeErr})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--json"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, errRestoreFailed) || !errors.Is(err, runErr) || !errors.Is(err, writeErr) {
+		t.Fatalf("错误链 = %v", err)
+	}
+}
+
+func TestRestoreCommand_源端本地状态库映射为原始文件恢复(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	statePath := "/var/lib/ark/ark.db"
+	stateTarget := config.Target{Type: config.TargetFiles, Name: "ark-state", Paths: []string{statePath}}
+	cfg.Hosts[0].Local = true
+	cfg.Hosts[0].SSH = nil
+	cfg.Hosts[0].Targets = append(cfg.Hosts[0].Targets, stateTarget)
+	cfg.Hosts[1].Targets = append(cfg.Hosts[1].Targets, stateTarget)
+	manifest.Hosts[0].Targets = append(manifest.Hosts[0].Targets, backup.TargetResult{
+		Host: "web-01", TargetID: stateTarget.ID(), TargetType: config.TargetFiles,
+		Status: store.StatusOK, SnapshotID: "state-snapshot",
+	})
+	configPath := "unused"
+	dependencies := restoreDependencies{
+		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
+		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+		runLocalDoctor:   func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report { return &doctor.Report{} },
+		newRepo:          func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		execute: func(
+			_ context.Context,
+			_ restore.Plan,
+			_ *restic.Repo,
+			_ sshexec.Runner,
+			options restore.ExecuteOptions,
+		) (restore.Result, error) {
+			if !reflect.DeepEqual(options.RawFileTargets, map[string]string{stateTarget.ID(): statePath}) {
+				t.Fatalf("原始文件映射 = %#v", options.RawFileTargets)
+			}
+			return restore.Result{Status: store.StatusOK}, nil
+		},
+		backup: backupDependencies{statePath: statePath},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	cmd.SetOut(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("真实 restore 失败: %v", err)
+	}
+}
+
+func TestRestoreCommand_人类Plan输出失败时不执行目标写入(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	configPath := "unused"
+	wantErr := errors.New("writer failed")
+	executeCalled := false
+	dependencies := restoreDependencies{
+		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
+		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+		runLocalDoctor:   func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report { return &doctor.Report{} },
+		newRepo:          func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		execute: func(
+			_ context.Context,
+			plan restore.Plan,
+			_ *restic.Repo,
+			_ sshexec.Runner,
+			options restore.ExecuteOptions,
+		) (restore.Result, error) {
+			executeCalled = true
+			if err := options.OnPlanReady(plan); !errors.Is(err, wantErr) {
+				t.Fatalf("Plan 输出错误 = %v", err)
+			}
+			return restore.Result{}, wantErr
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	cmd.SetOut(restoreErrorWriter{err: wantErr})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) || !executeCalled {
+		t.Fatalf("错误=%v execute=%v", err, executeCalled)
+	}
+}
+
+func TestRunRestoreSafetyBackup_继承SkipDoctor并禁用Retention(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		executeErrors:  map[string]error{},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+	}
+	destination := &harness.cfg.Hosts[1]
+	dependencies := harness.dependencies()
+
+	err := runRestoreSafetyBackup(context.Background(), harness.cfg, destination, restoreCommandOptions{
+		configPath: "/etc/ark/test.yaml",
+		skipDoctor: true,
+	}, dependencies)
+	if err != nil {
+		t.Fatalf("safety backup 失败: %v", err)
+	}
+	for _, event := range harness.events {
+		if strings.HasPrefix(event, "doctor:") || strings.HasPrefix(event, "forget:") || event == "prune" {
+			t.Fatalf("skip-doctor safety backup 执行了禁用阶段: %#v", harness.events)
+		}
+	}
+	if !containsEvent(harness.events, "manifest:save") {
+		t.Fatalf("safety backup 未保存 manifest: %#v", harness.events)
 	}
 }
 

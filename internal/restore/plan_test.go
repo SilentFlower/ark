@@ -53,8 +53,8 @@ func testRestoreInputs() (*config.Config, backup.Manifest) {
 				{Host: "source-01", TargetID: "volume/uploads", TargetType: config.TargetVolume, Status: store.StatusOK, SnapshotID: "snapshot-volume"},
 				{Host: "source-01", TargetID: "postgres/db/app", TargetType: config.TargetPostgres, Status: store.StatusOK, SnapshotID: "snapshot-postgres"},
 				{Host: "source-01", TargetID: "image_digest", TargetType: config.TargetImageDigest, Status: store.StatusOK, SnapshotID: "snapshot-image", ImageDigests: map[string]string{
-					"worker": "registry/worker@sha256:222",
-					"api":    "registry/api@sha256:111",
+					"worker": "registry/worker@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+					"api":    "registry/api@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				}},
 				{Host: "source-01", TargetID: "files/config", TargetType: config.TargetFiles, Status: store.StatusOK, SnapshotID: "snapshot-files"},
 				{Host: "source-01", TargetID: "redis/redis", TargetType: config.TargetRedis, Status: store.StatusWarn, SnapshotID: "snapshot-redis", Error: "需要复核"},
@@ -110,7 +110,7 @@ func TestBuildPlan_生成完整稳定的跨主机计划(t *testing.T) {
 	if plan.Steps[3].SnapshotID != "" || plan.Steps[5].SnapshotID != "snapshot-postgres" {
 		t.Fatalf("数据库 prepare/data 快照语义错误: %#v %#v", plan.Steps[3], plan.Steps[5])
 	}
-	if plan.Steps[1].ImageDigests["api"] != "registry/api@sha256:111" {
+	if plan.Steps[1].ImageDigests["api"] != "registry/api@sha256:1111111111111111111111111111111111111111111111111111111111111111" {
 		t.Fatalf("image digest = %#v", plan.Steps[1].ImageDigests)
 	}
 	if len(plan.ManualChecks) != 5 || plan.ConflictPolicy != defaultConflictPolicy {
@@ -146,7 +146,7 @@ func TestBuildPlan_生成完整稳定的跨主机计划(t *testing.T) {
 	if plan.Steps[0].Target.Paths[0] != "/srv/app/compose.yaml" {
 		t.Fatalf("Plan target 未深拷贝: %#v", plan.Steps[0].Target.Paths)
 	}
-	if plan.Steps[1].ImageDigests["api"] != "registry/api@sha256:111" {
+	if plan.Steps[1].ImageDigests["api"] != "registry/api@sha256:1111111111111111111111111111111111111111111111111111111111111111" {
 		t.Fatalf("Plan digest 未深拷贝: %#v", plan.Steps[1].ImageDigests)
 	}
 }
@@ -168,7 +168,7 @@ func TestBuildPlan_一次性报告清单与Manifest漂移(t *testing.T) {
 	cfg.Hosts[1].Targets[1].Paths[0] = "/srv/other/compose.yaml"
 	cfg.Hosts[1].Targets[3].Services = []string{"api"}
 	manifest.Hosts[0].Targets[1].Status = store.StatusFail
-	manifest.Hosts[0].Targets[2].ImageDigests = map[string]string{"api": "registry/api@sha256:111"}
+	manifest.Hosts[0].Targets[2].ImageDigests = map[string]string{"api": "registry/api@sha256:1111111111111111111111111111111111111111111111111111111111111111"}
 	manifest.Hosts[0].Targets = manifest.Hosts[0].Targets[:4]
 
 	_, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
@@ -186,6 +186,27 @@ func TestBuildPlan_一次性报告清单与Manifest漂移(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("聚合错误缺少 %q:\n%v", want, err)
 		}
+	}
+}
+
+func TestBuildPlan_拒绝可变Tag和畸形Digest(t *testing.T) {
+	tests := []struct {
+		name   string
+		digest string
+	}{
+		{name: "可变 tag", digest: "registry/api:latest"},
+		{name: "过短 sha256", digest: "registry/api@sha256:1234"},
+		{name: "非十六进制 sha256", digest: "registry/api@sha256:" + strings.Repeat("z", 64)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, manifest := testRestoreInputs()
+			manifest.Hosts[0].Targets[2].ImageDigests["api"] = tc.digest
+			_, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+			if err == nil || !strings.Contains(err.Error(), "64位十六进制") {
+				t.Fatalf("错误 = %v", err)
+			}
+		})
 	}
 }
 

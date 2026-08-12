@@ -1,0 +1,8 @@
+{"file":"docs/roadmap.md","reason":"P3-2 幂等、覆盖保护、破坏前备份、--to 与人工清单要求。"}
+{"file":"docs/design.md","reason":"恢复八步顺序、agentless 数据方向和 ADR-004/011。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"Runner Run/Feed、restic Dump、compose argv、context 与流退出契约。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"PostgreSQL/Redis 恢复顺序、容器内 CLI 与状态库边界。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"全局锁、doctor、指定 host 备份与破坏前快照复用。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"失败传播、聚合、退出码和脱敏错误。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"CLI 人类/JSON 输出和凭证红线。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"恢复高风险测试、注释、race 和提交门禁。"}

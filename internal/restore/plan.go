@@ -337,8 +337,15 @@ func validateImageDigests(
 	expected := make(map[string]struct{}, len(target.Services))
 	for _, service := range target.Services {
 		expected[service] = struct{}{}
-		if strings.TrimSpace(result.ImageDigests[service]) == "" {
+		digest := strings.TrimSpace(result.ImageDigests[service])
+		if digest == "" {
 			add("manifest targets[%s].image_digests[%s]: 缺少 digest", target.ID(), service)
+		} else if !validImageDigest(digest) {
+			add(
+				"manifest targets[%s].image_digests[%s]: 必须是 repo@sha256:<64位十六进制> 格式",
+				target.ID(),
+				service,
+			)
 		}
 	}
 	for service := range result.ImageDigests {
@@ -346,6 +353,21 @@ func validateImageDigests(
 			add("manifest targets[%s].image_digests[%s]: service 不在当前 target 配置中", target.ID(), service)
 		}
 	}
+}
+
+func validImageDigest(value string) bool {
+	value = strings.TrimSpace(value)
+	repository, encoded, found := strings.Cut(value, "@sha256:")
+	if !found || repository == "" || len(encoded) != 64 || strings.Contains(repository, "@") ||
+		strings.ContainsAny(repository, " \t\r\n") {
+		return false
+	}
+	for _, character := range encoded {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func buildSteps(targets []config.Target, results map[string]backup.TargetResult) []Step {

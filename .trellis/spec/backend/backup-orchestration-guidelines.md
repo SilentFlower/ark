@@ -65,7 +65,10 @@ load/validate -> select host -> nonblocking flock -> local doctor
 - `--host` 在获取锁前验证，只保留指定 host；未知 host 是工具错误。
 - 仅 `local: true` host 的 `files` target 在清理后的绝对路径精确匹配
   `/var/lib/ark/ark.db` 时调用 `Store.ExportSnapshot`，不得走普通 tar。
-  状态库必须独占一个 target；与其它路径混合时在获取锁前拒绝。
+  状态库必须只声明一个独立 target；同 target 混入其它路径、另一 target 覆盖其父目录、子路径、
+  `-wal` / `-shm` sidecar 或重复声明状态库时，都在获取锁前拒绝。
+- host doctor 读取默认激活的 Compose service 后，必须要求恰有 image_digest target 覆盖全部这些
+  service；缺 target、漏 service 或引用未知 service 都是 fail。profile 未激活的可选 service 不在此集合。
 - 状态库导出仍走 `BackupTarget` 的 reader / Wait / Close 完整性链，稳定 filename 使用
   `.db`；其它 files、volume 和数据库 target 的流式实现不得因此改成落盘模式。
 - `/run/ark.lock` 使用 `LOCK_EX|LOCK_NB`。冲突立即返回非零，不等待；全量 service、
@@ -116,6 +119,8 @@ systemd 合同：
 | local/host doctor warn | 继续执行，最终至少为 warn |
 | hub 状态库独占 files target | 使用 Online Backup，stdin filename 以 `.db` 结尾 |
 | hub 状态库与其它 path 混在同一 target | 获取锁前 fail closed，不执行 doctor/store/restic |
+| 其它 files target 覆盖状态库父/子路径、WAL/SHM 或重复状态库 target | 获取锁前 fail closed |
+| 默认活跃 Compose service 未被 image_digest 完整覆盖 | host doctor fail，不产生新恢复点 |
 | 远程 host 恰有同名路径 | 仍按普通远程 files target 处理，不误用 hub store |
 | 对象锁无法 provider-neutral 核验 | `repo.object_lock` 返回 warn，不阻断 doctor/backup |
 | host doctor fail | 错误只列失败检查项名称；该 host target 全部记录 fail/skipped，继续后续 host |
@@ -145,6 +150,8 @@ systemd 合同：
   读取并在回滚时替换成普通文件。
 - **Bad**：把 `/var/lib/ark/ark.db` 和 `/etc/ark/ark.yaml` 放进同一个 files target，
   让状态库退回普通 tar，得到缺 WAL 页的“成功”坏备份。
+- **Bad**：状态库单独声明后又备份 `/var/lib/ark` 或 `ark.db-wal`；第二个 tar 仍会带入不一致的
+  SQLite 文件，并可能在恢复时覆盖 Online Backup 产物。
 
 ### 6. Tests Required
 
@@ -158,7 +165,8 @@ systemd 合同：
 - flock 冲突立即失败、释放后可重取；取消后的合成结果使用收尾 context；
 - partial 输出后错误可被 `errors.Is(err, errBackupFailed)` 识别。
 - hub 状态库精确路径走 `exportState` 而不调用普通 `executeTarget`，filename 稳定为 `.db`；
-- 混合状态库路径在加锁前拒绝，远程同名路径不误判；
+- 混合、父/子路径、WAL/SHM 与重复状态库 target 均在加锁前拒绝，远程同名路径不误判；
+- image_digest target 缺失、漏默认活跃 service 或包含未知 service 时 doctor fail；
 - doctor 的 `repo.object_lock` 在人类和 JSON 输出中都是 warn；local/host fail 摘要只包含
   失败项名称，不复制 Detail。
 

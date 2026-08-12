@@ -490,6 +490,70 @@ func TestBackupCommand_Hub状态库混合路径在加锁前拒绝(t *testing.T) 
 	}
 }
 
+func TestBackupCommand_Hub状态库被其它Target覆盖时在加锁前拒绝(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "父目录", path: "/state"},
+		{name: "WAL sidecar", path: "/state/ark.db-wal"},
+		{name: "SHM sidecar", path: "/state/ark.db-shm"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			harness := &backupTestHarness{cfg: testBackupConfig()}
+			harness.cfg.Hosts[0].Targets = []config.Target{
+				{Type: config.TargetFiles, Name: "ark-state", Paths: []string{"/state/ark.db"}},
+				{Type: config.TargetFiles, Name: "overlap", Paths: []string{tc.path}},
+			}
+			dependencies := backupDependencies{
+				loadConfig: func(string) (*config.Config, error) {
+					harness.events = append(harness.events, "load")
+					return harness.cfg, nil
+				},
+				statePath: "/state/ark.db",
+			}
+			configPath := "/etc/ark/ark.yaml"
+			cmd := newBackupCmdWithDependencies(&configPath, dependencies)
+			cmd.SetArgs([]string{"--dry-run", "--host", "hub-01"})
+
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "必须作为独立 files target") {
+				t.Fatalf("重叠状态库 target 错误 = %v", err)
+			}
+			if !reflect.DeepEqual(harness.events, []string{"load"}) {
+				t.Fatalf("拒绝重叠 target 前产生副作用: %#v", harness.events)
+			}
+		})
+	}
+}
+
+func TestBackupCommand_Hub状态库重复Target在加锁前拒绝(t *testing.T) {
+	harness := &backupTestHarness{cfg: testBackupConfig()}
+	harness.cfg.Hosts[0].Targets = []config.Target{
+		{Type: config.TargetFiles, Name: "ark-state-primary", Paths: []string{"/state/ark.db"}},
+		{Type: config.TargetFiles, Name: "ark-state-copy", Paths: []string{"/state/ark.db"}},
+	}
+	dependencies := backupDependencies{
+		loadConfig: func(string) (*config.Config, error) {
+			harness.events = append(harness.events, "load")
+			return harness.cfg, nil
+		},
+		statePath: "/state/ark.db",
+	}
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, dependencies)
+	cmd.SetArgs([]string{"--dry-run", "--host", "hub-01"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "只能声明一个") {
+		t.Fatalf("重复状态库 target 错误 = %v", err)
+	}
+	if !reflect.DeepEqual(harness.events, []string{"load"}) {
+		t.Fatalf("拒绝重复 target 前产生副作用: %#v", harness.events)
+	}
+}
+
 func TestStateDatabaseTarget_仅保护本地精确路径(t *testing.T) {
 	target := config.Target{Type: config.TargetFiles, Name: "ark-state", Paths: []string{"/var/lib/ark/../ark/ark.db"}}
 	if !isStateDatabaseTarget(config.Host{Host: "hub", Local: true}, target, store.DefaultPath) {

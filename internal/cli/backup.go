@@ -246,7 +246,24 @@ func runBackup(
 			runErr = errors.Join(runErr, fmt.Errorf("释放备份锁失败: %w", closeErr))
 		}
 	}()
+	return runBackupLocked(ctx, cfg, hosts, options, dependencies)
+}
 
+// runBackupLocked 执行已由调用方持有全局 ark 锁的完整备份编排。
+// restore 的破坏前备份必须复用这条边界，避免在同一进程内再次获取非重入文件锁。
+func runBackupLocked(
+	ctx context.Context,
+	cfg *config.Config,
+	hosts []*config.Host,
+	options backupCommandOptions,
+	dependencies backupDependencies,
+) (summary backupRunSummary, runErr error) {
+	if err := validateBackupDependencies(dependencies); err != nil {
+		return summary, err
+	}
+	if err := validateStateDatabaseTargets(hosts, dependencies.statePath); err != nil {
+		return summary, err
+	}
 	failures := &backupFailureSet{}
 	if !options.skipDoctor {
 		report := dependencies.runLocalDoctor(ctx, cfg)
@@ -680,20 +697,32 @@ func validateStateDatabaseTargets(hosts []*config.Host, statePath string) error 
 		if host == nil || !host.Local {
 			continue
 		}
+		stateTargetCount := 0
 		for _, target := range host.Targets {
-			matches := 0
+			conflicts := false
 			for _, path := range target.Paths {
-				if sameCleanAbsolutePath(path, statePath) {
-					matches++
+				if conflictsWithStateDatabase(path, statePath) {
+					conflicts = true
 				}
 			}
-			if matches > 0 && (target.Type != config.TargetFiles || len(target.Paths) != 1 || matches != 1) {
+			if !conflicts {
+				continue
+			}
+			if !isStateDatabaseTarget(*host, target, statePath) {
 				return fmt.Errorf(
 					"host %q 的状态库 %q 必须作为独立 files target 备份",
 					host.Host,
 					statePath,
 				)
 			}
+			stateTargetCount++
+		}
+		if stateTargetCount > 1 {
+			return fmt.Errorf(
+				"host %q 的状态库 %q 只能声明一个独立 files target",
+				host.Host,
+				statePath,
+			)
 		}
 	}
 	return nil
@@ -711,6 +740,21 @@ func sameCleanAbsolutePath(left, right string) bool {
 		return false
 	}
 	return filepath.Clean(leftAbsolute) == filepath.Clean(rightAbsolute)
+}
+
+func conflictsWithStateDatabase(candidate, statePath string) bool {
+	candidateAbsolute, candidateErr := filepath.Abs(candidate)
+	stateAbsolute, stateErr := filepath.Abs(statePath)
+	if candidateErr != nil || stateErr != nil {
+		return false
+	}
+	candidateClean := filepath.Clean(candidateAbsolute)
+	stateClean := filepath.Clean(stateAbsolute)
+	return candidateClean == stateClean ||
+		candidateClean == stateClean+"-wal" ||
+		candidateClean == stateClean+"-shm" ||
+		strings.HasPrefix(stateClean, candidateClean+string(filepath.Separator)) ||
+		strings.HasPrefix(candidateClean, stateClean+string(filepath.Separator))
 }
 
 func printBackupValue(
@@ -790,9 +834,9 @@ func acquireBackupLock(path string) (io.Closer, error) {
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		closeErr := file.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return nil, errors.Join(fmt.Errorf("已有 ark backup 正在运行，未等待锁 %s", path), closeErr)
+			return nil, errors.Join(fmt.Errorf("已有 ark backup 或 restore 正在运行，未等待锁 %s", path), closeErr)
 		}
-		return nil, errors.Join(fmt.Errorf("获取备份锁 %s 失败: %w", path, err), closeErr)
+		return nil, errors.Join(fmt.Errorf("获取 ark 全局锁 %s 失败: %w", path, err), closeErr)
 	}
 	return &fileLock{file: file}, nil
 }

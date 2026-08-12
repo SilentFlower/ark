@@ -35,6 +35,10 @@ var errChecksFailed = errors.New("环境检查未通过")
 // Execute 只转换退出码，不再次打印相同错误。
 var errBackupFailed = errors.New("备份未完全成功")
 
+// errRestoreFailed 表示 restore 已经输出结构化最终结果，但本轮恢复失败。
+// Execute 只转换退出码，不再次打印可能包含底层命令细节的错误链。
+var errRestoreFailed = errors.New("恢复未完成")
+
 // Execute 运行根命令并返回进程退出码。
 func Execute() int {
 	err := newRootCmd().Execute()
@@ -44,8 +48,8 @@ func Execute() int {
 	case errors.Is(err, errChecksFailed):
 		// 检查报告已经打印过，这里不再重复输出错误信息。
 		return 2
-	case errors.Is(err, errBackupFailed):
-		// backup 的人类摘要或 JSON 已包含失败事实，这里只保留非零退出码。
+	case errors.Is(err, errBackupFailed), errors.Is(err, errRestoreFailed):
+		// backup/restore 的人类摘要或 JSON 已包含失败事实，这里只保留非零退出码。
 		return 1
 	default:
 		fmt.Fprintln(os.Stderr, "错误:", err)

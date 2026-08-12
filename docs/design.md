@@ -330,7 +330,7 @@ hosts:
       - {type: redis, service: redis}
       - {type: volume, name: sub2api_data}
       - {type: files, name: deploy-config, paths: [...]}
-      - {type: image_digest, services: [sub2api]}
+      - {type: image_digest, services: [sub2api, postgres, redis]}
 
   # hub 自己，不走 SSH
   - host: hub
