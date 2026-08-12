@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-08-11
+- **Total Sessions**: 6
+- **Last Active**: 2026-08-12
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~126 | Active |
+| `journal-1.md` | ~152 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-08-12 | 归档 P2 备份可用 wave 子任务 | `8421ea6826b4c87cf2cea11118bc5b178f5892a6`, `ed9a8acc78d860904c0b1f6285a6088ff36a613d`, `62d9e4ead415365c9e1abc523b54fc0a0f47d70e`, `717e9e8adfd5f820de5602be2193677980655bf8`, `c33dbbe45d343b4e1d9bf10445b7ef90e19fb1ce`, `e7d17008eecdbf61bae248ff58b8faff976dd86a` | `main` |
 | 5 | 2026-08-11 | 完成并归档 P2-1 状态库 | `3735182` | `main` |
 | 4 | 2026-08-11 | 完成 P1-3 远程 doctor | `6e77007` | `main` |
 | 3 | 2026-08-11 | 完成 P1-2 SSH 执行层 | `fd53cabd1308bb4bc37e91c137a2f296353899a2` | `main` |

@@ -124,3 +124,29 @@ ark.yaml 从单机模型升级为 hub 编排的多机 v2 模型：顶层拆为 r
 ### Status
 
 [OK] **Completed**
+
+
+## Session 6: 归档 P2 备份可用 wave 子任务
+
+**Date**: 2026-08-12
+**Task**: 归档 P2 备份可用 wave 子任务
+**Branch**: `main`
+
+### Summary
+
+P2-2 至 P2-7 已完成质量检查和本地业务提交；本次完成决策审计、当前任务上线审计并归档 6 个子任务，保留父任务与人工真实环境验收任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8421ea6826b4c87cf2cea11118bc5b178f5892a6` | (see git log) |
+| `ed9a8acc78d860904c0b1f6285a6088ff36a613d` | (see git log) |
+| `62d9e4ead415365c9e1abc523b54fc0a0f47d70e` | (see git log) |
+| `717e9e8adfd5f820de5602be2193677980655bf8` | (see git log) |
+| `c33dbbe45d343b4e1d9bf10445b7ef90e19fb1ce` | (see git log) |
+| `e7d17008eecdbf61bae248ff58b8faff976dd86a` | (see git log) |
+
+### Status
+
+[OK] **Completed**
