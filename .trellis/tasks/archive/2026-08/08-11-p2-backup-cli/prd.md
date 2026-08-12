@@ -57,11 +57,11 @@
 
 ## Acceptance Criteria
 
-- [ ] backup 主流程、`--host`、`--dry-run`、`--skip-doctor` 和失败隔离均有测试
-- [ ] flock 冲突立即非零退出，host/target 始终串行且统一 prune
-- [ ] run、target、manifest、store 状态在成功/warn/partial/fail 下保持一致
-- [ ] 每 host timer 使用自己的有效 schedule，unit 包含 oneshot、Persistent 和随机延迟
-- [ ] 多 timer 重叠时全局 flock 使后启动实例明确失败，手动全量 service 仍可用
-- [ ] install 只回收 ark 管理的陈旧 timer，`systemd-analyze verify` 无告警
-- [ ] install 失败不留下半份 unit，输出和 unit 不含凭证内容
-- [ ] make check、build、无 CGO 构建和 git diff 检查通过
+- [x] backup 主流程、`--host`、`--dry-run`、`--skip-doctor` 和失败隔离均有测试
+- [x] flock 冲突立即非零退出，host/target 始终串行且统一 prune
+- [x] run、target、manifest、store 状态在成功/warn/partial/fail 下保持一致
+- [x] 每 host timer 使用自己的有效 schedule，unit 包含 oneshot、Persistent 和随机延迟
+- [x] 多 timer 重叠时全局 flock 使后启动实例明确失败，手动全量 service 仍可用
+- [x] install 只回收 ark 管理的陈旧 timer，`systemd-analyze verify` 无告警
+- [x] install 失败不留下半份 unit，输出和 unit 不含凭证内容
+- [x] make check、build、无 CGO 构建和 git diff 检查通过

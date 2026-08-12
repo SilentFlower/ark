@@ -219,7 +219,7 @@ func RunHost(ctx context.Context, cfg *config.Config, host *config.Host) *Report
 
 ---
 
-## P2 — 备份可用
+## P2 — 备份可用 ✅ 已完成
 
 **阶段目标**：hub 上一条 `ark backup` 跑完，对象存储里出现所有机器的加密快照，
 并且由 hub 上的 systemd timer 自动执行。
@@ -248,7 +248,7 @@ SQLite（WAL 模式），文件固定在 `/var/lib/ark/ark.db`。
 
 ---
 
-### P2-2 restic 封装 `internal/restic/`
+### P2-2 restic 封装 `internal/restic/` ✅ 已完成
 
 **新增文件**：`internal/restic/repo.go`、`repo_test.go`
 
@@ -280,7 +280,7 @@ func (r *Repo) Check(ctx context.Context) error
 
 ---
 
-### P2-3 target 执行器 `internal/backup/`
+### P2-3 target 执行器 `internal/backup/` ✅ 已完成
 
 **新增文件**：`internal/backup/executor.go`（接口 + 分发）、
 `postgres.go`、`redis.go`、`volume.go`、`files.go`、`image.go`，各配测试。
@@ -312,7 +312,7 @@ func (r *Repo) Check(ctx context.Context) error
 
 ---
 
-### P2-4 流完整性保障（ADR-011）
+### P2-4 流完整性保障（ADR-011） ✅ 已完成
 
 **改动文件**：`internal/backup/executor.go`、`internal/store/`
 
@@ -334,7 +334,7 @@ func (r *Repo) Check(ctx context.Context) error
 
 ---
 
-### P2-5 快照清单 `internal/backup/manifest.go`
+### P2-5 快照清单 `internal/backup/manifest.go` ✅ 已完成
 
 一次备份 = 多个 restic 快照（每个 target 一个）+ 一份把它们串起来的 manifest。
 
@@ -349,7 +349,7 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
 
 ---
 
-### P2-6 `ark backup` 命令与 systemd timer
+### P2-6 `ark backup` 命令与 systemd timer ✅ 已完成
 
 **新增文件**：`internal/cli/backup.go`、`internal/systemd/unit.go`（模板）、
 `internal/cli/install.go`
@@ -388,7 +388,7 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
 
 ---
 
-### P2-7 hub 自备份与对象锁
+### P2-7 hub 自备份与对象锁 ✅ 已完成
 
 **改动文件**：`internal/store`、`internal/cli`、`internal/doctor`、
 `examples/ark.yaml`、`docs/operations.md`
@@ -407,7 +407,7 @@ manifest 本身也作为一个 restic 快照存入，打 tag `ark-manifest` + `r
 
 ---
 
-### P2-8 SSH 主机密钥易用性
+### P2-8 SSH 主机密钥易用性 ✅ 已完成
 
 **改动文件**：`internal/config`、`internal/sshexec`、`internal/hostkey`、
 `internal/cli`、`internal/doctor`、`examples/ark.yaml`、`docs/operations.md`

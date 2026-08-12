@@ -40,9 +40,9 @@
 
 ## Acceptance Criteria
 
-- [ ] 假上游非零退出时 target 失败，已产生 snapshot 被精确撤销
-- [ ] Forget 失败与 Wait 失败均保留，仓库撤销失败不会被静默吞掉
-- [ ] 无历史、正常体积、恰好 50%、低于 50% 和零基线边界均有测试
-- [ ] bytes、duration、snapshot ID、status 与脱敏 error 正确写入状态库
-- [ ] restic 失败、context 取消和状态库失败均清理 reader/Wait 且错误链完整
-- [ ] race、make check、构建和 git diff 检查通过
+- [x] 假上游非零退出时 target 失败，已产生 snapshot 被精确撤销
+- [x] Forget 失败与 Wait 失败均保留，仓库撤销失败不会被静默吞掉
+- [x] 无历史、正常体积、恰好 50%、低于 50% 和零基线边界均有测试
+- [x] bytes、duration、snapshot ID、status 与脱敏 error 正确写入状态库
+- [x] restic 失败、context 取消和状态库失败均清理 reader/Wait 且错误链完整
+- [x] race、make check、构建和 git diff 检查通过

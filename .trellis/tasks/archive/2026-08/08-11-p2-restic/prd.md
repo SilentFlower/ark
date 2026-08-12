@@ -46,9 +46,9 @@
 
 ## Acceptance Criteria
 
-- [ ] 单元测试覆盖全部 argv、JSON 解析、标签、env 覆盖和敏感值不泄漏
-- [ ] `EnsureInit` 对已初始化仓库幂等，且不会吞掉鉴权/损坏错误
-- [ ] stdin 与 dump 全程流式，不整读、不落临时文件，退出状态不会丢失
-- [ ] 本地临时 repo 集成测试完成 init → backup → snapshots → forget → check
-- [ ] 集成测试由 `testing.Short()` 和 restic 可执行文件探测保护
-- [ ] `make check`、`make build`、无 CGO 构建和 `git diff --check` 通过
+- [x] 单元测试覆盖全部 argv、JSON 解析、标签、env 覆盖和敏感值不泄漏
+- [x] `EnsureInit` 对已初始化仓库幂等，且不会吞掉鉴权/损坏错误
+- [x] stdin 与 dump 全程流式，不整读、不落临时文件，退出状态不会丢失
+- [x] 本地临时 repo 集成测试完成 init → backup → snapshots → forget → check
+- [x] 集成测试由 `testing.Short()` 和 restic 可执行文件探测保护
+- [x] `make check`、`make build`、无 CGO 构建和 `git diff --check` 通过

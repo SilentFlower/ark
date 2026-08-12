@@ -58,12 +58,12 @@
 
 ## Acceptance Criteria
 
-- [ ] 未填写 `host_key_policy` 时使用 `accept-new`，显式 `strict` 时保持旧行为
-- [ ] 非法策略在 `ark validate` 阶段返回带 host 路径的中文错误
-- [ ] Runner 三种执行方式共享正确的 StrictHostKeyChecking 参数，且不存在 `no`
-- [ ] `ark host-key refresh --host <name>` 只预览旧、新 SHA256 指纹，不改文件
-- [ ] `--apply` 只替换目标 host 记录，原子写入、权限为 `0600`，失败可回滚且无临时残留
-- [ ] 变化密钥在普通 backup/doctor 路径仍被拒绝，并提供刷新指引
-- [ ] doctor 正确区分 strict 缺文件、accept-new 首次连接和不可写目录
-- [ ] 示例、设计、运维文档及 backend specs 同步更新
-- [ ] `make check`、`make build`、`CGO_ENABLED=0 go build ./cmd/ark` 和 `git diff --check` 通过
+- [x] 未填写 `host_key_policy` 时使用 `accept-new`，显式 `strict` 时保持旧行为
+- [x] 非法策略在 `ark validate` 阶段返回带 host 路径的中文错误
+- [x] Runner 三种执行方式共享正确的 StrictHostKeyChecking 参数，且不存在 `no`
+- [x] `ark host-key refresh --host <name>` 只预览旧、新 SHA256 指纹，不改文件
+- [x] `--apply` 只替换目标 host 记录，原子写入、权限为 `0600`，失败可回滚且无临时残留
+- [x] 变化密钥在普通 backup/doctor 路径仍被拒绝，并提供刷新指引
+- [x] doctor 正确区分 strict 缺文件、accept-new 首次连接和不可写目录
+- [x] 示例、设计、运维文档及 backend specs 同步更新
+- [x] `make check`、`make build`、`CGO_ENABLED=0 go build ./cmd/ark` 和 `git diff --check` 通过

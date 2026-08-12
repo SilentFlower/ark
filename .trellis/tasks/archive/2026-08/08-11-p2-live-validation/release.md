@@ -19,7 +19,7 @@ Release operations exist.
 
 ## Drift Check
 
-Missing `release.md`; this file records the deployment refresh, credential rotation, retained test resource cleanup, rollback, and post-release verification proven necessary by the real-environment validation.
+No unresolved release-document drift; this file records the deployment refresh, credential rotation, retained test resource cleanup, rollback, and post-release verification proven necessary by the real-environment validation.
 
 ## SQL Changes
 
@@ -37,7 +37,7 @@ None.
 ## External Systems / Dependent Platforms
 
 - `[08-11-p2-live-validation]` Rotate the root management password used during real-environment validation.
-- `[08-11-p2-live-validation]` The Object Lock retention ended at `2026-08-13T04:31:01Z`; delete the residual Docker volume `ark-live-validation-minio-data` after confirming it is still the isolated validation volume. Do not use an Object Lock bypass or delete backend files directly.
+- `[08-11-p2-live-validation]` The Object Lock retention ends at `2026-08-13T04:31:01Z`; after that time, delete the residual Docker volume `ark-live-validation-minio-data` after confirming it is still the isolated validation volume. Do not use an Object Lock bypass or delete backend files directly.
 
 ## Release Order
 
@@ -46,7 +46,7 @@ None.
 3. Run `ark install` with the production manifest.
 4. Run `systemctl daemon-reload`.
 5. Start `ark-backup.service` manually once and verify the result before relying on timers.
-6. Complete the management-password rotation and remove the retained isolated test volume.
+6. Complete the management-password rotation; after `2026-08-13T04:31:01Z`, remove the retained isolated test volume.
 
 ## Rollback Notes
 
@@ -61,4 +61,4 @@ None.
 - Confirm `systemctl start ark-backup.service` finishes with `Result=success` and `ExecMainStatus=0`.
 - Verify a failed target or manifest backup that returns a snapshot ID removes that exact snapshot from the repository.
 - Confirm doctor failure summaries contain failed check names but not check `Detail` values.
-- Confirm the management password has been rotated and `ark-live-validation-minio-data` has been removed.
+- Confirm the management password has been rotated and, after `2026-08-13T04:31:01Z`, `ark-live-validation-minio-data` has been removed.

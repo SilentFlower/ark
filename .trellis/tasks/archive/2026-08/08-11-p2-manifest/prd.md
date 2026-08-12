@@ -42,9 +42,9 @@
 
 ## Acceptance Criteria
 
-- [ ] 完整 manifest JSON 序列化/反序列化往返不丢字段
-- [ ] 非法 schema、时间、重复 target、负数和缺失主键均被拒绝
-- [ ] manifest 以稳定 filename 和两类固定 tag 写入 restic
-- [ ] 多份 manifest 中能按 snapshot 时间确定性取回最新一份
-- [ ] dump 内容与 snapshot/run tag 不一致时明确失败
-- [ ] race、make check、构建与无 CGO 构建通过
+- [x] 完整 manifest JSON 序列化/反序列化往返不丢字段
+- [x] 非法 schema、时间、重复 target、负数和缺失主键均被拒绝
+- [x] manifest 以稳定 filename 和两类固定 tag 写入 restic
+- [x] 多份 manifest 中能按 snapshot 时间确定性取回最新一份
+- [x] dump 内容与 snapshot/run tag 不一致时明确失败
+- [x] race、make check、构建与无 CGO 构建通过

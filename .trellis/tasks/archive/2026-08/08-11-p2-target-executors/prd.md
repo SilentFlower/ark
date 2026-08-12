@@ -51,9 +51,9 @@
 
 ## Acceptance Criteria
 
-- [ ] 五类执行器均有表驱动单元测试，断言精确 argv、稳定文件名和结果元数据
-- [ ] PostgreSQL 必含 `-T` 且无压缩；Redis 确实等待 LASTSAVE 变化
-- [ ] volume/files tar 保留权限，volume 只读挂载，参数不经额外 shell
-- [ ] image digest 只从运行容器反查，空值和多候选明确失败
-- [ ] Wait、context、Close 和各阶段失败均可见且不会污染数据流
-- [ ] `go test ./internal/backup -race -count=1`、`make check` 与无 CGO 构建通过
+- [x] 五类执行器均有表驱动单元测试，断言精确 argv、稳定文件名和结果元数据
+- [x] PostgreSQL 必含 `-T` 且无压缩；Redis 确实等待 LASTSAVE 变化
+- [x] volume/files tar 保留权限，volume 只读挂载，参数不经额外 shell
+- [x] image digest 只从运行容器反查，空值和多候选明确失败
+- [x] Wait、context、Close 和各阶段失败均可见且不会污染数据流
+- [x] `go test ./internal/backup -race -count=1`、`make check` 与无 CGO 构建通过
