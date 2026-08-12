@@ -3,7 +3,7 @@
   "name": "p2-hub-protection",
   "title": "P2-7 hub 自备份保护",
   "description": "实现 hub 自备份清单示例、密钥排除说明、对象锁提示性 doctor 检查与运维文档。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "silentflower",
   "assignee": "silentflower",
   "createdAt": "2026-08-11",
-  "completedAt": null,
+  "completedAt": "2026-08-11",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -22,5 +22,14 @@
   "parent": "08-11-p2-backup-ready",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-11T17:51:34Z",
+    "completedSteps": [
+      "auto-loop: 本地提交完成 .:e7d1700"
+    ],
+    "partialStep": null,
+    "nextStep": "auto-loop 已本地提交并置为本地完成态；需要用户显式运行 finish-work/archive 完成归档",
+    "notes": "run_id=auto-20260811155456; task=.trellis/tasks/08-11-p2-hub-protection; commit=e7d17008eecdbf61bae248ff58b8faff976dd86a; commits=.:e7d17008eecdbf61bae248ff58b8faff976dd86a; status=completed"
+  }
 }
