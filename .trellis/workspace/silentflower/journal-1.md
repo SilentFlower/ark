@@ -150,3 +150,39 @@ P2-2 至 P2-7 已完成质量检查和本地业务提交；本次完成决策审
 ### Status
 
 [OK] **Completed**
+
+
+## Session 7: 完成 P2 SSH 主机密钥易用性
+
+**Date**: 2026-08-12
+**Task**: 完成 P2 SSH 主机密钥易用性
+**Branch**: `main`
+
+### Summary
+
+实现默认 accept-new 与显式 strict、主机密钥预览/刷新、doctor 策略检查和原子失败回滚；通过 Check-All 后提交推送并归档任务。
+
+### Main Changes
+
+- 新增 ark host-key refresh 安全预览与显式应用流程
+- 统一 config、sshexec 和 doctor 的主机密钥策略
+- 补齐 known_hosts 原子更新与目录同步失败回滚
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2ff5a01` | (see git log) |
+| `8a17ed9` | (see git log) |
+
+### Testing
+
+- [OK] make check、make build、CGO_ENABLED=0 go build ./cmd/ark、git diff --check
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 继续 p2-live-validation，在真实服务器验证首次接受、变更拒绝和显式刷新
