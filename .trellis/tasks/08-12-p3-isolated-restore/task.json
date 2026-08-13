@@ -1,0 +1,414 @@
+{
+  "id": "p3-isolated-restore",
+  "name": "p3-isolated-restore",
+  "title": "P3-2A 隔离恢复命名与端口映射",
+  "description": "为 ark restore 增加自动派生隔离 Compose project、volume、路径与宿主机端口映射的能力，使恢复副本可在已有业务机器上并行运行且默认不触碰现有资源。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-12-p3-restore-ready",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-12T13:25:58Z",
+      "contextKey": "codex_019ff08b-d5c6-72f2-b153-5da3d92ee3af",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "bba747418185149934475fc89057c55fc7a6da44",
+        "status": [
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/brief.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/check.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/design.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/implement.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/implement.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/prd.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/task.json"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/brief.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/check.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/design.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/implement.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/implement.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/prd.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/task.json"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/validation.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-restore-ready/brief.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-restore-ready/check.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-restore-ready/design.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-restore-ready/implement.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-restore-ready/implement.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-restore-ready/prd.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-restore-ready/task.json"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-verify/brief.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-verify/check.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-verify/design.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-verify/implement.jsonl"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-verify/implement.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-verify/prd.md"
+          },
+          {
+            "status": "??",
+            "path": ".trellis/tasks/08-12-p3-verify/task.json"
+          }
+        ],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "bba747418185149934475fc89057c55fc7a6da44",
+            "status": [
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/brief.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/check.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/design.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/implement.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/implement.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/prd.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/task.json"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/brief.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/check.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/design.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/implement.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/implement.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/prd.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/task.json"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/validation.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-restore-ready/brief.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-restore-ready/check.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-restore-ready/design.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-restore-ready/implement.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-restore-ready/implement.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-restore-ready/prd.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-restore-ready/task.json"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-verify/brief.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-verify/check.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-verify/design.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-verify/implement.jsonl"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-verify/implement.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-verify/prd.md"
+              },
+              {
+                "status": "??",
+                "path": ".trellis/tasks/08-12-p3-verify/task.json"
+              }
+            ],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [
+              {
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/brief.md",
+                "sha256": "128cee05c5621d620aceb63f1e2c87635f6f4759aa427577b7fcc37c0989db3f"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/check.jsonl",
+                "sha256": "32520f2cb545e480481e04bb520c86ae534fe772eddbcdf81c47c8ae0106286f"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/design.md",
+                "sha256": "b37261e4361a6dcba771295200831a13b01059d0293f0fc0c299939e51bba852"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/implement.jsonl",
+                "sha256": "c203ddaa9c8235786e5b5b4205d4bfb30766c6e56029777bac66d5f63635c7df"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/implement.md",
+                "sha256": "a6476a0717874039ad09b2f3285d0928f0d3654f7144c83c90c34cf71ea694d5"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/prd.md",
+                "sha256": "7f311f4f59e9c79cca7ad90688e88fd99bdf4fc22f845dd46ebac18612b51b1a"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-hub-rebuild-validation/task.json",
+                "sha256": "11bf341649fa9e34f5162df001e43fd4ccc76ed49fa08a644865511f9f9e7a25"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/brief.md",
+                "sha256": "16de0f3da089a6178ff54f3c98f24df2ddc9fe9ccffe4c4316234f06055d93cc"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/check.jsonl",
+                "sha256": "aae737b2b356990e64746be86e23e705c1e8273f3ada4d76877a78b16bacc234"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/design.md",
+                "sha256": "4d038b0939f3966cde7a6bbbc63045feeb4e87f1e2c894b76194203cd29b3bf6"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/implement.jsonl",
+                "sha256": "7389b4823ee1680a48af2d745fac90c3c94f54e099320404b163b9b65f5f58f4"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/implement.md",
+                "sha256": "79fe009d48580320f88b93f91b1a31372c0a8ae06986d8e03c16288398bce426"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/prd.md",
+                "sha256": "de05f567f8bf434ae7e8a53e63537e00947bb0144d6680c8297801b11c1c4d45"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/task.json",
+                "sha256": "c810a1f3daa73df12b00bbe26ea82fc428026e5b7da662a26d007cd7b1fb56cc"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-live-rebuild-validation/validation.md",
+                "sha256": "46a1c4900666f08e418e675c75bb80c320897e91a8e090c95969e1133cd7a24f"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-restore-ready/brief.md",
+                "sha256": "8803883387fd3af1225b2cf2e757df1557c0259f4ef54a6bd62a903b8d4ac159"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-restore-ready/check.jsonl",
+                "sha256": "b62d8e05906498c9a3257af3a60c1a2d0bf9b44b43a81df43ff6028998e4f675"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-restore-ready/design.md",
+                "sha256": "50782b1948383eb369939f57a983262358b7384159a3aa03cb120229dccf0a8b"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-restore-ready/implement.jsonl",
+                "sha256": "1d299803259bf007edcc1251c3c81da1dc30f6ff9a9c371ebaf41653fb7db641"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-restore-ready/implement.md",
+                "sha256": "c56294dbea95bcac363898864b29a8405f2f5f71ae92ea5912ea864374440fbe"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-restore-ready/prd.md",
+                "sha256": "b829df94f8834924dbc11f6090530695c28c83fdeb299ad41d4215b879d7a366"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-restore-ready/task.json",
+                "sha256": "a541feeae131e149f679011c2f610c83f5395264ae6551269de46e08a5339083"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-verify/brief.md",
+                "sha256": "899b3b812739129a4956914877b90f77fed9d519bafa5ad575d6c2786022f922"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-verify/check.jsonl",
+                "sha256": "01bfa5ae1b928870084dad3f5f480c5fdd1be13107731514930f50d893bf03cf"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-verify/design.md",
+                "sha256": "65b4474808d0e6fe0c26e06a9b1bf324000f3a7a22e4204ee9ec6b274ca99e38"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-verify/implement.jsonl",
+                "sha256": "738cc7625becfc705dba0617d8ae2eb1d55e5ba776c6ce1ed68f1a68e4106564"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-verify/implement.md",
+                "sha256": "e76447364e6921b2c56897044d76eeb44df588219350f77e3d3da8274deabff1"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-verify/prd.md",
+                "sha256": "1a88fe4137fc4a3c82d28540851b31e6dde89697230c44564c06af7cea88bf21"
+              },
+              {
+                "path": ".trellis/tasks/08-12-p3-verify/task.json",
+                "sha256": "681f793e980a396dd1f09cf792c9a83b75e92eb0e203f6cc373e2952cf1f9479"
+              }
+            ],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "d8032d1ead4e8fc7b373f99c11b2839f2852c5a4c85ea6aa1573a0fb30e1b77e"
+          }
+        ],
+        "fingerprint": "00d031542ab515bb6771217c590ddb9655e9b434bfe762ba47955c9a6d4a1768"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-13T00:31:00+08:00",
+    "completedSteps": [
+      "完成隔离恢复命名、路径、资源与 Docker 自动端口映射",
+      "完成安全 cleanup、续跑状态与 Compose 端口元数据契约",
+      "完成单元、race、构建与真实 Docker 共存清理验证",
+      "完成 Full Check-All 严格复检与后端规范更新"
+    ],
+    "partialStep": null,
+    "nextStep": "归档任务并进入下一个 P3 子任务",
+    "notes": "Full Check-All 剩余 CHK=0、FBK=0；业务提交已推送。"
+  }
+}
