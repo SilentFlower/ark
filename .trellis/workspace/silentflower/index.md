@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 11
-- **Last Active**: 2026-08-12
+- **Total Sessions**: 12
+- **Last Active**: 2026-08-13
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~304 | Active |
+| `journal-1.md` | ~342 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 12 | 2026-08-13 | 完成 P3-2A 隔离恢复并归档 | `226156d`, `c1c24a4` | `main` |
 | 11 | 2026-08-12 | 完成 P3 Wave A 恢复计划与执行 | `39206c8a4b47adbd7ecc7abd5d66a57c3a113f99`, `ed05aa83d849a58ea3b613717d72cb2c49b6b125` | `main` |
 | 10 | 2026-08-12 | 完成并归档 P2 备份可用 | `cc80f4b`, `f57069f` | `main` |
 | 9 | 2026-08-12 | 完成 P2 真实环境验收 | `b76f930`, `f19fcdc`, `b2454a2` | `main` |

@@ -302,3 +302,41 @@ P3-1 恢复 dry-run 与 P3-2 可重跑恢复执行已完成全量检查并归档
 ### Next Steps
 
 - 启动 P3-3 跨机重建实测，使用已提供的隔离服务器完成真实恢复验收
+
+
+## Session 12: 完成 P3-2A 隔离恢复并归档
+
+**Date**: 2026-08-13
+**Task**: 完成 P3-2A 隔离恢复并归档
+**Branch**: `main`
+
+### Summary
+
+完成隔离恢复命名、路径、资源和 Docker 自动端口映射，修复 SSH 流生命周期清理，Full Check-All 通过并归档任务。
+
+### Main Changes
+
+- 增加隔离 Compose 项目、资源、路径与自动端口映射
+- 增加安全 cleanup、续跑状态和 Compose 端口元数据契约
+- 统一 SSH stdout 读取与异常资源回收
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `226156d` | (see git log) |
+| `c1c24a4` | (see git log) |
+
+### Testing
+
+- [OK] make check 通过
+- [OK] 关键包 race 测试连续 10 次通过
+- [OK] 真实 Docker 共存、端口映射与清理验证通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 进入下一个 P3 子任务
