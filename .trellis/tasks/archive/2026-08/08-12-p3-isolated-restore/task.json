@@ -3,7 +3,7 @@
   "name": "p3-isolated-restore",
   "title": "P3-2A 隔离恢复命名与端口映射",
   "description": "为 ark restore 增加自动派生隔离 Compose project、volume、路径与宿主机端口映射的能力，使恢复副本可在已有业务机器上并行运行且默认不触碰现有资源。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "silentflower",
   "assignee": "silentflower",
   "createdAt": "2026-08-12",
-  "completedAt": null,
+  "completedAt": "2026-08-13",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -409,6 +409,6 @@
     ],
     "partialStep": null,
     "nextStep": "归档任务并进入下一个 P3 子任务",
-    "notes": "Full Check-All 剩余 CHK=0、FBK=0；业务提交已推送。"
+    "notes": "Full Check-All 剩余 CHK=0、FBK=0；业务提交与任务进度已推送。"
   }
 }
