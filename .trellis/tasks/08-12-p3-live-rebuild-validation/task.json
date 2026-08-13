@@ -1,0 +1,41 @@
+{
+  "id": "p3-live-rebuild-validation",
+  "name": "p3-live-rebuild-validation",
+  "title": "P3-3 跨主机重建实测",
+  "description": "在干净 VPS 上仅依赖 hub、对象存储凭证和 restic 密码完成跨主机恢复并记录实机证据。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-12-p3-restore-ready",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {},
+  "progress": {
+    "completedSteps": [
+      "备份与 restic 全量读取检查通过",
+      "restore dry-run、中断续跑、幂等复跑和源业务停止后从零重建通过",
+      "数据库、加密字段、Redis、对象读写、文件权限、镜像 digest 和 agentless 复验通过",
+      "destination isolation、临时 SSH key 与 hub 测试资源已完成归属清理",
+      "Check-All 项目门禁 8/8 通过",
+      "用户已明确接受 CHK-001 与 FBK-001 风险",
+      "Update-Spec 评估为 no-op"
+    ],
+    "nextStep": "显式运行 trellis-finish-work 归档当前任务",
+    "notes": "任务以通过·已接受风险完成。CHK-001 的干净 VPS/真实业务验收缺口与 FBK-001 的回收站凭证可恢复风险保留为未修复事实。",
+    "partialStep": null,
+    "updatedAt": "2026-08-13T02:39:47Z"
+  }
+}

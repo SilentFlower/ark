@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"P3-3 跨机重建的真实环境与六项必验点。"}
+{"file":"docs/design.md","reason":"恢复顺序、agentless、digest、流完整性和人工确认清单。"}
+{"file":"docs/operations.md","reason":"凭证、离线材料和测试环境保护边界。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"真实 SSH、restic Dump、Runner Feed 与凭证隔离证据。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"PostgreSQL/Redis 恢复正确性和状态核验。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"实机证据脱敏和输出红线。"}

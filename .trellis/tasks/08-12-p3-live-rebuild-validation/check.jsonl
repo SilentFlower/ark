@@ -1,0 +1,6 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 P3-3 的业务、digest、agentless 和源机独立性。"}
+{"file":"docs/design.md","reason":"审计真实执行顺序与人工确认项。"}
+{"file":"docs/operations.md","reason":"审计凭证材料、环境隔离与清理。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"审计流退出、SSH 与 restic 真实证据。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"审计业务数据库与 Redis 恢复结果。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"确认 validation.md 不含密钥或业务敏感数据。"}
