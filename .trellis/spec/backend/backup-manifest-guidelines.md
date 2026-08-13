@@ -58,9 +58,20 @@ schema v1 顶层 JSON 固定字段：
 
 每个 host 使用 `host` 和 `targets`；target 直接来自 `TargetResult`，wire 字段固定为
 `id`、`type`、`snapshot_id`、`bytes`、`duration`、`status`、`error`、
-`image_digests`。`duration` 使用 `time.Duration.String()`，解码用
+`image_digests`，以及可选 `compose_metadata`。`duration` 使用 `time.Duration.String()`，解码用
 `time.ParseDuration`，避免毫秒截断丢失纳秒精度。`image_digests` 是 JSON object；
 标准 `encoding/json` 会稳定排序字符串 map key。
+
+`compose_metadata` 只允许 `image_digest` target 使用，只保存恢复计划需要的
+`published_ports`。每项端口固定包含 `service`、可选 `host_ip`、可选 `published`、
+`target`、`protocol`、可选 `app_protocol` 和可选 `mode`；不得保存 Compose environment、
+secret、config 内容或 canonical JSON 原文。新备份必须从纯 stdout 的
+`docker compose config --format json --no-env-resolution` 结构化提取这些字段。
+
+`compose_metadata` 是 schema v1 的向后兼容可选字段：历史 manifest 缺失时仍可执行普通
+原位恢复，但显式隔离恢复必须 fail closed 并要求重新备份，因为 dry-run 无法凭空还原历史
+published port 声明。解码、`Result -> TargetResult -> Manifest` 传播和 Plan 内部副本均必须深拷贝，
+避免调用方修改 slice 后改变已生成的恢复事实。
 
 存储时必须使用固定 `ark-manifest.json`，不得包含日期或 run ID；tags 至少且当前固定为
 `ark-manifest`、`run:<run-id>`。读取按 `ark-manifest` 查询 snapshots，使用时间升序、
@@ -89,6 +100,9 @@ manifest。完整 ID 优先于前缀；前缀必须唯一。选中候选后仍�
 | 同一 `(host,target_id)` 重复 | 校验失败 |
 | ok/warn target 缺少 snapshot ID | 校验失败；fail 可保留空 ID 或已撤销 ID |
 | target 的 Host 与所属 ManifestHost 不一致 | 校验失败 |
+| 非 `image_digest` target 带 `compose_metadata` | 校验失败并指出字段路径 |
+| published port 缺 service/protocol、target 为 0、host IP 非法或 published 超出 1-65535 | 校验失败 |
+| 历史 `image_digest` target 缺 `compose_metadata` | manifest 仍有效；普通恢复可用，隔离 Plan 拒绝 |
 | manifest backup 失败且返回 snapshot ID | 精确撤销该 ID，仍返回原始 backup error |
 | manifest backup 与精确撤销同时失败 | 返回错误可分别 `errors.Is` 两条错误链 |
 | manifest backup 失败且没有 snapshot ID | 返回失败，不调用 forget、不猜测候选 |
@@ -105,7 +119,9 @@ manifest。完整 ID 优先于前缀；前缀必须唯一。选中候选后仍�
 ### 5. Good/Base/Bad Cases
 
 - **Good**：多 host、多 target，包含 ok/warn/fail 和 image digest map；JSON 往返后
-  `TargetResult` 的 snapshot、bytes、duration、status、error 均不变。
+  `TargetResult` 的 snapshot、bytes、duration、status、error、digest 和 Compose 端口元数据均不变。
+- **Good**：同一 target 同时声明 TCP/UDP 或当前隔离模式暂不支持的协议；普通备份忠实记录，
+  是否允许隔离由 restore 层按当时能力矩阵决定，备份层不篡改历史事实。
 - **Good**：restic 已提交 manifest 并输出 ID 后返回非零；`SaveManifest` 只撤销该 ID，
   原始错误与可选撤销错误仍可识别。
 - **Good**：`selector=def` 唯一匹配 `def222`，返回 manifest 与完整 `Snapshot{ID:"def222"}`。
@@ -114,12 +130,16 @@ manifest。完整 ID 优先于前缀；前缀必须唯一。选中候选后仍�
   不能回退到更旧 manifest 掩盖仓库不一致。
 - **Bad**：`selector=abc` 同时匹配 `abc111` 和 `abc222`；必须报歧义且不 dump 任一候选。
 - **Bad**：`SaveManifest` 丢弃失败返回中的 ID，会让报告失败的清单仍进入最新恢复候选。
+- **Bad**：为了生成隔离 dry-run，在 restore 时重新读取当前生产 Compose 端口；当前配置可能已经
+  漂移，不能替代备份时事实。
 
 ### 6. Tests Required
 
 `internal/backup/manifest_test.go` 至少覆盖：
 
-- 完整 JSON 往返，包含纳秒 duration、status/error 和多项 image digest；
+- 完整 JSON 往返，包含纳秒 duration、status/error、多项 image digest 和 Compose 端口元数据；
+- 历史 manifest 缺 `compose_metadata` 仍可解码，非 image target 携带元数据和非法端口字段必须拒绝；
+- `Result -> TargetResult -> Manifest` 与恢复 Plan 对 `ComposeMetadata.PublishedPorts` 做深拷贝；
 - map key 的稳定输出顺序；
 - schema、主键、UTC 时间、时间倒序、负数、重复 target、类型与状态非法；
 - 同 schema 未知可选字段可读取，未知 schema 明确拒绝；
@@ -204,3 +224,22 @@ if !found {
 ```
 
 恢复计划必须保存 `snapshot.ID`，且显式选择失败后立即返回；不得把 latest 当作兜底。
+
+#### Wrong
+
+```go
+// restore 时读取当前 Compose，会把当前状态伪装成备份时事实。
+ports := readCurrentComposePorts(destination)
+```
+
+#### Correct
+
+```go
+type manifestTargetWire struct {
+    ImageDigests    map[string]string `json:"image_digests"`
+    ComposeMetadata *ComposeMetadata  `json:"compose_metadata,omitempty"`
+}
+```
+
+端口元数据必须随 `image_digest` 备份结果进入 manifest。历史字段缺失保持可读，但只有普通恢复
+可以继续；隔离恢复必须明确要求重新备份。

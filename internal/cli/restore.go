@@ -27,6 +27,7 @@ type restoreCommandOptions struct {
 	snapshot        string
 	dryRun          bool
 	force           bool
+	isolate         bool
 	skipDoctor      bool
 	asJSON          bool
 }
@@ -40,6 +41,7 @@ type restoreDependencies struct {
 	loadManifest     func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error)
 	newRunner        func(*config.Host) (sshexec.Runner, error)
 	execute          func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error)
+	cleanup          func(context.Context, sshexec.Runner, string, string) (restore.CleanupResult, error)
 	backup           backupDependencies
 }
 
@@ -58,6 +60,7 @@ func defaultRestoreDependencies() restoreDependencies {
 		loadManifest:     backup.LoadManifestSelection,
 		newRunner:        backupRunnerForHost,
 		execute:          restore.Execute,
+		cleanup:          restore.CleanupIsolation,
 		backup:           defaultBackupDependencies(),
 	}
 }
@@ -77,6 +80,9 @@ func newRestoreCmdWithDependencies(
 			}
 			if options.dryRun && (options.force || options.skipDoctor) {
 				return fmt.Errorf("--dry-run 不能与 --force 或 --skip-doctor 同时使用")
+			}
+			if options.isolate && options.force {
+				return fmt.Errorf("--isolate 不能与 --force 同时使用")
 			}
 			return nil
 		},
@@ -114,8 +120,10 @@ func newRestoreCmdWithDependencies(
 	cmd.Flags().StringVar(&options.snapshot, "snapshot", backup.LatestManifestSelector, "manifest snapshot ID 或 latest")
 	cmd.Flags().BoolVar(&options.dryRun, "dry-run", false, "只读取 manifest 并输出恢复计划")
 	cmd.Flags().BoolVar(&options.force, "force", false, "在成功备份目标机后覆盖当前 Plan 的冲突资源")
+	cmd.Flags().BoolVar(&options.isolate, "isolate", false, "自动派生独立资源和空闲端口执行隔离恢复")
 	cmd.Flags().BoolVar(&options.skipDoctor, "skip-doctor", false, "应急跳过本地和恢复目标环境检查")
 	cmd.Flags().BoolVar(&options.asJSON, "json", false, "以纯 JSON 输出计划或最终结果")
+	cmd.AddCommand(newRestoreCleanupCmd(configPath, dependencies))
 	return cmd
 }
 
@@ -146,13 +154,17 @@ func buildRestoreDryRun(
 	if strings.TrimSpace(destinationHost) == "" {
 		destinationHost = options.sourceHost
 	}
-	return restore.BuildPlan(
+	plan, err := restore.BuildPlan(
 		cfg,
 		manifest,
 		snapshot.ID,
 		options.sourceHost,
 		destinationHost,
 	)
+	if err != nil || !options.isolate {
+		return plan, err
+	}
+	return restore.WithIsolation(plan)
 }
 
 func runRestore(
@@ -209,6 +221,12 @@ func runRestore(
 	if err != nil {
 		return result, err
 	}
+	if options.isolate {
+		plan, err = restore.WithIsolation(plan)
+		if err != nil {
+			return result, err
+		}
+	}
 
 	if !options.skipDoctor {
 		if err := requireDoctor("本地", dependencies.runLocalDoctor(cmd.Context(), cfg)); err != nil {
@@ -227,15 +245,108 @@ func runRestore(
 		Force:          options.force,
 		RawFileTargets: restoreRawFileTargets(*source, *destination, dependencies.backup.statePath),
 	}
+	if plan.Isolation != nil {
+		for targetID, targetPath := range executeOptions.RawFileTargets {
+			mapped, mapErr := restore.IsolationPath(plan, targetPath)
+			if mapErr != nil {
+				return result, mapErr
+			}
+			executeOptions.RawFileTargets[targetID] = mapped
+		}
+	}
 	if !options.asJSON {
 		executeOptions.OnPlanReady = func(ready restore.Plan) error {
 			return printRestorePlan(cmd, ready)
 		}
 	}
-	executeOptions.SafetyBackup = func(ctx context.Context) error {
-		return runRestoreSafetyBackup(ctx, cfg, destination, options, dependencies.backup)
+	if plan.Isolation == nil {
+		executeOptions.SafetyBackup = func(ctx context.Context) error {
+			return runRestoreSafetyBackup(ctx, cfg, destination, options, dependencies.backup)
+		}
 	}
 	return dependencies.execute(cmd.Context(), plan, repo, runner, executeOptions)
+}
+
+type restoreCleanupOptions struct {
+	host        string
+	isolationID string
+	asJSON      bool
+}
+
+func newRestoreCleanupCmd(configPath *string, dependencies restoreDependencies) *cobra.Command {
+	options := restoreCleanupOptions{}
+	cmd := &cobra.Command{
+		Use:   "cleanup",
+		Short: "校验归属并清理隔离恢复资源",
+		Args:  cobra.NoArgs,
+		PreRunE: func(_ *cobra.Command, _ []string) error {
+			if strings.TrimSpace(options.host) == "" {
+				return fmt.Errorf("--host 不能为空")
+			}
+			if !restore.ValidIsolationID(options.isolationID) {
+				return fmt.Errorf("--isolation 必须是完整的 64 位小写十六进制 ID")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			result, runErr := runRestoreCleanup(cmd.Context(), *configPath, options, dependencies)
+			if result.Status == "" {
+				return runErr
+			}
+			var printErr error
+			if options.asJSON {
+				printErr = encodeRestoreJSON(cmd, result)
+			} else {
+				printErr = printRestoreCleanupResult(cmd, result)
+			}
+			if runErr != nil {
+				return errors.Join(errRestoreFailed, runErr, printErr)
+			}
+			return printErr
+		},
+	}
+	cmd.Flags().StringVar(&options.host, "host", "", "当前清单中的隔离恢复目标 host")
+	cmd.Flags().StringVar(&options.isolationID, "isolation", "", "完整的隔离恢复 ID")
+	cmd.Flags().BoolVar(&options.asJSON, "json", false, "以纯 JSON 输出清理结果")
+	return cmd
+}
+
+func runRestoreCleanup(
+	ctx context.Context,
+	configPath string,
+	options restoreCleanupOptions,
+	dependencies restoreDependencies,
+) (result restore.CleanupResult, runErr error) {
+	if dependencies.loadConfig == nil || dependencies.acquireLock == nil ||
+		dependencies.newRunner == nil || dependencies.cleanup == nil {
+		return result, fmt.Errorf("执行 restore cleanup 失败: 内部依赖不完整")
+	}
+	cfg, err := dependencies.loadConfig(configPath)
+	if err != nil {
+		return result, err
+	}
+	destination := findRestoreHost(cfg, options.host)
+	if destination == nil {
+		return result, fmt.Errorf("清单中不存在恢复目标 host %q", options.host)
+	}
+	lock, err := dependencies.acquireLock(defaultBackupLockPath)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if closeErr := lock.Close(); closeErr != nil {
+			if result.Status != "" {
+				result.Status = store.StatusFail
+				result.Error = "隔离资源清理未完成"
+			}
+			runErr = errors.Join(runErr, fmt.Errorf("释放 ark 全局锁失败: %w", closeErr))
+		}
+	}()
+	runner, err := dependencies.newRunner(destination)
+	if err != nil {
+		return result, err
+	}
+	return dependencies.cleanup(ctx, runner, destination.Host, options.isolationID)
 }
 
 func validateRestoreDependencies(dependencies restoreDependencies) error {
@@ -323,6 +434,25 @@ func encodeRestoreJSON(cmd *cobra.Command, value any) error {
 func printRestoreResult(cmd *cobra.Command, result restore.Result) error {
 	var output strings.Builder
 	fmt.Fprintf(&output, "\n恢复结果: %s\n", result.Status)
+	if result.Isolation != nil {
+		fmt.Fprintf(&output, "  isolation ID: %s\n", result.Isolation.ID)
+		fmt.Fprintf(&output, "  compose project: %s\n", result.Isolation.ProjectName)
+		fmt.Fprintf(&output, "  generated compose: %s\n", result.Isolation.GeneratedComposeFile)
+		for _, container := range result.Isolation.Containers {
+			fmt.Fprintf(&output, "  container: %s (%s)\n", container.Service, container.ID)
+		}
+		for _, volume := range result.Isolation.Volumes {
+			fmt.Fprintf(&output, "  volume: %s\n", volume)
+		}
+		for _, network := range result.Isolation.Networks {
+			fmt.Fprintf(&output, "  network: %s\n", network)
+		}
+		for _, port := range result.Isolation.Ports {
+			fmt.Fprintf(&output, "  port: %s %s -> %d/%s\n",
+				port.Service, restoreIsolationAddress(port), port.Target, port.Protocol)
+		}
+		fmt.Fprintf(&output, "  清理命令: %s\n", result.Isolation.CleanupCommand)
+	}
 	for _, step := range result.Steps {
 		target := "项目级"
 		if step.TargetID != "" {
@@ -345,6 +475,32 @@ func printRestoreResult(cmd *cobra.Command, result restore.Result) error {
 	return err
 }
 
+func restoreIsolationAddress(port restore.IsolationPort) string {
+	hostIP := port.HostIP
+	if hostIP == "" {
+		hostIP = "0.0.0.0"
+	}
+	if strings.Contains(hostIP, ":") {
+		return "[" + hostIP + "]:" + port.AllocatedPort
+	}
+	return hostIP + ":" + port.AllocatedPort
+}
+
+func printRestoreCleanupResult(cmd *cobra.Command, result restore.CleanupResult) error {
+	var output strings.Builder
+	fmt.Fprintf(&output, "隔离资源清理: %s\n", result.Status)
+	fmt.Fprintf(&output, "  host: %s\n", result.DestinationHost)
+	fmt.Fprintf(&output, "  isolation ID: %s\n", result.IsolationID)
+	for _, resource := range result.Removed {
+		fmt.Fprintf(&output, "  已删除: %s\n", resource)
+	}
+	if result.Error != "" {
+		fmt.Fprintf(&output, "  失败摘要: %s\n", result.Error)
+	}
+	_, err := io.WriteString(cmd.OutOrStdout(), output.String())
+	return err
+}
+
 func printRestorePlan(cmd *cobra.Command, plan restore.Plan) error {
 	out := cmd.OutOrStdout()
 	var output strings.Builder
@@ -361,7 +517,29 @@ func printRestorePlan(cmd *cobra.Command, plan restore.Plan) error {
 	if plan.Project.ProjectName != "" {
 		fmt.Fprintf(&output, "  compose project: %s\n", plan.Project.ProjectName)
 	}
-	fmt.Fprintf(&output, "  冲突策略: %s（默认拒绝覆盖；真实恢复需显式 --force）\n", plan.ConflictPolicy)
+	if plan.Isolation != nil {
+		fmt.Fprintf(&output, "  isolation ID: %s\n", plan.Isolation.ID)
+		fmt.Fprintf(&output, "  isolation root: %s\n", plan.Isolation.Root)
+		for _, mapping := range plan.Isolation.PathMappings {
+			fmt.Fprintf(&output, "  文件: %s -> %s\n", mapping.Source, mapping.Destination)
+		}
+		for _, mapping := range plan.Isolation.VolumeMappings {
+			fmt.Fprintf(&output, "  volume: %s -> %s\n", mapping.Source, mapping.Destination)
+		}
+		for _, port := range plan.Isolation.Ports {
+			fmt.Fprintf(
+				&output,
+				"  端口: %s %s -> auto -> %d/%s\n",
+				port.Service,
+				restoreIsolationOriginalAddress(port),
+				port.Target,
+				port.Protocol,
+			)
+		}
+		fmt.Fprintln(&output, "  隔离策略: 不覆盖原项目资源；--force 禁用")
+	} else {
+		fmt.Fprintf(&output, "  冲突策略: %s（默认拒绝覆盖；真实恢复需显式 --force）\n", plan.ConflictPolicy)
+	}
 
 	var current restore.Phase
 	for _, step := range plan.Steps {
@@ -378,6 +556,21 @@ func printRestorePlan(cmd *cobra.Command, plan restore.Plan) error {
 	}
 	_, err := io.WriteString(out, output.String())
 	return err
+}
+
+func restoreIsolationOriginalAddress(port restore.IsolationPort) string {
+	host := port.HostIP
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	published := port.OriginalPublished
+	if published == "" {
+		published = "auto"
+	}
+	return host + ":" + published
 }
 
 func printRestoreStep(out io.Writer, step restore.Step) {

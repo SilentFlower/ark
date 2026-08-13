@@ -37,6 +37,9 @@ func testManifest() Manifest {
 						SnapshotID:   "snapshot-1",
 						Error:        "镜像需要复核",
 						ImageDigests: map[string]string{"worker": "repo/worker@sha256:222", "api": "repo/api@sha256:111"},
+						ComposeMetadata: &ComposeMetadata{PublishedPorts: []PublishedPort{
+							{Service: "api", HostIP: "127.0.0.1", Published: "8080", Target: 8080, Protocol: "tcp"},
+						}},
 					},
 				},
 			},
@@ -57,6 +60,7 @@ func TestManifestJSON_完整往返且输出稳定(t *testing.T) {
 		`"duration":"2.000000001s"`,
 		`"status":"warn"`,
 		`"image_digests":{"api":"repo/api@sha256:111","worker":"repo/worker@sha256:222"}`,
+		`"compose_metadata":{"published_ports":[{"service":"api","host_ip":"127.0.0.1","published":"8080","target":8080,"protocol":"tcp"}]}`,
 	} {
 		if !strings.Contains(text, field) {
 			t.Errorf("JSON %s 缺少 %s", text, field)
@@ -93,6 +97,9 @@ func TestManifestValidate_拒绝非法输入(t *testing.T) {
 		{name: "duration", mutate: func(m *Manifest) { m.Hosts[0].Targets[0].Duration = -time.Second }, wantErr: ".duration"},
 		{name: "成功无快照", mutate: func(m *Manifest) { m.Hosts[0].Targets[0].SnapshotID = "" }, wantErr: ".snapshot_id"},
 		{name: "空 digest", mutate: func(m *Manifest) { m.Hosts[0].Targets[0].ImageDigests["api"] = "" }, wantErr: "image_digests"},
+		{name: "空协议", mutate: func(m *Manifest) { m.Hosts[0].Targets[0].ComposeMetadata.PublishedPorts[0].Protocol = "" }, wantErr: "compose_metadata"},
+		{name: "无效 host IP", mutate: func(m *Manifest) { m.Hosts[0].Targets[0].ComposeMetadata.PublishedPorts[0].HostIP = "not-an-ip" }, wantErr: "host_ip"},
+		{name: "无效 published", mutate: func(m *Manifest) { m.Hosts[0].Targets[0].ComposeMetadata.PublishedPorts[0].Published = "70000" }, wantErr: "published"},
 		{
 			name: "重复 target",
 			mutate: func(m *Manifest) {

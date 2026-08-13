@@ -88,7 +88,8 @@ type Step struct {
 	// Target 是执行阶段需要的 target 配置副本；项目级步骤为空。
 	Target *Target `json:"target,omitempty"`
 	// ImageDigests 是 image_digest target 记录的 service 到不可变 digest 映射。
-	ImageDigests map[string]string `json:"image_digests,omitempty"`
+	ImageDigests    map[string]string `json:"image_digests,omitempty"`
+	composeMetadata *backup.ComposeMetadata
 }
 
 // Plan 是由 manifest 事实与当前清单共同确定的完整恢复计划。
@@ -109,6 +110,8 @@ type Plan struct {
 	Steps []Step `json:"steps"`
 	// ManualChecks 是执行或切流前必须由管理员复核的固定事项。
 	ManualChecks []string `json:"manual_checks"`
+	// Isolation 是显式隔离恢复的纯数据意图；原位恢复为空。
+	Isolation *IsolationSpec `json:"isolation,omitempty"`
 }
 
 // BuildPlan 校验 manifest 与 source/destination 清单定义并构建稳定恢复计划。
@@ -332,6 +335,9 @@ func validateImageDigests(
 		if len(result.ImageDigests) != 0 {
 			add("manifest targets[%s].image_digests: 非 image_digest target 不应包含 digest", target.ID())
 		}
+		if result.ComposeMetadata != nil {
+			add("manifest targets[%s].compose_metadata: 非 image_digest target 不应包含 Compose 元数据", target.ID())
+		}
 		return
 	}
 	expected := make(map[string]struct{}, len(target.Services))
@@ -351,6 +357,18 @@ func validateImageDigests(
 	for service := range result.ImageDigests {
 		if _, exists := expected[service]; !exists {
 			add("manifest targets[%s].image_digests[%s]: service 不在当前 target 配置中", target.ID(), service)
+		}
+	}
+	if result.ComposeMetadata != nil {
+		for index, port := range result.ComposeMetadata.PublishedPorts {
+			if _, exists := expected[port.Service]; !exists {
+				add(
+					"manifest targets[%s].compose_metadata.published_ports[%d].service: %q 不在当前 target 配置中",
+					target.ID(),
+					index,
+					port.Service,
+				)
+			}
 		}
 	}
 }
@@ -398,12 +416,13 @@ func buildSteps(targets []config.Target, results map[string]backup.TargetResult)
 
 func newTargetStep(phase Phase, target config.Target, result backup.TargetResult) Step {
 	return Step{
-		Phase:        phase,
-		TargetID:     target.ID(),
-		TargetType:   target.Type,
-		SnapshotID:   result.SnapshotID,
-		Target:       copyTarget(target),
-		ImageDigests: copyStringMap(result.ImageDigests),
+		Phase:           phase,
+		TargetID:        target.ID(),
+		TargetType:      target.Type,
+		SnapshotID:      result.SnapshotID,
+		Target:          copyTarget(target),
+		ImageDigests:    copyStringMap(result.ImageDigests),
+		composeMetadata: copyComposeMetadata(result.ComposeMetadata),
 	}
 }
 
@@ -437,4 +456,11 @@ func copyStringMap(values map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func copyComposeMetadata(value *backup.ComposeMetadata) *backup.ComposeMetadata {
+	if value == nil {
+		return nil
+	}
+	return &backup.ComposeMetadata{PublishedPorts: append([]backup.PublishedPort(nil), value.PublishedPorts...)}
 }

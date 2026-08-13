@@ -22,15 +22,19 @@ type executeCall struct {
 }
 
 type runnerFuncs struct {
-	run  func(context.Context, ...string) (string, error)
-	feed func(context.Context, io.Reader, ...string) error
+	run    func(context.Context, ...string) (string, error)
+	stream func(context.Context, ...string) (io.ReadCloser, func() error, error)
+	feed   func(context.Context, io.Reader, ...string) error
 }
 
 func (r *runnerFuncs) Run(ctx context.Context, argv ...string) (string, error) {
 	return r.run(ctx, argv...)
 }
 
-func (r *runnerFuncs) Stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
+func (r *runnerFuncs) Stream(ctx context.Context, argv ...string) (io.ReadCloser, func() error, error) {
+	if r.stream != nil {
+		return r.stream(ctx, argv...)
+	}
 	return nil, nil, errors.New("测试 fake 不支持 Stream")
 }
 

@@ -68,14 +68,15 @@ type manifestHostWire struct {
 }
 
 type manifestTargetWire struct {
-	ID           string            `json:"id"`
-	Type         config.TargetType `json:"type"`
-	SnapshotID   string            `json:"snapshot_id"`
-	Bytes        int64             `json:"bytes"`
-	Duration     string            `json:"duration"`
-	Status       store.Status      `json:"status"`
-	Error        string            `json:"error"`
-	ImageDigests map[string]string `json:"image_digests"`
+	ID              string            `json:"id"`
+	Type            config.TargetType `json:"type"`
+	SnapshotID      string            `json:"snapshot_id"`
+	Bytes           int64             `json:"bytes"`
+	Duration        string            `json:"duration"`
+	Status          store.Status      `json:"status"`
+	Error           string            `json:"error"`
+	ImageDigests    map[string]string `json:"image_digests"`
+	ComposeMetadata *ComposeMetadata  `json:"compose_metadata,omitempty"`
 }
 
 type manifestRepository struct {
@@ -138,6 +139,14 @@ func (m Manifest) Validate() error {
 			for service, digest := range target.ImageDigests {
 				if strings.TrimSpace(service) == "" || strings.TrimSpace(digest) == "" {
 					return fmt.Errorf("%s.image_digests 的 service 和 digest 不能为空", field)
+				}
+			}
+			if target.TargetType != config.TargetImageDigest && target.ComposeMetadata != nil {
+				return fmt.Errorf("%s.compose_metadata 只允许 image_digest target 使用", field)
+			}
+			if target.ComposeMetadata != nil {
+				if err := validateComposeMetadata(*target.ComposeMetadata); err != nil {
+					return fmt.Errorf("%s.compose_metadata 无效: %w", field, err)
 				}
 			}
 
@@ -430,14 +439,15 @@ func manifestToWire(manifest Manifest) manifestWire {
 		}
 		for targetIndex, target := range host.Targets {
 			wireHost.Targets[targetIndex] = manifestTargetWire{
-				ID:           target.TargetID,
-				Type:         target.TargetType,
-				SnapshotID:   target.SnapshotID,
-				Bytes:        target.Bytes,
-				Duration:     target.Duration.String(),
-				Status:       target.Status,
-				Error:        target.Error,
-				ImageDigests: cloneStringMap(target.ImageDigests),
+				ID:              target.TargetID,
+				Type:            target.TargetType,
+				SnapshotID:      target.SnapshotID,
+				Bytes:           target.Bytes,
+				Duration:        target.Duration.String(),
+				Status:          target.Status,
+				Error:           target.Error,
+				ImageDigests:    cloneStringMap(target.ImageDigests),
+				ComposeMetadata: cloneComposeMetadata(target.ComposeMetadata),
 			}
 		}
 		wire.Hosts[hostIndex] = wireHost
@@ -471,15 +481,16 @@ func manifestFromWire(wire manifestWire) (Manifest, error) {
 				)
 			}
 			host.Targets[targetIndex] = TargetResult{
-				Host:         wireHost.Host,
-				TargetID:     wireTarget.ID,
-				TargetType:   wireTarget.Type,
-				Status:       wireTarget.Status,
-				Bytes:        wireTarget.Bytes,
-				Duration:     duration,
-				SnapshotID:   wireTarget.SnapshotID,
-				Error:        wireTarget.Error,
-				ImageDigests: cloneStringMap(wireTarget.ImageDigests),
+				Host:            wireHost.Host,
+				TargetID:        wireTarget.ID,
+				TargetType:      wireTarget.Type,
+				Status:          wireTarget.Status,
+				Bytes:           wireTarget.Bytes,
+				Duration:        duration,
+				SnapshotID:      wireTarget.SnapshotID,
+				Error:           wireTarget.Error,
+				ImageDigests:    cloneStringMap(wireTarget.ImageDigests),
+				ComposeMetadata: cloneComposeMetadata(wireTarget.ComposeMetadata),
 			}
 		}
 		manifest.Hosts[hostIndex] = host

@@ -40,6 +40,48 @@ func (r *closeErrorReadCloser) Close() error {
 	return r.err
 }
 
+type readAllRunner struct {
+	reader io.ReadCloser
+	wait   func() error
+	err    error
+}
+
+func (r *readAllRunner) Run(context.Context, ...string) (string, error) {
+	return "", errors.New("测试不应调用 Run")
+}
+
+func (r *readAllRunner) Stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
+	return r.reader, r.wait, r.err
+}
+
+func (r *readAllRunner) Feed(context.Context, io.Reader, ...string) error {
+	return errors.New("测试不应调用 Feed")
+}
+
+type readAllProbe struct {
+	reader    io.Reader
+	readErr   error
+	closeErr  error
+	events    *[]string
+	readEvent bool
+}
+
+func (r *readAllProbe) Read(p []byte) (int, error) {
+	if !r.readEvent {
+		*r.events = append(*r.events, "read")
+		r.readEvent = true
+	}
+	if r.readErr != nil {
+		return 0, r.readErr
+	}
+	return r.reader.Read(p)
+}
+
+func (r *readAllProbe) Close() error {
+	*r.events = append(*r.events, "close")
+	return r.closeErr
+}
+
 func helperCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
 	helperArgs := []string{"-test.run=TestHelperProcess", "--", name}
 	helperArgs = append(helperArgs, args...)
@@ -518,6 +560,110 @@ func TestStream(t *testing.T) {
 		waitErr := wait()
 		if !errors.Is(waitErr, context.DeadlineExceeded) {
 			t.Errorf("Wait 错误 = %v，期望可识别 DeadlineExceeded", waitErr)
+		}
+	})
+}
+
+func TestReadAllStdout_严格回收数据流(t *testing.T) {
+	t.Run("成功时先 Wait 再 Close", func(t *testing.T) {
+		var events []string
+		reader := &readAllProbe{reader: strings.NewReader("payload"), events: &events}
+		runner := &readAllRunner{
+			reader: reader,
+			wait: func() error {
+				events = append(events, "wait")
+				return nil
+			},
+		}
+
+		payload, err := ReadAllStdout(context.Background(), runner, "compose", "config")
+		if err != nil || string(payload) != "payload" {
+			t.Fatalf("ReadAllStdout payload=%q err=%v", payload, err)
+		}
+		if want := []string{"read", "wait", "close"}; !reflect.DeepEqual(events, want) {
+			t.Fatalf("调用顺序 = %#v，期望 %#v", events, want)
+		}
+	})
+
+	t.Run("读取失败时先 Close 再 Wait 并聚合错误", func(t *testing.T) {
+		readErr := errors.New("read failed")
+		closeErr := errors.New("close failed")
+		waitErr := errors.New("wait failed")
+		var events []string
+		reader := &readAllProbe{readErr: readErr, closeErr: closeErr, events: &events}
+		runner := &readAllRunner{
+			reader: reader,
+			wait: func() error {
+				events = append(events, "wait")
+				return waitErr
+			},
+		}
+
+		_, err := ReadAllStdout(context.Background(), runner, "compose", "config")
+		for _, wantErr := range []error{readErr, closeErr, waitErr} {
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("错误 %v 未保留 %v", err, wantErr)
+			}
+		}
+		if want := []string{"read", "close", "wait"}; !reflect.DeepEqual(events, want) {
+			t.Fatalf("调用顺序 = %#v，期望 %#v", events, want)
+		}
+	})
+
+	t.Run("只有 Reader 时仍关闭", func(t *testing.T) {
+		closeErr := errors.New("close failed")
+		var events []string
+		reader := &readAllProbe{reader: strings.NewReader(""), closeErr: closeErr, events: &events}
+
+		_, err := ReadAllStdout(context.Background(), &readAllRunner{reader: reader}, "compose", "config")
+		if err == nil || !strings.Contains(err.Error(), "不完整") || !errors.Is(err, closeErr) {
+			t.Fatalf("半初始化 Reader 错误 = %v", err)
+		}
+		if want := []string{"close"}; !reflect.DeepEqual(events, want) {
+			t.Fatalf("调用顺序 = %#v，期望 %#v", events, want)
+		}
+	})
+
+	t.Run("只有 Wait 时仍回收", func(t *testing.T) {
+		waitErr := errors.New("wait failed")
+		var events []string
+		runner := &readAllRunner{wait: func() error {
+			events = append(events, "wait")
+			return waitErr
+		}}
+
+		_, err := ReadAllStdout(context.Background(), runner, "compose", "config")
+		if err == nil || !strings.Contains(err.Error(), "不完整") || !errors.Is(err, waitErr) {
+			t.Fatalf("半初始化 Wait 错误 = %v", err)
+		}
+		if want := []string{"wait"}; !reflect.DeepEqual(events, want) {
+			t.Fatalf("调用顺序 = %#v，期望 %#v", events, want)
+		}
+	})
+
+	t.Run("Stream 报错时仍回收返回的资源", func(t *testing.T) {
+		streamErr := errors.New("stream failed")
+		closeErr := errors.New("close failed")
+		waitErr := errors.New("wait failed")
+		var events []string
+		reader := &readAllProbe{reader: strings.NewReader(""), closeErr: closeErr, events: &events}
+		runner := &readAllRunner{
+			reader: reader,
+			wait: func() error {
+				events = append(events, "wait")
+				return waitErr
+			},
+			err: streamErr,
+		}
+
+		_, err := ReadAllStdout(context.Background(), runner, "compose", "config")
+		for _, wantErr := range []error{streamErr, closeErr, waitErr} {
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("错误 %v 未保留 %v", err, wantErr)
+			}
+		}
+		if want := []string{"close", "wait"}; !reflect.DeepEqual(events, want) {
+			t.Fatalf("调用顺序 = %#v，期望 %#v", events, want)
 		}
 	})
 }

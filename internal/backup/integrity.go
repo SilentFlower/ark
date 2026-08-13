@@ -35,6 +35,8 @@ type TargetResult struct {
 	Error string
 	// ImageDigests 仅对 image_digest target 非空。
 	ImageDigests map[string]string
+	// ComposeMetadata 仅对 image_digest target 非空，保存脱敏的 Compose 恢复元数据。
+	ComposeMetadata *ComposeMetadata
 }
 
 // BackupTarget 把执行器数据流写入 restic，完成完整性判定并持久化最终状态。
@@ -97,10 +99,11 @@ func backupTarget(
 	}
 
 	result := TargetResult{
-		Host:         source.Host,
-		TargetID:     source.TargetID,
-		TargetType:   source.TargetType,
-		ImageDigests: cloneStringMap(source.ImageDigests),
+		Host:            source.Host,
+		TargetID:        source.TargetID,
+		TargetType:      source.TargetType,
+		ImageDigests:    cloneStringMap(source.ImageDigests),
+		ComposeMetadata: cloneComposeMetadata(source.ComposeMetadata),
 	}
 	startedAt := dependencies.now()
 	counter := &countingReader{reader: source.Reader}

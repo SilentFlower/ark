@@ -45,6 +45,52 @@ type Runner interface {
 	Feed(ctx context.Context, stdin io.Reader, argv ...string) error
 }
 
+// ReadAllStdout 执行流式命令并在内存中读取完整 stdout，同时严格回收 Reader 与子进程。
+// @param ctx 控制命令的取消与超时。
+// @param runner 提供本地或 SSH 命令执行能力。
+// @param argv 命令名及其参数，至少包含命令名。
+// @return []byte 命令成功时的完整纯 stdout。
+// @return error 命令启动、读取、等待或资源释放失败时的聚合错误。
+func ReadAllStdout(ctx context.Context, runner Runner, argv ...string) ([]byte, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("读取命令 stdout 失败: context 不能为空")
+	}
+	if runner == nil {
+		return nil, fmt.Errorf("读取命令 stdout 失败: runner 不能为空")
+	}
+
+	reader, wait, streamErr := runner.Stream(ctx, argv...)
+	if streamErr != nil || reader == nil || wait == nil {
+		var lifecycleErr error
+		if reader == nil || wait == nil {
+			lifecycleErr = fmt.Errorf("Runner 返回了不完整的 Reader/Wait")
+		}
+		var closeErr error
+		if reader != nil {
+			closeErr = reader.Close()
+		}
+		var waitErr error
+		if wait != nil {
+			waitErr = wait()
+		}
+		return nil, errors.Join(streamErr, lifecycleErr, closeErr, waitErr)
+	}
+
+	payload, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		// 读取失败时先关闭 stdout，避免子进程继续写满 pipe 后让 Wait 永久阻塞。
+		closeErr := reader.Close()
+		waitErr := wait()
+		return nil, errors.Join(readErr, closeErr, waitErr)
+	}
+	waitErr := wait()
+	closeErr := reader.Close()
+	if err := errors.Join(waitErr, closeErr); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 type commandFunc func(context.Context, string, ...string) *exec.Cmd
 
 type commandSpec struct {

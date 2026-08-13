@@ -71,6 +71,8 @@ type Result struct {
 	ManualChecks []string `json:"manual_checks"`
 	// Error 是脱敏后的整体失败摘要。
 	Error string `json:"error,omitempty"`
+	// Isolation 是隔离恢复的资源、端口和清理摘要；原位恢复为空。
+	Isolation *IsolationResult `json:"isolation,omitempty"`
 }
 
 // Execute 严格按 Plan 顺序流式执行恢复，并在默认模式下拒绝未知既有资源。
@@ -158,13 +160,43 @@ func execute(
 	if strings.TrimSpace(plan.Project.ProjectName) == "" {
 		return failResult(result, fmt.Errorf("执行恢复失败: project_name 不能为空，真实恢复不能猜测 Compose project 标签"))
 	}
+	if plan.Isolation != nil && options.Force {
+		return failResult(result, fmt.Errorf("执行恢复失败: isolation Plan 不允许 force"))
+	}
 	if err := validateExecutePlan(plan); err != nil {
 		return failResult(result, err)
+	}
+	if err := validateIsolationPlan(plan); err != nil {
+		return failResult(result, err)
+	}
+	isolationRootExists := false
+	if plan.Isolation != nil {
+		var err error
+		isolationRootExists, err = validateExistingIsolationRoot(ctx, plan, runner)
+		if err != nil {
+			return failResult(result, err)
+		}
 	}
 	if err := validateRawFileTargets(plan, options.RawFileTargets); err != nil {
 		return failResult(result, err)
 	}
 	executionID := executionIdentity(plan, options.RawFileTargets)
+	var isolationRuntime isolationState
+	if plan.Isolation != nil {
+		state, found, err := loadIsolationState(ctx, plan, runner)
+		if err != nil {
+			return failResult(result, err)
+		}
+		if isolationRootExists && !found {
+			return failResult(result, fmt.Errorf("隔离恢复目录已存在但缺少合法 state.json，拒绝接管"))
+		}
+		if found {
+			if err := validateIsolationState(plan, executionID, state); err != nil {
+				return failResult(result, err)
+			}
+			isolationRuntime = state
+		}
+	}
 
 	inspection, err := inspectDestination(ctx, plan, executionID, runner)
 	if err != nil {
@@ -179,6 +211,15 @@ func execute(
 		}
 	}
 	if !inspection.resume {
+		if plan.Isolation != nil {
+			if err := ensureIsolationRoot(ctx, plan, runner); err != nil {
+				return failResult(result, err)
+			}
+			isolationRuntime = newIsolationState(plan, executionID)
+			if err := writeIsolationState(ctx, plan, runner, isolationRuntime); err != nil {
+				return failResult(result, err)
+			}
+		}
 		if err := writeMarker(ctx, runner, planStatePath(plan), executionID); err != nil {
 			return failResult(result, fmt.Errorf("记录恢复计划状态失败: %w", err))
 		}
@@ -198,7 +239,16 @@ func execute(
 			}
 		}
 	}
+	isolationPrepared := plan.Isolation == nil
 	for _, step := range plan.Steps {
+		if !isolationPrepared && step.Phase != PhaseFiles {
+			isolationRuntime, err = prepareIsolation(ctx, plan, runner, executionID)
+			if err != nil {
+				return failResult(result, err)
+			}
+			isolationPrepared = true
+			result.Isolation = isolationResult(plan, isolationRuntime)
+		}
 		stepResult, err := executeStep(ctx, plan, step, runner, options, dependencies)
 		result.Steps = append(result.Steps, stepResult)
 		if stepResult.Phase == PhaseHealth && stepResult.Status == "warn" && stepResult.Detail != "" {
@@ -207,11 +257,26 @@ func execute(
 		if err != nil {
 			return failResult(result, err)
 		}
+		if plan.Isolation != nil && step.Phase == PhaseApplication {
+			isolationRuntime, err = inspectIsolationPorts(ctx, plan, runner, isolationRuntime)
+			if err != nil {
+				return failResult(result, err)
+			}
+			result.Isolation = isolationResult(plan, isolationRuntime)
+		} else if plan.Isolation != nil &&
+			(step.Phase == PhaseDatabasePrepare || step.Phase == PhaseDatabaseData) {
+			isolationRuntime, err = inspectIsolationContainers(ctx, plan, runner, isolationRuntime)
+			if err != nil {
+				return failResult(result, err)
+			}
+			result.Isolation = isolationResult(plan, isolationRuntime)
+		}
 	}
 	if err := writeMarker(ctx, runner, planCompletePath(plan), executionID); err != nil {
 		return failResult(result, fmt.Errorf("记录恢复完成状态失败: %w", err))
 	}
 	result.Status = store.StatusOK
+	result.Isolation = isolationResult(plan, isolationRuntime)
 	for _, step := range result.Steps {
 		if step.Status == "warn" {
 			result.Status = store.StatusWarn
@@ -222,7 +287,7 @@ func execute(
 }
 
 func newExecuteResult(plan Plan) Result {
-	return Result{
+	result := Result{
 		ManifestSnapshotID: plan.ManifestSnapshotID,
 		RunID:              plan.RunID,
 		SourceHost:         plan.SourceHost,
@@ -230,6 +295,10 @@ func newExecuteResult(plan Plan) Result {
 		Steps:              make([]StepResult, 0, len(plan.Steps)),
 		ManualChecks:       append([]string(nil), plan.ManualChecks...),
 	}
+	if plan.Isolation != nil {
+		result.Isolation = isolationResult(plan, isolationState{})
+	}
+	return result
 }
 
 func failResult(result Result, err error) (Result, error) {
@@ -269,6 +338,16 @@ func inspectDestination(ctx context.Context, plan Plan, executionID string, runn
 	if len(containers) > 0 {
 		inspection.projectContainers = append(inspection.projectContainers, containers...)
 	}
+	if plan.Isolation != nil {
+		for _, container := range containers {
+			labels, labelErr := inspectResourceLabels(ctx, runner, "container", container.ID)
+			if labelErr != nil || !isolationLabelsMatch(plan, labels) {
+				inspection.conflicts = append(inspection.conflicts, conflict{
+					resource: container.ID, detail: "容器 isolation 标签不匹配", authorized: false,
+				})
+			}
+		}
+	}
 	if len(containers) > 0 && !inspection.resume {
 		inspection.conflicts = append(inspection.conflicts, conflict{
 			resource: "compose_project", detail: fmt.Sprintf("项目 %q 已有 %d 个容器", projectName, len(containers)), authorized: true,
@@ -282,6 +361,16 @@ func inspectDestination(ctx context.Context, plan Plan, executionID string, runn
 		inspection.conflicts = append(inspection.conflicts, conflict{
 			resource: "compose_volumes", detail: fmt.Sprintf("项目 %q 已有 %d 个 volume", projectName, len(volumes)), authorized: true,
 		})
+	}
+	if plan.Isolation != nil {
+		for _, volumeName := range volumes {
+			_, labels, labelErr := inspectVolume(ctx, runner, volumeName)
+			if labelErr != nil || !isolationLabelsMatch(plan, labels) {
+				inspection.conflicts = append(inspection.conflicts, conflict{
+					resource: volumeName, detail: "volume isolation 标签不匹配", authorized: false,
+				})
+			}
+		}
 	}
 
 	for _, step := range plan.Steps {
@@ -312,7 +401,7 @@ func inspectDestination(ctx context.Context, plan Plan, executionID string, runn
 			if !exists {
 				continue
 			}
-			authorized := labels[composeProjectLabel] == projectName
+			authorized := labels[composeProjectLabel] == projectName && isolationLabelsMatch(plan, labels)
 			if !inspection.resume || !authorized {
 				detail := "volume 已存在"
 				if !authorized {
@@ -338,7 +427,7 @@ func validateExecutePlan(plan Plan) error {
 			}
 			if step.Phase == PhaseFiles {
 				for _, targetPath := range step.Target.Paths {
-					if err := validateRestoreFilePath(targetPath); err != nil {
+					if err := validateRestoreFilePathForPlan(plan, targetPath); err != nil {
 						return fmt.Errorf("执行恢复失败: Plan steps[%d]: %w", index, err)
 					}
 				}
@@ -418,6 +507,17 @@ func validateRestoreFilePath(targetPath string) error {
 		if pathsOverlap(cleaned, protected) {
 			return fmt.Errorf("files target 路径 %q 与 ark 运行时路径 %q 重叠", targetPath, protected)
 		}
+	}
+	return nil
+}
+
+func validateRestoreFilePathForPlan(plan Plan, targetPath string) error {
+	if plan.Isolation == nil {
+		return validateRestoreFilePath(targetPath)
+	}
+	cleaned := path.Clean(targetPath)
+	if cleaned == plan.Isolation.FilesRoot || !strings.HasPrefix(cleaned, plan.Isolation.FilesRoot+"/") {
+		return fmt.Errorf("files target 路径 %q 不位于 isolation files 根目录", targetPath)
 	}
 	return nil
 }
@@ -537,6 +637,17 @@ func restoreFiles(
 	if step.Target == nil {
 		return fmt.Errorf("files target 配置为空")
 	}
+	if plan.Isolation != nil {
+		exists, err := targetPathExists(ctx, runner, plan.Isolation.FilesRoot)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if err := validateIsolationFilesTreeLinks(ctx, runner, plan.Isolation.FilesRoot); err != nil {
+				return err
+			}
+		}
+	}
 	if destinationPath, ok := rawFileTargets[step.TargetID]; ok {
 		return restoreRawFile(ctx, plan, step, runner, destinationPath, dependencies)
 	}
@@ -546,6 +657,13 @@ func restoreFiles(
 		if _, err := runner.Run(ctx, "rm", "-rf", "--", cleaned); err != nil {
 			return fmt.Errorf("清理 files target 路径 %q 失败: %w", targetPath, err)
 		}
+	}
+	if plan.Isolation != nil {
+		if _, err := runner.Run(ctx, "install", "-d", "-m", "0700", plan.Isolation.FilesRoot); err != nil {
+			return fmt.Errorf("准备 isolation files 根目录失败: %w", err)
+		}
+		return feedDump(ctx, dependencies.dump, runner, step.SnapshotID, snapshotPath(plan, step),
+			[]string{"tar", "-xpf", "-", "-C", plan.Isolation.FilesRoot})
 	}
 	return feedDump(ctx, dependencies.dump, runner, step.SnapshotID, snapshotPath(plan, step),
 		[]string{"tar", "-xpf", "-", "-C", "/"})
@@ -679,17 +797,22 @@ func restoreVolume(
 		return err
 	}
 	projectName := effectiveProjectName(plan.Project)
-	if exists && (labels[composeProjectLabel] != projectName || labels[composeVolumeLabel] != volumeKey) {
+	if exists && (labels[composeProjectLabel] != projectName || labels[composeVolumeLabel] != volumeKey ||
+		!isolationLabelsMatch(plan, labels)) {
 		return fmt.Errorf("volume %q 不属于目标项目 %q", name, projectName)
 	}
 	if !exists {
-		if _, err := runner.Run(ctx,
+		argv := []string{
 			"docker", "volume", "create",
-			"--label", composeProjectLabel+"="+projectName,
-			"--label", composeVolumeLabel+"="+volumeKey,
-			"--label", restoreManifestLabel+"="+plan.ManifestSnapshotID,
-			name,
-		); err != nil {
+			"--label", composeProjectLabel + "=" + projectName,
+			"--label", composeVolumeLabel + "=" + volumeKey,
+			"--label", restoreManifestLabel + "=" + plan.ManifestSnapshotID,
+		}
+		if plan.Isolation != nil {
+			argv = append(argv, "--label", isolationLabel+"="+plan.Isolation.ID)
+		}
+		argv = append(argv, name)
+		if _, err := runner.Run(ctx, argv...); err != nil {
 			return fmt.Errorf("创建 volume %q 失败: %w", name, err)
 		}
 	} else if _, err := runner.Run(ctx,
@@ -705,7 +828,8 @@ func restoreVolume(
 		return err
 	}
 	exists, labels, err = inspectVolume(ctx, runner, name)
-	if err != nil || !exists || labels[composeProjectLabel] != projectName || labels[composeVolumeLabel] != volumeKey {
+	if err != nil || !exists || labels[composeProjectLabel] != projectName || labels[composeVolumeLabel] != volumeKey ||
+		!isolationLabelsMatch(plan, labels) {
 		return errors.Join(fmt.Errorf("volume %q 恢复后归属校验失败", name), err)
 	}
 	return nil
@@ -787,7 +911,8 @@ func restoreRedis(
 		return err
 	}
 	exists, labels, err := inspectVolume(ctx, runner, volumeName)
-	if err != nil || !exists || labels[composeProjectLabel] != effectiveProjectName(plan.Project) {
+	if err != nil || !exists || labels[composeProjectLabel] != effectiveProjectName(plan.Project) ||
+		!isolationLabelsMatch(plan, labels) {
 		return errors.Join(fmt.Errorf("Redis 数据 volume %q 不属于目标项目", volumeName), err)
 	}
 	owner, err := volumeDataOwner(ctx, runner, volumeName)
@@ -1055,7 +1180,7 @@ func stepCompleted(
 		}
 		volumeKey, err := composeVolumeKey(ctx, runner, plan.Project, step.Target.Name)
 		if err != nil || labels[composeProjectLabel] != effectiveProjectName(plan.Project) ||
-			labels[composeVolumeLabel] != volumeKey {
+			labels[composeVolumeLabel] != volumeKey || !isolationLabelsMatch(plan, labels) {
 			return false, nil, err
 		}
 	case PhaseDatabasePrepare, PhaseDatabaseData:
@@ -1080,6 +1205,13 @@ func stepCompleted(
 		}
 	}
 	return true, nil, nil
+}
+
+func isolationLabelsMatch(plan Plan, labels map[string]string) bool {
+	if plan.Isolation == nil {
+		return true
+	}
+	return labels[isolationLabel] == plan.Isolation.ID
 }
 
 func completedStepMarker(
@@ -1516,6 +1648,9 @@ func readFileIfExists(ctx context.Context, runner sshexec.Runner, filePath strin
 }
 
 func planMarkerRoot(plan Plan) string {
+	if plan.Isolation != nil {
+		return plan.Isolation.Root
+	}
 	value := plan.DestinationHost + "\x00" + plan.Project.Name + "\x00" +
 		plan.Project.ComposeFile + "\x00" + plan.Project.ProjectName
 	digest := sha256.Sum256([]byte(value))

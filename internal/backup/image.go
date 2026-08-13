@@ -35,6 +35,16 @@ func executeImageDigest(
 	target config.Target,
 	runner sshexec.Runner,
 ) (*Result, error) {
+	configArgv := append(composeArgv(host.Project), "config", "--format", "json", "--no-env-resolution")
+	canonical, err := readComposeMetadataCanonical(ctx, runner, configArgv)
+	if err != nil {
+		return nil, fmt.Errorf("读取 target %q Compose 恢复元数据失败: %w", target.ID(), err)
+	}
+	composeMetadata, err := parseComposeMetadata(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("解析 target %q Compose 恢复元数据失败: %w", target.ID(), err)
+	}
+
 	psArgv := append(composeArgv(host.Project), "ps", "--format", "json")
 	out, err := runner.Run(ctx, psArgv...)
 	if err != nil {
@@ -67,7 +77,32 @@ func executeImageDigest(
 		".json",
 		io.NopCloser(bytes.NewReader(data)),
 		digests,
+		composeMetadata,
 	), nil
+}
+
+func readComposeMetadataCanonical(
+	ctx context.Context,
+	runner sshexec.Runner,
+	argv []string,
+) ([]byte, error) {
+	payload, err := sshexec.ReadAllStdout(ctx, runner, argv...)
+	if err != nil {
+		return nil, composeMetadataCommandError{cause: err}
+	}
+	return payload, nil
+}
+
+type composeMetadataCommandError struct {
+	cause error
+}
+
+func (e composeMetadataCommandError) Error() string {
+	return "Compose canonical 命令失败"
+}
+
+func (e composeMetadataCommandError) Unwrap() error {
+	return e.cause
 }
 
 func parseComposeContainers(output string) ([]composeContainer, error) {

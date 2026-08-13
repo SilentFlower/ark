@@ -4,24 +4,39 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/sshexec"
 )
 
+const composeMetadataHelperEnv = "ARK_COMPOSE_METADATA_HELPER"
+
+func TestComposeMetadataHelper(t *testing.T) {
+	if os.Getenv(composeMetadataHelperEnv) != "1" {
+		return
+	}
+	_, _ = io.WriteString(os.Stdout, `{"services":{"api":{}}}`)
+	_, _ = io.WriteString(os.Stderr, "compose warning should stay on stderr")
+	os.Exit(0)
+}
+
 func TestExecuteImageDigest_UsesRunningImageIDsAndStableJSON(t *testing.T) {
-	runner := &fakeRunner{runResponses: []runResponse{
-		{out: strings.Join([]string{
-			`{"ID":"worker-1","Service":"worker","State":"running"}`,
-			`{"ID":"api-1","Service":"api","State":"running"}`,
-			`{"ID":"api-old","Service":"api","State":"exited"}`,
-		}, "\n")},
-		{out: `{"image_id":"sha256:api","image_ref":"ghcr.io/acme/app:latest"}`},
-		{out: `["ghcr.io/acme/app@sha256:111"]`},
-		{out: `{"image_id":"sha256:worker","image_ref":"redis:7"}`},
-		{out: `["docker.io/library/redis@sha256:222"]`},
-	}}
+	runner := &fakeRunner{
+		streamResponses: []streamResponse{testStreamResponse(`{"services":{"api":{"ports":[{"target":8080,"published":"8080","host_ip":"127.0.0.1","protocol":"tcp","app_protocol":"http","mode":"ingress"}]},"worker":{}}}`)},
+		runResponses: []runResponse{
+			{out: strings.Join([]string{
+				`{"ID":"worker-1","Service":"worker","State":"running"}`,
+				`{"ID":"api-1","Service":"api","State":"running"}`,
+				`{"ID":"api-old","Service":"api","State":"exited"}`,
+			}, "\n")},
+			{out: `{"image_id":"sha256:api","image_ref":"ghcr.io/acme/app:latest"}`},
+			{out: `["ghcr.io/acme/app@sha256:111"]`},
+			{out: `{"image_id":"sha256:worker","image_ref":"redis:7"}`},
+			{out: `["docker.io/library/redis@sha256:222"]`},
+		}}
 	target := config.Target{Type: config.TargetImageDigest, Services: []string{"worker", "api"}}
 
 	result, err := Execute(context.Background(), testHost(), target, runner)
@@ -29,6 +44,11 @@ func TestExecuteImageDigest_UsesRunningImageIDsAndStableJSON(t *testing.T) {
 		t.Fatalf("Execute 失败: %v", err)
 	}
 	assertCalls(t, runner.calls, []runnerCall{
+		{kind: "stream", argv: []string{
+			"docker", "compose", "-f", "/srv/app/compose.yaml",
+			"-p", "production", "--env-file", "/srv/app/.env",
+			"config", "--format", "json", "--no-env-resolution",
+		}},
 		{kind: "run", argv: []string{
 			"docker", "compose", "-f", "/srv/app/compose.yaml",
 			"-p", "production", "--env-file", "/srv/app/.env",
@@ -58,6 +78,14 @@ func TestExecuteImageDigest_UsesRunningImageIDsAndStableJSON(t *testing.T) {
 		if result.ImageDigests[service] != want {
 			t.Errorf("ImageDigests[%q] = %q，期望 %q", service, result.ImageDigests[service], want)
 		}
+	}
+	if result.ComposeMetadata == nil || len(result.ComposeMetadata.PublishedPorts) != 1 {
+		t.Fatalf("ComposeMetadata = %#v", result.ComposeMetadata)
+	}
+	port := result.ComposeMetadata.PublishedPorts[0]
+	if port.Service != "api" || port.HostIP != "127.0.0.1" || port.Published != "8080" ||
+		port.Target != 8080 || port.Protocol != "tcp" || port.AppProtocol != "http" || port.Mode != "ingress" {
+		t.Fatalf("published port = %#v", port)
 	}
 	data, err := io.ReadAll(result.Reader)
 	if err != nil {
@@ -185,7 +213,10 @@ func TestExecuteImageDigest_RejectsAmbiguousOrMissingDigest(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			runner := &fakeRunner{runResponses: tc.responses}
+			runner := &fakeRunner{
+				streamResponses: []streamResponse{testStreamResponse(`{"services":{"api":{}}}`)},
+				runResponses:    append([]runResponse(nil), tc.responses...),
+			}
 			target := config.Target{Type: config.TargetImageDigest, Services: tc.services}
 			_, err := Execute(context.Background(), testHost(), target, runner)
 			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
@@ -200,12 +231,51 @@ func TestExecuteImageDigest_RejectsAmbiguousOrMissingDigest(t *testing.T) {
 
 func TestExecuteImageDigest_PreservesRunnerError(t *testing.T) {
 	wantErr := errors.New("docker failed")
-	runner := &fakeRunner{runResponses: []runResponse{{err: wantErr}}}
+	runner := &fakeRunner{
+		streamResponses: []streamResponse{testStreamResponse(`{"services":{"api":{}}}`)},
+		runResponses:    []runResponse{{err: wantErr}},
+	}
 	target := config.Target{Type: config.TargetImageDigest, Services: []string{"api"}}
 
 	_, err := Execute(context.Background(), testHost(), target, runner)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Execute 错误 = %v，期望保留原始错误", err)
+	}
+}
+
+func TestExecuteImageDigest_ComposeMetadata命令失败保留错误链(t *testing.T) {
+	wantErr := errors.New("SECRET_TOKEN=compose-config-failed")
+	runner := &fakeRunner{streamResponses: []streamResponse{{err: wantErr}}}
+	target := config.Target{Type: config.TargetImageDigest, Services: []string{"api"}}
+
+	_, err := Execute(context.Background(), testHost(), target, runner)
+	if !errors.Is(err, wantErr) || strings.Contains(err.Error(), "SECRET_TOKEN") {
+		t.Fatalf("Execute 错误 = %v", err)
+	}
+}
+
+func TestReadComposeMetadataCanonical_忽略Stderr警告(t *testing.T) {
+	t.Setenv(composeMetadataHelperEnv, "1")
+	payload, err := readComposeMetadataCanonical(context.Background(), sshexec.NewLocal(), []string{
+		os.Args[0], "-test.run=^TestComposeMetadataHelper$",
+	})
+	if err != nil {
+		t.Fatalf("readComposeMetadataCanonical 失败: %v", err)
+	}
+	metadata, err := parseComposeMetadata(payload)
+	if err != nil || metadata == nil {
+		t.Fatalf("parseComposeMetadata metadata=%#v err=%v payload=%q", metadata, err, payload)
+	}
+}
+
+func TestParseComposeMetadata_忠实记录隔离暂不支持的端口模式(t *testing.T) {
+	canonical := `{"services":{"api":{"ports":[{"target":8080,"protocol":"sctp"},{"target":8080,"protocol":"sctp"}]}}}`
+	metadata, err := parseComposeMetadata([]byte(canonical))
+	if err != nil {
+		t.Fatalf("parseComposeMetadata 失败: %v", err)
+	}
+	if len(metadata.PublishedPorts) != 2 || metadata.PublishedPorts[0].Protocol != "sctp" {
+		t.Fatalf("ComposeMetadata = %#v", metadata)
 	}
 }
 

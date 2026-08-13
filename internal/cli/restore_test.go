@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/silentflower/ark/internal/backup"
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/doctor"
@@ -92,7 +94,9 @@ func testRestoreCommandInputs() (*config.Config, backup.Manifest, restic.Snapsho
 			Host: "web-01",
 			Targets: []backup.TargetResult{
 				{Host: "web-01", TargetID: "files/config", TargetType: config.TargetFiles, Status: store.StatusOK, SnapshotID: "files-snapshot"},
-				{Host: "web-01", TargetID: "image_digest", TargetType: config.TargetImageDigest, Status: store.StatusOK, SnapshotID: "image-snapshot", ImageDigests: map[string]string{"api": "registry.invalid/api@sha256:1111111111111111111111111111111111111111111111111111111111111111"}},
+				{Host: "web-01", TargetID: "image_digest", TargetType: config.TargetImageDigest, Status: store.StatusOK, SnapshotID: "image-snapshot", ImageDigests: map[string]string{"api": "registry.invalid/api@sha256:1111111111111111111111111111111111111111111111111111111111111111"}, ComposeMetadata: &backup.ComposeMetadata{PublishedPorts: []backup.PublishedPort{
+					{Service: "api", HostIP: "127.0.0.1", Published: "8080", Target: 8080, Protocol: "tcp", AppProtocol: "http", Mode: "ingress"},
+				}}},
 				{Host: "web-01", TargetID: "postgres/db/app", TargetType: config.TargetPostgres, Status: store.StatusOK, SnapshotID: "postgres-snapshot"},
 			},
 		}},
@@ -234,6 +238,7 @@ func TestRestoreCommand_参数错误不调用依赖(t *testing.T) {
 	}{
 		{name: "缺少 host", args: []string{"--dry-run"}, want: "--host"},
 		{name: "dry-run 与 force 冲突", args: []string{"--host", "web-01", "--dry-run", "--force"}, want: "不能与"},
+		{name: "isolate 与 force 冲突", args: []string{"--host", "web-01", "--isolate", "--force"}, want: "不能与"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,6 +255,76 @@ func TestRestoreCommand_参数错误不调用依赖(t *testing.T) {
 				t.Fatal("参数错误后不应调用任何依赖")
 			}
 		})
+	}
+}
+
+func TestRestoreCommand_隔离DryRun保持只读并输出稳定身份(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	configPath := "unused"
+	var events []string
+	cmd := newRestoreCmdWithDependencies(&configPath, restoreDependencies{
+		loadConfig: func(string) (*config.Config, error) {
+			events = append(events, "config")
+			return cfg, nil
+		},
+		newRepo: func(*config.Repo) (*restic.Repo, error) {
+			events = append(events, "repo")
+			return nil, nil
+		},
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			events = append(events, "manifest")
+			return manifest, snapshot, true, nil
+		},
+	})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--isolate", "--dry-run", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("隔离 dry-run 失败: %v", err)
+	}
+	if !reflect.DeepEqual(events, []string{"config", "repo", "manifest"}) {
+		t.Fatalf("隔离 dry-run 产生额外调用: %#v", events)
+	}
+	var plan restore.Plan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatalf("JSON 无效: %v\n%s", err, output.String())
+	}
+	if plan.Isolation == nil || plan.Isolation.PortAllocation != "runtime_auto" ||
+		!strings.Contains(plan.Project.ProjectName, "-restore-") || len(plan.Isolation.Ports) != 1 ||
+		plan.Isolation.Ports[0].AllocatedPort != "auto" {
+		t.Fatalf("隔离 Plan 不完整: %#v", plan)
+	}
+}
+
+func TestRestoreCommand_隔离DryRun人类输出完整端口映射(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	configPath := "unused"
+	cmd := newRestoreCmdWithDependencies(&configPath, restoreDependencies{
+		loadConfig: func(string) (*config.Config, error) { return cfg, nil },
+		newRepo:    func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+	})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--isolate", "--dry-run"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("隔离 dry-run 失败: %v", err)
+	}
+	for _, want := range []string{
+		"api", "127.0.0.1:8080", "auto", "8080/tcp",
+		"/srv/web/compose.yaml -> /var/lib/ark/restore/isolations/",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("输出缺少 %q:\n%s", want, output.String())
+		}
 	}
 }
 
@@ -533,5 +608,139 @@ func TestRestoreCommand_仓库无Manifest时失败(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "不存在 manifest") {
 		t.Fatalf("错误 = %v", err)
+	}
+}
+
+func TestRestoreCommand_隔离执行不注入SafetyBackup(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	configPath := "unused"
+	dependencies := restoreDependencies{
+		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
+		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+		runLocalDoctor:   func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report { return &doctor.Report{} },
+		newRepo:          func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		execute: func(
+			_ context.Context,
+			plan restore.Plan,
+			_ *restic.Repo,
+			_ sshexec.Runner,
+			options restore.ExecuteOptions,
+		) (restore.Result, error) {
+			if plan.Isolation == nil || options.SafetyBackup != nil || options.Force {
+				t.Fatalf("隔离执行选项错误: plan=%#v options=%#v", plan.Isolation, options)
+			}
+			return restore.Result{Status: store.StatusOK, Isolation: &restore.IsolationResult{
+				ID:             plan.Isolation.ID,
+				ProjectName:    plan.Isolation.ProjectName,
+				CleanupCommand: "ark restore cleanup --host web-02 --isolation " + plan.Isolation.ID,
+			}}, nil
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	cmd.SetOut(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--isolate", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("隔离 restore 失败: %v", err)
+	}
+}
+
+func TestRestoreCleanupCommand_只加载清单锁和目标Runner(t *testing.T) {
+	cfg, _, _ := testRestoreCommandInputs()
+	configPath := "/etc/ark/test.yaml"
+	isolationID := strings.Repeat("a", 64)
+	var events []string
+	dependencies := restoreDependencies{
+		loadConfig: func(path string) (*config.Config, error) {
+			events = append(events, "load:"+path)
+			return cfg, nil
+		},
+		acquireLock: func(path string) (io.Closer, error) {
+			events = append(events, "lock:"+path)
+			return &restoreEventCloser{events: &events}, nil
+		},
+		newRunner: func(host *config.Host) (sshexec.Runner, error) {
+			events = append(events, "runner:"+host.Host)
+			return restoreNoopRunner{}, nil
+		},
+		cleanup: func(_ context.Context, _ sshexec.Runner, host string, gotID string) (restore.CleanupResult, error) {
+			events = append(events, "cleanup:"+host)
+			if gotID != isolationID {
+				t.Fatalf("isolation ID = %q", gotID)
+			}
+			return restore.CleanupResult{
+				IsolationID:     gotID,
+				DestinationHost: host,
+				Status:          store.StatusOK,
+				Removed:         []string{"containers", "root:/var/lib/ark/restore/isolations/" + gotID},
+			}, nil
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"cleanup", "--host", "web-02", "--isolation", isolationID, "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("restore cleanup 失败: %v", err)
+	}
+	wantEvents := []string{"load:/etc/ark/test.yaml", "lock:/run/ark.lock", "runner:web-02", "cleanup:web-02", "unlock"}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("调用顺序 = %#v，期望 %#v", events, wantEvents)
+	}
+	var result restore.CleanupResult
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil || result.Status != store.StatusOK {
+		t.Fatalf("cleanup JSON = %s err=%v", output.String(), err)
+	}
+}
+
+func TestRestoreCleanupCommand_无效参数零依赖调用(t *testing.T) {
+	configPath := "unused"
+	called := false
+	dependencies := restoreDependencies{
+		loadConfig: func(string) (*config.Config, error) {
+			called = true
+			return nil, nil
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"cleanup", "--host", "web-02", "--isolation", "short"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "64 位") || called {
+		t.Fatalf("错误=%v called=%v", err, called)
+	}
+}
+
+func TestPrintRestoreResult_输出隔离端口和清理命令(t *testing.T) {
+	cmd := &cobra.Command{}
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	result := restore.Result{Status: store.StatusOK, Isolation: &restore.IsolationResult{
+		ID:          strings.Repeat("d", 64),
+		ProjectName: "web-restore-dddddddddddd",
+		Ports: []restore.IsolationPort{{
+			Service: "api", HostIP: "127.0.0.1", AllocatedPort: "32768", Target: 8080, Protocol: "tcp",
+		}},
+		CleanupCommand: "ark restore cleanup --host web-02 --isolation " + strings.Repeat("d", 64),
+	}}
+	if err := printRestoreResult(cmd, result); err != nil {
+		t.Fatalf("输出恢复结果失败: %v", err)
+	}
+	for _, want := range []string{"web-restore-dddddddddddd", "127.0.0.1:32768 -> 8080/tcp", "ark restore cleanup"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("输出缺少 %q:\n%s", want, output.String())
+		}
 	}
 }

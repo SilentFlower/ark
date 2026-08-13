@@ -97,10 +97,13 @@ type Runner interface {
 
 func NewLocal() Runner
 func NewSSH(cfg config.SSH) (Runner, error)
+func ReadAllStdout(ctx context.Context, runner Runner, argv ...string) ([]byte, error)
 ```
 
 `Run` 面向短命令；`Stream` 面向备份方向的 stdout 数据流；`Feed` 面向恢复方向的
-stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
+stdin 数据流。`ReadAllStdout` 只面向 Compose canonical JSON 等有明确小体积上界、且 stderr
+不得混入业务数据的结构化输出；大体积备份仍使用 `Stream`。具体 Runner 实现保持非导出，
+上层只持有 `Runner`。
 
 #### 3. Contracts
 
@@ -118,6 +121,10 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
   stderr 仅在失败时进入诊断，不能混入业务数据。`exec.Cmd.Wait` 会关闭 `StdoutPipe`，
   因此调用方在成功 `Wait` 后释放 Reader 时，包装层只归一化 `os.ErrClosed`；Wait 前的
   已关闭错误和其它 Close 错误仍必须返回。
+- `ReadAllStdout` 统一短结构化输出的完整生命周期：正常读取完成后按
+  `ReadAll -> Wait -> Close`；读取失败时按 `Close -> Wait`，先解除写端阻塞再回收子进程；
+  `Stream` 返回 error 或 Reader/Wait 任一缺失时，也必须关闭非空 Reader、调用非空 Wait，
+  并用 `errors.Join` 保留全部可识别错误链。
 - `Feed` 把 reader 直接连接到 stdin，不得整读或落临时文件；stdout 丢弃，
   stderr 仅用于失败诊断。
 - 三种模式都使用调用方 context，本包不统一设置时长。取消或超时错误必须保留
@@ -144,6 +151,9 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 | `Stream` 非零退出或被信号终止 | stdout 读取结束后，`Wait` 返回非 nil error |
 | `Stream` 读到 EOF、Wait 成功后 Close 返回 `os.ErrClosed` | Close 归一化为 nil，不误报完整数据流失败 |
 | `Stream` Wait 前 Close 返回 `os.ErrClosed` 或其它错误 | 原样返回，不能扩大忽略范围 |
+| `ReadAllStdout` 的 context 或 runner 为空 | 启动命令前返回中文参数错误 |
+| `ReadAllStdout` 收到半初始化 Reader/Wait | 回收所有非空资源并返回组合错误 |
+| `ReadAllStdout` 读取失败且 Close/Wait 也失败 | 按 Close -> Wait 回收，三条错误均可 `errors.Is` |
 | `Feed` 非零退出 | 返回包含 stderr 诊断的非 nil error |
 
 #### 5. Good / Base / Bad Cases
@@ -152,8 +162,11 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
   原样输出该值，且 `/tmp/x` 不存在。
 - Base：`Stream(ctx, "pg_dump", "-d", database)` 返回纯 stdout，调用方读完后
   `Wait()` 为 nil，随后 Close 不因 `exec.Cmd` 已回收 pipe 而失败。
+- Good：Compose config stdout 是 JSON、stderr 是 warning；`ReadAllStdout` 只返回 JSON，
+  且 Reader/Wait 半初始化时仍完成已创建资源的回收。
 - Bad：调用方只读 stdout、不调用 `Wait`，会把 SSH 中断或远程命令失败误判为成功。
 - Bad：把恢复输入先 `io.ReadAll`，会让大体积备份占满内存并破坏流式约束。
+- Bad：两个业务包各自复制一份 `ReadAll -> Wait -> Close`，失败顺序和半初始化回收会逐渐漂移。
 
 #### 6. Tests Required
 
@@ -166,6 +179,8 @@ stdin 数据流。具体实现保持非导出，上层只持有 `Runner`。
 - `Stream` 覆盖 stdout/stderr 隔离、成功、非零退出、SIGKILL 和 context 超时；
   断言失败由 `Wait` 返回；使用真实本地 `exec.Cmd.StdoutPipe` 覆盖 EOF → Wait → Close，
   并断言只在 Wait 后归一化 `os.ErrClosed`，其它 Close 错误仍可见。
+- `ReadAllStdout` 精确断言成功 `Read -> Wait -> Close`、读取失败 `Read -> Close -> Wait`，
+  以及仅 Reader、仅 Wait、Stream 同时返回 error 与资源的错误聚合和回收次数。
 - `Feed` 覆盖大输入原样传递、非零退出和 context 超时。
 - localhost SSH 集成测试用 `testing.Short()` 和四个可选环境变量保护，并实际断言
   正常执行、参数不注入、远程非零退出和远程进程被 kill。
@@ -205,6 +220,14 @@ waitErr := wait()
 closeErr := stdout.Close()
 return errors.Join(waitErr, closeErr)
 ```
+
+读取 Compose canonical JSON 这类小体积结构化输出时，业务包直接调用：
+
+```go
+payload, err := sshexec.ReadAllStdout(ctx, runner, argv...)
+```
+
+不要在 backup、restore 或 doctor 中重复实现相同生命周期。
 
 ### Scenario: SSH 主机密钥预览与显式刷新
 
@@ -542,13 +565,14 @@ return repo.run(ctx, "init")
 
 ```go
 type Result struct {
-    Host          string
-    TargetID      string
-    TargetType    config.TargetType
-    StdinFilename string
-    Reader        io.ReadCloser
-    Wait          func() error
-    ImageDigests  map[string]string
+    Host            string
+    TargetID        string
+    TargetType      config.TargetType
+    StdinFilename   string
+    Reader          io.ReadCloser
+    Wait            func() error
+    ImageDigests    map[string]string
+    ComposeMetadata *ComposeMetadata
 }
 
 func Execute(
@@ -578,7 +602,7 @@ func Execute(
 | redis 产流 | `exec -T <service> cat /data/dump.rdb` |
 | volume | `docker run --rm -v <name>:/src:ro alpine tar -cpf - -C /src .` |
 | files | `tar -cpf - -- <paths...>`，每条路径保持独立 argv |
-| image_digest | compose `ps --format json`，再按容器 ID 和实际 image ID 做 inspect |
+| image_digest | 先用 `config --format json --no-env-resolution` 读取纯 stdout 端口元数据，再用 `ps --format json` 和 inspect 解析实际 digest |
 
 - Redis 必须在 BGSAVE 前读取 LASTSAVE 基线；触发后按 context 轮询，时间戳发生变化
   才能读取 `/data/dump.rdb`。不得直接复制正在写入的 RDB。
@@ -587,6 +611,8 @@ func Execute(
   `Config.Image` 只用于选择仓库，最终值必须来自 `RepoDigests`。
 - 同一 service 有多个运行容器时，所有容器必须解析出同一个 RepoDigest；JSON 输出
   是 `service -> RepoDigest` 的稳定键序对象，`ImageDigests` 与流内容语义一致。
+- image_digest 的 canonical JSON 只提取 service published port 的 host IP、原宿主机端口、
+  target、protocol、app protocol 和 mode；不得把 environment 或 canonical 原文写入结果。
 - 实际 dump/tar 命令只使用调用方 context，不套 doctor 的 15 秒探测超时。
 
 #### 4. Validation & Error Matrix
@@ -604,6 +630,7 @@ func Execute(
 | 容器 image ID / image ref 为空 | image_digest 失败，不猜测仓库 |
 | RepoDigests 为空、目标仓库无匹配或匹配多项 | image_digest 失败，不任选候选 |
 | 同一 service 的运行容器解析出多个 digest | image_digest 失败，不输出不确定映射 |
+| Compose canonical 命令或 JSON 解析失败 | image_digest 失败；错误链保留，但对外阶段摘要不得包含插值内容 |
 
 #### 5. Good / Base / Bad Cases
 
@@ -622,7 +649,8 @@ func Execute(
   `tar -cpf`；files 断言 `--` 后路径保持独立 argv。
 - Redis 覆盖基线、BGSAVE、未变化轮询、变化后 Stream、context 取消和各阶段错误。
 - image_digest 覆盖 JSON Lines、稳定 service 排序、Docker Hub 别名、registry 端口、
-  空 RepoDigests、仓库不匹配、多候选、多运行 digest 以及每级 inspect/解析失败。
+  空 RepoDigests、仓库不匹配、多候选、多运行 digest、canonical stdout/stderr 隔离、
+  Compose 端口元数据和每级 inspect/解析失败。
 - 共享流结果覆盖 Stream 启动失败、半初始化回收、Wait/Close 错误链和重复调用次数。
 - 至少运行 `go test ./internal/backup -race -count=1`、`make check`、标准构建、
   `CGO_ENABLED=0 go build ./cmd/ark` 和 `git diff --check`。
@@ -662,15 +690,16 @@ reader, wait, err := runner.Stream(ctx, argv...)
 
 ```go
 type TargetResult struct {
-    Host         string
-    TargetID     string
-    TargetType   config.TargetType
-    Status       store.Status
-    Bytes        int64
-    Duration     time.Duration
-    SnapshotID   string
-    Error        string
-    ImageDigests map[string]string
+    Host            string
+    TargetID        string
+    TargetType      config.TargetType
+    Status          store.Status
+    Bytes           int64
+    Duration        time.Duration
+    SnapshotID      string
+    Error           string
+    ImageDigests    map[string]string
+    ComposeMetadata *ComposeMetadata
 }
 
 func BackupTarget(
@@ -704,6 +733,8 @@ func BackupTarget(
   不在取消后启动无界外部命令。
 - 返回 error 保留底层错误链；`TargetResult.Error` 和 `RunTarget.Error` 只能写阶段级
   脱敏摘要，禁止复制上游 stderr、restic 底层详情或 SQLite detail。
+- `ImageDigests` 与 `ComposeMetadata.PublishedPorts` 必须深拷贝到最终结果，后续 manifest
+  编码不得受执行器 Result 或调用方 slice 修改影响。
 - 状态库写入失败时，返回 `TargetResult.Status` 必须降为 fail；已产生的 snapshot ID
   和 bytes 保留用于审计，不能把“未持久化”伪装成成功。
 
@@ -739,7 +770,7 @@ func BackupTarget(
 #### 6. Tests Required
 
 - 断言成功调用顺序、稳定 filename、三类标签、bytes、duration、snapshot ID、
-  image digest 拷贝和完整 `RunTarget` 字段。
+  image digest、Compose metadata 深拷贝和完整 `RunTarget` 字段。
 - 阈值表覆盖无历史、零基线、高于一半、恰好一半、低于一半、奇数基线和 int64 最大值。
 - restic 失败断言 Close → Wait；无 ID 时不 forget，有 ID 时精确 forget；Wait 失败断言
   Wait → Close → 精确 forget。

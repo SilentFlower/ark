@@ -125,6 +125,9 @@ func newIntegritySource(
 		return probe.waitErr
 	})
 	result.ImageDigests = map[string]string{"api": "ghcr.io/acme/app@sha256:111"}
+	result.ComposeMetadata = &ComposeMetadata{PublishedPorts: []PublishedPort{
+		{Service: "api", Published: "8080", Target: 8080, Protocol: "tcp"},
+	}}
 	return result, probe
 }
 
@@ -184,6 +187,10 @@ func TestBackupTarget_SuccessPersistsExactResult(t *testing.T) {
 	source.ImageDigests["api"] = "changed"
 	if result.ImageDigests["api"] != "ghcr.io/acme/app@sha256:111" {
 		t.Errorf("TargetResult 复用了可变 image digest map: %#v", result.ImageDigests)
+	}
+	source.ComposeMetadata.PublishedPorts[0].Published = "changed"
+	if result.ComposeMetadata.PublishedPorts[0].Published != "8080" {
+		t.Errorf("TargetResult 复用了可变 Compose metadata: %#v", result.ComposeMetadata)
 	}
 	if probe.waitCalls != 1 || probe.closeCalls != 1 {
 		t.Errorf("Wait=%d Close=%d，期望均为 1", probe.waitCalls, probe.closeCalls)

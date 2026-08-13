@@ -31,6 +31,8 @@ type Result struct {
 	Wait func() error
 	// ImageDigests 仅对 image_digest target 非空，键是 service，值是确定的 RepoDigest。
 	ImageDigests map[string]string
+	// ComposeMetadata 仅对 image_digest target 非空，保存可安全进入 manifest 的 Compose 恢复元数据。
+	ComposeMetadata *ComposeMetadata
 }
 
 // Execute 为一个已校验 target 创建备份数据流。
@@ -109,9 +111,11 @@ func memoryResult(
 	suffix string,
 	reader io.ReadCloser,
 	imageDigests map[string]string,
+	composeMetadata *ComposeMetadata,
 ) *Result {
 	result := streamResult(host, target, suffix, reader, func() error { return nil })
 	result.ImageDigests = imageDigests
+	result.ComposeMetadata = cloneComposeMetadata(composeMetadata)
 	return result
 }
 

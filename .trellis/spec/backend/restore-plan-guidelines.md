@@ -276,3 +276,136 @@ dockerComposeUp("-d", "--no-build", "--pull", "never")
 ```
 
 marker 绑定 Plan/snapshot，后置条件再次验证实际状态；Compose 只使用已拉取且由 override 固定的 digest。
+
+---
+
+## Scenario: 显式隔离恢复、自动端口与精确清理
+
+### 1. Scope / Trigger
+
+- 修改 `restore.WithIsolation`、`WithIsolationOptions`、`IsolationSpec`、Compose 结构化转换、
+  Docker 自动端口、隔离状态或 `CleanupIsolation` 时，必须遵守本节。
+- 隔离模式只由显式 `ark restore --isolate` 进入；普通恢复遇冲突仍 fail closed，不能自动切换。
+- 后续 `ark verify` 通过 `WithIsolationOptions` 复用同一命名、路径、端口、归属和清理实现，
+  不复制第二套转换逻辑。
+
+### 2. Signatures
+
+```text
+ark restore --host <source> [--to <destination>]
+  [--snapshot latest|<manifest-id>] --isolate [--dry-run] [--json]
+
+ark restore cleanup --host <destination> --isolation <64-hex-id> [--json]
+```
+
+```go
+func WithIsolation(plan Plan) (Plan, error)
+func WithIsolationOptions(plan Plan, options IsolationOptions) (Plan, error)
+func CleanupIsolation(
+    ctx context.Context,
+    runner sshexec.Runner,
+    destinationHost string,
+    isolationID string,
+) (CleanupResult, error)
+```
+
+`IsolationSpec` 至少保存 schema、完整/短 ID、purpose、可选 instance key、派生 project、
+root/files/generated compose 路径、原项目定位、路径/volume 映射、`runtime_auto` 端口策略和
+完整 `IsolationPort`。`IsolationPort` 固定包含 service、host IP、原 published、allocated、
+target、protocol、可选 app protocol 和 mode。
+
+### 3. Contracts
+
+- 普通 restore 使用 manifest snapshot、source、destination、原 project 身份和 purpose 派生稳定
+  SHA-256 isolation ID；相同事实重复执行复用同一 ID、project、root、资源名和实际端口。
+- `--isolate` 与 `--force` 互斥。隔离路径不运行 destination safety backup，也不得停止、删除、
+  覆盖或清空原项目资源。
+- files target 全部恢复到 `/var/lib/ark/restore/isolations/<id>/files`。compose/env、bind、config、
+  secret 等宿主机路径只有被成功 files target 覆盖时才能映射；无法证明时在创建 Docker 资源前失败。
+- dry-run 保持零 SSH、零 Docker、零目标写入。Plan 输出稳定 ID、文件/volume 映射和每条
+  `service / host IP / 原 published / auto / target / protocol`；不得读取当前生产 Compose 补事实。
+- 端口声明来自备份 manifest 的 `ComposeMetadata`。历史 manifest 缺该字段时普通恢复仍可用，
+  `WithIsolation*` 明确要求重新备份。真实执行再次读取恢复材料的 canonical Compose，并与备份端口
+  声明比较；漂移时在 Docker 创建前拒绝。
+- Compose 转换只解析 `docker compose config --format json --no-env-resolution` 的纯 stdout。
+  移除固定 `container_name`，为 service、volume、network 增加 isolation label，改写显式资源名和
+  安全路径，删除 published 让 Docker 原子分配宿主机端口；保留 host IP、target、TCP/UDP、
+  app protocol 和 mode。
+- 只允许默认网络或无 `driver_opts` 的 `bridge` network；external 资源、host/container namespace、
+  volume driver/driver_opts、network driver_opts、非 bridge driver、越界路径和其它共享宿主资源配置
+  全部 fail closed。隔离端口第一版只接受 TCP/UDP，重复声明和无法结构化保真的协议在启动前拒绝。
+- 具体 host IP 必须存在于 destination；不得回退到 `0.0.0.0`、回环或其它地址。Docker 启动后立即
+  inspect 实际端口并原子持久化到 root-only `state.json`，续跑从受标签保护的容器重建缺失状态。
+- cleanup 只删除 state 中记录且 project/isolation label、名称和路径全部匹配的 container、network、
+  volume 与 isolation root。root 不存在时仍按 isolation label 扫描孤立 Docker 资源；发现孤儿必须
+  报错，只有 state 与带标签资源都不存在才算幂等成功。
+- CLI 人类与 JSON 输出只包含安全资源摘要、端口、访问地址和精确 cleanup 命令；canonical Compose、
+  environment、secret、仓库凭证和底层外部命令诊断不得进入输出。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+|---|---|
+| `--isolate --force` | 参数阶段拒绝，零依赖调用 |
+| dry-run | 只读取 config/repo/manifest；端口 `allocated_port=auto` |
+| Plan 已隔离、purpose/instance key 非法或 compose/env 未被 files 覆盖 | 构建隔离 Plan 失败 |
+| manifest 缺 Compose 端口元数据 | 普通 Plan 可构建；隔离 Plan 要求重新备份 |
+| 备份端口与恢复材料 canonical 端口漂移 | 创建 Docker 资源前失败 |
+| host IP 在 destination 不存在 | 不回退地址，不创建 Docker 资源 |
+| external、host namespace、未映射路径或不支持 driver/protocol | fail closed，不触碰原项目 |
+| 名称存在但 Compose/isolation label 不匹配 | 续跑与 cleanup 均拒绝接管或删除 |
+| 启动成功但端口 inspect/状态持久化失败 | 当前阶段失败；续跑按标签重建，不创建第二套副本 |
+| state/root 不存在且无带标签资源 | cleanup 幂等成功 |
+| state/root 不存在但仍有带 isolation 标签资源 | cleanup 失败并列出孤儿，不静默成功 |
+| cleanup 中任一资源归属或路径无法证明 | 停止删除并保留 state 供同 ID 重试 |
+
+### 5. Good/Base/Bad Cases
+
+- **Good**：目标机保留同名 production project、固定容器名、显式 volume/network 和原 TCP/UDP 端口；
+  隔离副本自动派生名称和端口，启动与清理前后原容器 ID/state、volume、network 和端口不变。
+- **Good**：首次启动后、写端口状态前中断；相同命令复用 isolation ID，inspect 已有受标签保护容器，
+  恢复实际端口后继续，不创建新 project。
+- **Base**：`--isolate --dry-run` 只显示稳定映射和 `auto`，管理员确认后真实执行，成功副本默认保留。
+- **Bad**：检测到端口冲突后静默换 project 或扫描空闲端口再启动；前者扩大用户授权，后者存在竞争窗口。
+- **Bad**：state root 已丢失就直接报告 cleanup 成功；带标签容器、network 或 volume 会成为不可审计孤儿。
+
+### 6. Tests Required
+
+- Plan/CLI：稳定 ID、purpose/instance key、深拷贝、普通 Plan JSON 兼容、`--force` 互斥、dry-run
+  零副作用，以及人类/JSON 完整路径、volume 和端口映射。
+- Compose 纯函数：短/长端口、范围、TCP/UDP、IPv4/IPv6 host IP、app protocol、固定名称、bind/config/
+  secret 映射，以及 external、host namespace、driver、driver_opts、重复/未知协议矩阵。
+- fake Runner：canonical stdout/stderr 隔离、备份端口漂移、host IP、root-only state、标签冲突、
+  inspect 端口恢复、同 ID 续跑和阶段错误脱敏。
+- cleanup：精确删除顺序、部分失败续跑、重复执行、state/标签/名称/路径漂移、root 缺失且有/无孤儿。
+- 可选真实 Docker 集成测试使用唯一 project 和临时目录，覆盖 production 与隔离副本并存、TCP/UDP
+  自动端口、显式资源名、原项目基线不变和被测 cleanup API；失败清理只能使用精确 ID/名称。
+- 提交前运行关键包十轮 race、`make check`、双构建、`go mod verify`、`git diff --check`，并在有
+  Docker 环境时运行 `ARK_DOCKER_INTEGRATION=1` 隔离集成测试。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+if portConflict {
+    project.Name += "-restore"
+    port.Published = findFreePort()
+}
+```
+
+这既会静默改变普通 restore 模式，也在端口扫描和容器启动之间留下竞争窗口；固定资源名、路径和
+归属标签仍可能覆盖原项目。
+
+#### Correct
+
+```go
+isolated, err := restore.WithIsolation(plan)
+if err != nil {
+    return err
+}
+result, err := restore.Execute(ctx, isolated, repo, runner, options)
+```
+
+只有显式隔离 Plan 才进入统一结构化转换。Docker 负责原子分配端口，实际映射与资源归属写入
+root-only state，后续 verify 和 cleanup 复用同一接口。

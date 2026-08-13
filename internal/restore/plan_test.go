@@ -55,7 +55,10 @@ func testRestoreInputs() (*config.Config, backup.Manifest) {
 				{Host: "source-01", TargetID: "image_digest", TargetType: config.TargetImageDigest, Status: store.StatusOK, SnapshotID: "snapshot-image", ImageDigests: map[string]string{
 					"worker": "registry/worker@sha256:2222222222222222222222222222222222222222222222222222222222222222",
 					"api":    "registry/api@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-				}},
+				}, ComposeMetadata: &backup.ComposeMetadata{PublishedPorts: []backup.PublishedPort{
+					{Service: "api", Published: "8080", Target: 8080, Protocol: "tcp", AppProtocol: "http", Mode: "ingress"},
+					{Service: "api", HostIP: "127.0.0.1", Published: "5353", Target: 5353, Protocol: "udp"},
+				}}},
 				{Host: "source-01", TargetID: "files/config", TargetType: config.TargetFiles, Status: store.StatusOK, SnapshotID: "snapshot-files"},
 				{Host: "source-01", TargetID: "redis/redis", TargetType: config.TargetRedis, Status: store.StatusWarn, SnapshotID: "snapshot-redis", Error: "需要复核"},
 			},
@@ -134,7 +137,7 @@ func TestBuildPlan_生成完整稳定的跨主机计划(t *testing.T) {
 			t.Errorf("JSON 缺少 snake_case 字段 %q: %s", field, text)
 		}
 	}
-	for _, forbidden := range []string{"ComposeFile", "IdentityFile", "KnownHostsFile", "PasswordFile"} {
+	for _, forbidden := range []string{"ComposeFile", "IdentityFile", "KnownHostsFile", "PasswordFile", "compose_metadata"} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("JSON 不应包含字段 %q: %s", forbidden, text)
 		}
@@ -143,11 +146,15 @@ func TestBuildPlan_生成完整稳定的跨主机计划(t *testing.T) {
 	// Plan 必须与后续配置或 manifest 变更隔离，避免 dry-run 审核后内容被引用修改。
 	cfg.Hosts[0].Targets[1].Paths[0] = "/changed"
 	manifest.Hosts[0].Targets[2].ImageDigests["api"] = "changed"
+	manifest.Hosts[0].Targets[2].ComposeMetadata.PublishedPorts[0].Published = "changed"
 	if plan.Steps[0].Target.Paths[0] != "/srv/app/compose.yaml" {
 		t.Fatalf("Plan target 未深拷贝: %#v", plan.Steps[0].Target.Paths)
 	}
 	if plan.Steps[1].ImageDigests["api"] != "registry/api@sha256:1111111111111111111111111111111111111111111111111111111111111111" {
 		t.Fatalf("Plan digest 未深拷贝: %#v", plan.Steps[1].ImageDigests)
+	}
+	if plan.Steps[1].composeMetadata.PublishedPorts[0].Published != "8080" {
+		t.Fatalf("Plan Compose 元数据未深拷贝: %#v", plan.Steps[1].composeMetadata)
 	}
 }
 
@@ -232,5 +239,159 @@ func TestBuildPlan_拒绝未知Host与无效参数(t *testing.T) {
 				t.Fatalf("错误 = %v，期望包含 %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestWithIsolation_稳定派生项目路径和资源(t *testing.T) {
+	cfg, manifest := testRestoreInputs()
+	plan, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+	if err != nil {
+		t.Fatalf("BuildPlan 失败: %v", err)
+	}
+	isolated, err := WithIsolation(plan)
+	if err != nil {
+		t.Fatalf("WithIsolation 失败: %v", err)
+	}
+	again, err := WithIsolation(plan)
+	if err != nil {
+		t.Fatalf("再次 WithIsolation 失败: %v", err)
+	}
+	if isolated.Isolation == nil || isolated.Isolation.ID != again.Isolation.ID || len(isolated.Isolation.ID) != 64 {
+		t.Fatalf("isolation ID 不稳定: %#v %#v", isolated.Isolation, again.Isolation)
+	}
+	if isolated.Project.ProjectName != "app-prod-restore-"+isolated.Isolation.ShortID {
+		t.Fatalf("project name = %q", isolated.Project.ProjectName)
+	}
+	if isolated.Project.ComposeFile != isolated.Isolation.GeneratedComposeFile || isolated.Project.EnvFile != "" {
+		t.Fatalf("隔离 project = %#v", isolated.Project)
+	}
+	if len(isolated.Isolation.Ports) != 2 || isolated.Isolation.Ports[0].AllocatedPort != "auto" ||
+		isolated.Isolation.Ports[1].Protocol != "udp" {
+		t.Fatalf("隔离端口映射 = %#v", isolated.Isolation.Ports)
+	}
+	if isolated.Steps[0].Target.Paths[0] != isolated.Isolation.FilesRoot+"/srv/app/compose.yaml" {
+		t.Fatalf("files 路径 = %#v", isolated.Steps[0].Target.Paths)
+	}
+	if isolated.Steps[2].Target.Name != "uploads-restore-"+isolated.Isolation.ShortID {
+		t.Fatalf("volume 名 = %q", isolated.Steps[2].Target.Name)
+	}
+	if plan.Steps[0].Target.Paths[0] != "/srv/app/compose.yaml" || plan.Steps[2].Target.Name != "uploads" {
+		t.Fatalf("原 Plan 被修改: %#v", plan)
+	}
+}
+
+func TestWithIsolation_旧备份缺少Compose元数据时明确拒绝(t *testing.T) {
+	cfg, manifest := testRestoreInputs()
+	manifest.Hosts[0].Targets[2].ComposeMetadata = nil
+	plan, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+	if err != nil {
+		t.Fatalf("BuildPlan 失败: %v", err)
+	}
+	_, err = WithIsolation(plan)
+	if err == nil || !strings.Contains(err.Error(), "重新执行 backup") {
+		t.Fatalf("错误 = %v", err)
+	}
+}
+
+func TestWithIsolation_拒绝暂不支持或重复的备份端口声明(t *testing.T) {
+	tests := []struct {
+		name  string
+		ports []backup.PublishedPort
+	}{
+		{
+			name: "SCTP",
+			ports: []backup.PublishedPort{
+				{Service: "api", Published: "8080", Target: 8080, Protocol: "sctp"},
+			},
+		},
+		{
+			name: "重复",
+			ports: []backup.PublishedPort{
+				{Service: "api", Published: "8080", Target: 8080, Protocol: "tcp"},
+				{Service: "api", Published: "18080", Target: 8080, Protocol: "tcp"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, manifest := testRestoreInputs()
+			manifest.Hosts[0].Targets[2].ComposeMetadata.PublishedPorts = tc.ports
+			plan, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+			if err != nil {
+				t.Fatalf("BuildPlan 失败: %v", err)
+			}
+			if _, err := WithIsolation(plan); err == nil {
+				t.Fatal("WithIsolation 应拒绝无法稳定映射的端口声明")
+			}
+		})
+	}
+}
+
+func TestWithIsolation_要求Compose和Env进入Files快照(t *testing.T) {
+	cfg, manifest := testRestoreInputs()
+	plan, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+	if err != nil {
+		t.Fatalf("BuildPlan 失败: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Plan)
+		want   string
+	}{
+		{name: "compose 缺失", mutate: func(p *Plan) { p.Steps[0].Target.Paths = []string{"/srv/app/.env"} }, want: "compose_file"},
+		{name: "env 缺失", mutate: func(p *Plan) { p.Steps[0].Target.Paths = []string{"/srv/app/compose.yaml"} }, want: "env_file"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := copyPlan(plan)
+			tc.mutate(&candidate)
+			_, err := WithIsolation(candidate)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误 = %v，期望包含 %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsolationNames_限制长度并保持合法前缀(t *testing.T) {
+	projectName := isolationProjectName(strings.Repeat("项目-ABC_", 20), IsolationPurposeRestore, "123456789abc")
+	if len(projectName) > isolationProjectMaximumLength ||
+		!isIsolationProjectStart(projectName[0]) || isolationProjectCharacter.MatchString(projectName) {
+		t.Fatalf("project name = %q，长度=%d", projectName, len(projectName))
+	}
+	resourceName := isolationResourceName(strings.Repeat("v", 300), IsolationPurposeRestore, "123456789abc")
+	if len(resourceName) > isolationResourceMaximumLength || !strings.HasSuffix(resourceName, "-restore-123456789abc") {
+		t.Fatalf("resource name 长度=%d，值=%q", len(resourceName), resourceName)
+	}
+}
+
+func TestPlanPathCovered_父目录快照覆盖子路径但反向不成立(t *testing.T) {
+	plan := Plan{Steps: []Step{{
+		Phase:  PhaseFiles,
+		Target: &Target{Paths: []string{"/srv/app"}},
+	}}}
+	if !planPathCovered(plan, "/srv/app/compose.yaml") {
+		t.Fatal("父目录 files target 应覆盖 compose 子路径")
+	}
+	plan.Steps[0].Target.Paths = []string{"/srv/app/compose.yaml"}
+	if planPathCovered(plan, "/srv/app") {
+		t.Fatal("单文件快照不应覆盖其父目录")
+	}
+}
+
+func TestSelectIsolationPortBinding_双栈同端口可归一化(t *testing.T) {
+	binding, err := selectIsolationPortBinding("", []isolationPortBinding{
+		{HostIP: "0.0.0.0", HostPort: "32768"},
+		{HostIP: "::", HostPort: "32768"},
+	})
+	if err != nil || binding.HostPort != "32768" {
+		t.Fatalf("binding=%#v err=%v", binding, err)
+	}
+	_, err = selectIsolationPortBinding("", []isolationPortBinding{
+		{HostIP: "0.0.0.0", HostPort: "32768"},
+		{HostIP: "::", HostPort: "32769"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "多个不同") {
+		t.Fatalf("错误=%v", err)
 	}
 }
