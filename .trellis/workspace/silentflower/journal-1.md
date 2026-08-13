@@ -340,3 +340,24 @@ P3-1 恢复 dry-run 与 P3-2 可重跑恢复执行已完成全量检查并归档
 ### Next Steps
 
 - 进入下一个 P3 子任务
+
+
+## Session 13: 完成 P3-3 跨主机重建受限验收
+
+**Date**: 2026-08-13
+**Task**: 完成 P3-3 跨主机重建受限验收
+**Branch**: `main`
+
+### Summary
+
+完成隔离跨机恢复、中断续跑、源业务停止后重建与归属清理；Check-All 通过且用户接受 CHK-001/FBK-001 风险，任务已归档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c58a952` | (see git log) |
+
+### Status
+
+[OK] **Completed**
