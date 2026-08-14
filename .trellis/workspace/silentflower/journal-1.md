@@ -420,3 +420,25 @@ P3 五个保留子任务完成集成复核并归档；P3-3 保留 CHK-001 与 FB
 ### Status
 
 [OK] **Completed**
+
+
+## Session 16: 完成并归档 P4-1 ark-hub 骨架与鉴权
+
+**Date**: 2026-08-14
+**Task**: 完成并归档 P4-1 ark-hub 骨架与鉴权
+**Branch**: `main`
+
+### Summary
+
+实现 ark-hub 常驻服务、本地密码鉴权、会话/CSRF/限流、独立 systemd service，完成 full Check-All、Hub code-spec 与实机生命周期验收。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `178069b` | (see git log) |
+| `640f28e` | (see git log) |
+
+### Status
+
+[OK] **Completed**
