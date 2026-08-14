@@ -1,6 +1,7 @@
-// Package systemd 生成、校验并原子安装 ark 的备份与恢复演练 systemd units。
+// Package systemd 生成、校验并原子安装 ark 的备份、恢复演练与 hub systemd units。
 //
-// unit 只保存二进制路径、清单路径和 host 参数，不嵌入任何仓库凭证或 SSH 私钥内容。
+// unit 只保存二进制路径、清单路径、host 与 hub 非秘密启动参数，不嵌入密码、会话、
+// 对象存储凭证或 SSH 私钥内容。
 // 所有文件先在目标目录内完成写入和 systemd-analyze 校验，再通过 rename 提交；失败时
 // 恢复旧文件，避免 systemd 读到半份配置。
 package systemd
@@ -59,6 +60,22 @@ type InstallResult struct {
 	Written []string `json:"written"`
 	// Removed 是已不在当前清单且带 ark 管理标记的 timer 文件名。
 	Removed []string `json:"removed"`
+}
+
+// HubInstallOptions 描述 ark-hub service 的安装位置与启动参数。
+type HubInstallOptions struct {
+	// UnitDir 是 systemd system unit 目录。
+	UnitDir string
+	// BinaryPath 是 ExecStart 使用的 ark-hub 绝对路径。
+	BinaryPath string
+	// ListenAddress 是 ark-hub serve 的监听地址。
+	ListenAddress string
+	// StateDBPath 是 ark-hub 打开的状态库绝对路径。
+	StateDBPath string
+	// AuthFile 是 ark-hub 管理员凭证文件绝对路径。
+	AuthFile string
+	// SecureCookie 控制是否向 ark-hub serve 传递 --secure-cookie。
+	SecureCookie bool
 }
 
 type installDependencies struct {
@@ -137,6 +154,39 @@ func BuildUnits(cfg *config.Config, binaryPath, configPath string) ([]Unit, erro
 	return units, nil
 }
 
+// BuildHubUnit 生成独立的 ark-hub 常驻 service。
+// @param options ark-hub 二进制、监听、状态库、凭证文件与 Cookie 参数。
+// @return Unit 名为 ark-hub.service 的完整 unit。
+// @return error 路径或监听参数非法时的错误。
+func BuildHubUnit(options HubInstallOptions) (Unit, error) {
+	if err := validateUnitPath("binary path", options.BinaryPath); err != nil {
+		return Unit{}, err
+	}
+	if err := validateUnitPath("state db path", options.StateDBPath); err != nil {
+		return Unit{}, err
+	}
+	if err := validateUnitPath("auth file", options.AuthFile); err != nil {
+		return Unit{}, err
+	}
+	if strings.TrimSpace(options.ListenAddress) == "" || strings.ContainsAny(options.ListenAddress, "\n\r\x00") {
+		return Unit{}, fmt.Errorf("生成 systemd unit 失败: listen address %q 非法", options.ListenAddress)
+	}
+	execStart := strings.Join([]string{
+		quoteExecArgument(options.BinaryPath),
+		"serve",
+		"--listen", quoteExecArgument(options.ListenAddress),
+		"--state-db", quoteExecArgument(options.StateDBPath),
+		"--auth-file", quoteExecArgument(options.AuthFile),
+	}, " ")
+	if options.SecureCookie {
+		execStart += " --secure-cookie"
+	}
+	return Unit{
+		Name:    "ark-hub.service",
+		Content: hubServiceUnit(execStart),
+	}, nil
+}
+
 // Install 生成、预校验并原子安装 ark systemd unit。
 // @param ctx 控制 systemd-analyze verify 和文件安装取消。
 // @param cfg 已完成静态校验的备份清单。
@@ -151,33 +201,71 @@ func Install(ctx context.Context, cfg *config.Config, options InstallOptions) (I
 	})
 }
 
+// InstallHub 生成、预校验并原子安装独立的 ark-hub service。
+// @param ctx 控制 systemd-analyze verify 和文件安装取消。
+// @param options 目标目录与 ark-hub 启动参数。
+// @return InstallResult 只包含 ark-hub.service，不扫描或清理 timer。
+// @return error 生成、暂存、verify、替换或回滚失败时的错误。
+func InstallHub(ctx context.Context, options HubInstallOptions) (InstallResult, error) {
+	return installHub(ctx, options, installDependencies{
+		verify: verifyUnitFiles,
+		rename: os.Rename,
+		remove: os.Remove,
+	})
+}
+
 func install(
 	ctx context.Context,
 	cfg *config.Config,
 	options InstallOptions,
 	dependencies installDependencies,
 ) (InstallResult, error) {
-	if ctx == nil {
-		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: context 不能为空")
-	}
-	if strings.TrimSpace(options.UnitDir) == "" {
-		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: unit 目录不能为空")
-	}
-	if !filepath.IsAbs(options.UnitDir) {
-		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: unit 目录 %q 必须是绝对路径", options.UnitDir)
-	}
-	if dependencies.verify == nil || dependencies.rename == nil || dependencies.remove == nil {
-		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: 内部依赖不完整")
-	}
 	units, err := BuildUnits(cfg, options.BinaryPath, options.ConfigPath)
 	if err != nil {
 		return InstallResult{}, err
 	}
-	if err := os.MkdirAll(options.UnitDir, 0o755); err != nil {
+	return installUnitSet(ctx, options.UnitDir, units, true, dependencies)
+}
+
+func installHub(
+	ctx context.Context,
+	options HubInstallOptions,
+	dependencies installDependencies,
+) (InstallResult, error) {
+	unit, err := BuildHubUnit(options)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	return installUnitSet(ctx, options.UnitDir, []Unit{unit}, false, dependencies)
+}
+
+func installUnitSet(
+	ctx context.Context,
+	unitDir string,
+	units []Unit,
+	cleanupTimers bool,
+	dependencies installDependencies,
+) (InstallResult, error) {
+	if ctx == nil {
+		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: context 不能为空")
+	}
+	if strings.TrimSpace(unitDir) == "" {
+		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: unit 目录不能为空")
+	}
+	if !filepath.IsAbs(unitDir) {
+		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: unit 目录 %q 必须是绝对路径", unitDir)
+	}
+	if len(units) == 0 {
+		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: unit 集合不能为空")
+	}
+	if dependencies.verify == nil || dependencies.rename == nil || dependencies.remove == nil {
+		return InstallResult{}, fmt.Errorf("安装 systemd unit 失败: 内部依赖不完整")
+	}
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		return InstallResult{}, fmt.Errorf("创建 systemd unit 目录失败: %w", err)
 	}
 
-	stageDir, err := os.MkdirTemp(options.UnitDir, ".ark-units-")
+	stageDir, err := os.MkdirTemp(unitDir, ".ark-units-")
 	if err != nil {
 		return InstallResult{}, fmt.Errorf("创建 systemd unit 暂存目录失败: %w", err)
 	}
@@ -195,20 +283,23 @@ func install(
 		return InstallResult{}, fmt.Errorf("校验 systemd unit 失败: %w", err)
 	}
 
-	desiredTimers := make(map[string]bool)
-	for _, unit := range units {
-		if strings.HasSuffix(unit.Name, ".timer") {
-			desiredTimers[unit.Name] = true
+	var staleTimers []string
+	if cleanupTimers {
+		desiredTimers := make(map[string]bool)
+		for _, unit := range units {
+			if strings.HasSuffix(unit.Name, ".timer") {
+				desiredTimers[unit.Name] = true
+			}
 		}
-	}
-	staleTimers, err := managedStaleTimers(options.UnitDir, desiredTimers)
-	if err != nil {
-		return InstallResult{}, err
+		staleTimers, err = managedStaleTimers(unitDir, desiredTimers)
+		if err != nil {
+			return InstallResult{}, err
+		}
 	}
 
 	backups := make(map[string]fileBackup, len(units)+len(staleTimers))
 	for _, unit := range units {
-		path := filepath.Join(options.UnitDir, unit.Name)
+		path := filepath.Join(unitDir, unit.Name)
 		backup, err := backupFile(path)
 		if err != nil {
 			return InstallResult{}, err
@@ -219,7 +310,7 @@ func install(
 		backups[path] = backup
 	}
 	for _, name := range staleTimers {
-		path := filepath.Join(options.UnitDir, name)
+		path := filepath.Join(unitDir, name)
 		backup, err := backupFile(path)
 		if err != nil {
 			return InstallResult{}, err
@@ -234,7 +325,7 @@ func install(
 	var applyErr error
 	for _, unit := range units {
 		from := filepath.Join(stageDir, unit.Name)
-		to := filepath.Join(options.UnitDir, unit.Name)
+		to := filepath.Join(unitDir, unit.Name)
 		if err := dependencies.rename(from, to); err != nil {
 			applyErr = fmt.Errorf("替换 systemd unit %q 失败: %w", unit.Name, err)
 			break
@@ -243,7 +334,7 @@ func install(
 	}
 	if applyErr == nil {
 		for _, name := range staleTimers {
-			if err := dependencies.remove(filepath.Join(options.UnitDir, name)); err != nil {
+			if err := dependencies.remove(filepath.Join(unitDir, name)); err != nil {
 				applyErr = fmt.Errorf("删除陈旧 ark timer %q 失败: %w", name, err)
 				break
 			}
@@ -253,7 +344,7 @@ func install(
 		rollbackErr := restoreFiles(backups)
 		return InstallResult{}, errors.Join(applyErr, rollbackErr)
 	}
-	if err := syncDirectory(options.UnitDir); err != nil {
+	if err := syncDirectory(unitDir); err != nil {
 		rollbackErr := restoreFiles(backups)
 		return InstallResult{}, errors.Join(err, rollbackErr)
 	}
@@ -276,6 +367,29 @@ func serviceUnit(description, execStart string) string {
 		"CacheDirectoryMode=0700",
 		"Environment=XDG_CACHE_HOME=/var/cache/ark",
 		"ExecStart=" + execStart,
+		"",
+	}, "\n")
+}
+
+func hubServiceUnit(execStart string) string {
+	return strings.Join([]string{
+		ManagedMarker,
+		"[Unit]",
+		"Description=ark hub 管理服务",
+		"Wants=network-online.target",
+		"After=network-online.target",
+		"",
+		"[Service]",
+		"Type=simple",
+		"UMask=0077",
+		"NoNewPrivileges=true",
+		"PrivateTmp=true",
+		"ExecStart=" + execStart,
+		"Restart=on-failure",
+		"RestartSec=5",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
 		"",
 	}, "\n")
 }

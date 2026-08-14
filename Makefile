@@ -10,7 +10,7 @@ LDFLAGS     := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X 
 
 all: check build
 
-## build: 编译 agent 二进制到 bin/
+## build: 编译 ark oneshot 二进制到 bin/
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
 

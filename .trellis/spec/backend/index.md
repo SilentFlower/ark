@@ -32,6 +32,7 @@ ark 是一个 Go 编写的 Docker Compose 整机备份与重建工具，
 | [Database Guidelines](./database-guidelines.md) | ark 自身 SQLite 状态库，以及业务数据库备份/恢复边界 | Filled |
 | [Error Handling](./error-handling.md) | 错误传播、聚合与退出码 | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | 输出通道、结构化上报、密钥红线 | Filled |
+| [Hub Guidelines](./hub-guidelines.md) | ark-hub 本地鉴权、HTTP 会话、限流、生命周期与常驻 service | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | 提交门槛、测试要求、注释标准 | Filled |
 
 ### 与模板的差异

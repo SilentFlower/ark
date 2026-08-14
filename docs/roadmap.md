@@ -555,10 +555,16 @@ volume、network、files root 和 Docker 自动端口，并通过 isolation labe
 
 ### P4-1 `cmd/ark-hub/` 骨架与鉴权
 
-- 常驻 HTTP 服务，读 `/var/lib/ark/ark.db`
-- **必须有鉴权**。它能发起覆盖生产数据的恢复，内网部署也不例外。
-  先做本地账号 + TOTP，与 dnsmgr 保持一致的体验。
-- **不承载调度**（ADR-005），**不执行长任务**：需要执行时起一个 `ark` 子进程。
+- 常驻 HTTP 服务通过 `store.Store` 打开 `/var/lib/ark/ark.db`，提供存活检查、登录、
+  最小受保护页面和会话 API；P4-2 的业务接口仍未提前实现。
+- **必须有鉴权**。首版采用单个本地管理员账号 + 密码，不使用 TOTP 或其它二次验证。
+  管理员只能在 hub 本机通过 `ark-hub admin init` 初始化，通过
+  `ark-hub admin reset-password` 重置；未初始化时服务拒绝监听，不提供 Web 安装入口。
+- 密码使用 Argon2id 保存到独立的 `/var/lib/ark-hub/auth.json`，文件与目录仅 root 可读写，
+  不进入 `ark.db` 或默认 restic 自备份。会话只存在内存，具备 CSRF、防暴力限流、退出撤销
+  和密码重置后的 revision 失效机制。
+- `ark-hub install` 只安装独立的 `ark-hub.service`，不创建、扫描或修改任何 timer。
+- **不承载调度**（ADR-005），**不执行长任务**：需要执行时由 P4-2 起一个 `ark` 子进程。
 
 ### P4-2 HTTP API
 
@@ -657,6 +663,6 @@ ark 发起恢复前暂停对应 dmtask，完成后恢复。
 | SSH 用 `x/crypto/ssh` 还是 exec `ssh` 命令 | P1-2 | exec `ssh`，复用系统的主机密钥校验与连接复用 |
 | 对象锁保留期与 restic 保留策略如何对齐 | P2-7 | 保留期 = 月备保留时长，prune 交给生命周期规则 |
 | `ark verify` 的频率与执行位置（原机 / 专用隔离机） | P3-5 | 每周一次；先在原机跑通，有条件再上专用机 |
-| `ark-hub` 的鉴权形式（本地账号 / OIDC / 反代托管） | P4-1 | 本地账号 + TOTP，与 dnsmgr 体验一致 |
+| `ark-hub` 的鉴权形式（本地账号 / OIDC / 反代托管） | P4-1 | 已定：本地单管理员密码，CLI 初始化/重置，不使用二次验证 |
 | dnsmgr fork 的 API 补丁能否回馈上游 | P5-1 | 尽量做成通用形态提 PR，避免长期维护分叉 |
 | manifest schema 的向后兼容策略 | P6 | 新版必须能读旧 manifest，写入始终用最新版 |

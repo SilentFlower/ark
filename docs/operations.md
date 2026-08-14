@@ -21,7 +21,18 @@ online backup 导出一致的单文件副本，再把该副本流式交给 resti
 - `repo.password_file` 指向的 restic 密码文件；
 - `repo.env_file` 指向的对象存储凭证文件；
 - 每台机器的 SSH 私钥；
-- 应用解密密钥、TOTP seed 和其它登录或解密介质。
+- `/var/lib/ark-hub/auth.json`；
+- 应用解密密钥和其它登录或解密介质。
+
+`ark-hub` 凭证文件是独立的 root-only 状态，不属于需要跨机器恢复的数据。新 hub 上不要从
+restic 复制旧文件；完成基础恢复后，在本机 TTY 执行：
+
+```bash
+ark-hub admin init --auth-file /var/lib/ark-hub/auth.json
+```
+
+密码只从终端无回显读取，不通过命令行参数或环境变量传递。初始化后再运行
+`ark-hub install` 并由管理员显式执行 daemon-reload、enable 和 start。
 
 ## 2. 离线恢复材料
 
@@ -31,7 +42,8 @@ online backup 导出一致的单文件副本，再把该副本流式交给 resti
 2. 对象存储访问凭证或重新签发凭证的管理员入口；
 3. 每台目标机的 SSH 私钥；
 4. 应用自身的解密密钥；
-5. ark 版本、对象存储地址和恢复负责人信息。
+5. ark-hub 管理员密码或可重新设定该密码的团队流程；
+6. ark 版本、对象存储地址和恢复负责人信息。
 
 推荐一份放在团队密码管理器，另一份放在受控离线介质。离线介质不能和 hub 放在同一
 故障域，也不能只保存“获取密钥的方法”而没有验证该方法实际可用。
@@ -82,4 +94,6 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 3. 从 restic 恢复 `/etc/ark/ark.yaml`、known_hosts、hub 服务数据和导出的 `ark.db`；
 4. 确认目标路径没有遗留旧 `ark.db-wal`、`ark.db-shm`，再放置导出的 `ark.db`；
 5. 从离线介质恢复 SSH 私钥和应用解密密钥，并设置 `0600` 权限；
-6. 运行 `ark validate`、`ark doctor --all`，人工确认对象锁告警后再恢复定时任务。
+6. 在本机 TTY 执行 `ark-hub admin init`，重新创建 `/var/lib/ark-hub/auth.json`；
+7. 运行 `ark validate`、`ark doctor --all`，人工确认对象锁告警后再恢复定时任务；
+8. 运行 `ark-hub install`，检查 unit 后再显式 daemon-reload、enable 和 start。
