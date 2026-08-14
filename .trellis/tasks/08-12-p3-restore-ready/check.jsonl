@@ -1,0 +1,5 @@
+{"file":"docs/roadmap.md","reason":"反向核对 P3-1 至 P3-5 的全部要求是否由子任务与证据覆盖。"}
+{"file":"docs/design.md","reason":"审计恢复顺序、跨主机数据流、安全边界和人工步骤是否漂移。"}
+{"file":"docs/operations.md","reason":"审计 hub 重建、离线密钥与对象锁证据。"}
+{"file":".trellis/spec/backend/backup-manifest-guidelines.md","reason":"审计恢复输入 manifest 的版本、snapshot 与失败语义。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行最终全仓质量门禁。"}

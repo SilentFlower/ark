@@ -1,0 +1,43 @@
+{
+  "id": "p3-restore-ready",
+  "name": "p3-restore-ready",
+  "title": "P3 恢复可用",
+  "description": "统筹 P3 恢复计划、执行、隔离能力、实机重建、自动演练与最终集成复核；P3-3 以已接受风险完成，P3-4 hub 自身重建实测已取消。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-12",
+  "completedAt": "2026-08-14",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-12-p3-restore-plan",
+    "08-12-p3-restore-execute",
+    "08-12-p3-live-rebuild-validation",
+    "08-12-p3-verify",
+    "08-12-p3-isolated-restore"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-14T06:58:34Z",
+    "completedSteps": [
+      "完成五个 P3 子任务的归档证据与恢复数据链审计",
+      "完成最终全仓质量门禁与统一 Check-All",
+      "同步 P3 已接受风险、取消项和 roadmap 结论"
+    ],
+    "partialStep": null,
+    "nextStep": "归档当前任务",
+    "notes": "Check-All 通过（已接受风险：CHK-001 P1、FBK-001 P2）；Update-Spec no-op；P3-4 已取消。"
+  }
+}
