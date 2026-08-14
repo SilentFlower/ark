@@ -361,3 +361,36 @@ P3-1 恢复 dry-run 与 P3-2 可重跑恢复执行已完成全量检查并归档
 ### Status
 
 [OK] **Completed**
+
+
+## Session 14: 归档 P3-5 ark verify 自动演练
+
+**Date**: 2026-08-14
+**Task**: 归档 P3-5 ark verify 自动演练
+**Branch**: `main`
+
+### Summary
+
+完成 ark verify、每周 systemd 调度、隔离清理与生产基线验证；Check-All、规范更新和推送均已完成。
+
+### Main Changes
+
+- 归档 p3-verify 任务并补充 release.md 上线与回滚操作
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6898e89` | (see git log) |
+
+### Testing
+
+- [OK] 归档前任务状态、决策审计、发布审计与 Git 同步状态均通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 进入 p3-restore-ready 或按 roadmap 选择下一任务
