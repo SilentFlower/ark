@@ -394,3 +394,29 @@ P3-1 恢复 dry-run 与 P3-2 可重跑恢复执行已完成全量检查并归档
 ### Next Steps
 
 - 进入 p3-restore-ready 或按 roadmap 选择下一任务
+
+
+## Session 15: 完成并归档 P3 恢复可用
+
+**Date**: 2026-08-14
+**Task**: 完成并归档 P3 恢复可用
+**Branch**: `main`
+
+### Summary
+
+P3 五个保留子任务完成集成复核并归档；P3-3 保留 CHK-001 与 FBK-001 已接受风险，P3-4 经确认取消，最终文档与任务记录已推送。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `39206c8` | (see git log) |
+| `ed05aa8` | (see git log) |
+| `226156d` | (see git log) |
+| `c58a952` | (see git log) |
+| `6898e89` | (see git log) |
+| `7ceca6d` | (see git log) |
+
+### Status
+
+[OK] **Completed**
