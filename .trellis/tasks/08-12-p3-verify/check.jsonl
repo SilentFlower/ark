@@ -1,0 +1,8 @@
+{"file":"docs/roadmap.md","reason":"逐项核对 verify 隔离、生产不变、损坏失败与状态写入。"}
+{"file":"docs/design.md","reason":"审计演练复用恢复链且不接入生产域名/IP。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"审计 Verification 持久化与数据库验证。"}
+{"file":".trellis/spec/backend/restore-plan-guidelines.md","reason":"审计 isolation ID、Compose 结构化转换、label、路径和 cleanup 契约。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"审计全局锁以及 systemd service/timer 安装契约。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"按 isolation、恢复执行与状态收尾相关章节审计 label/port/volume/files 命令与流生命周期。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"审计输出与 detail JSON 脱敏。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行目标包、race、隔离回归与全仓门禁。"}

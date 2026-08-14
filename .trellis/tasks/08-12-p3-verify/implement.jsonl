@@ -1,0 +1,9 @@
+{"file":"docs/roadmap.md","reason":"P3-5 隔离项目、端口、volume、label、状态库和待决频率/位置。"}
+{"file":"docs/design.md","reason":"restore 复用、演练不绑定生产域名/IP 和持续验证定位。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"store.Verification 与数据库恢复/就绪检查契约。"}
+{"file":".trellis/spec/backend/restore-plan-guidelines.md","reason":"verify 必须复用 isolation 命名、路径、端口、归属与 cleanup。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"全局锁、ark install、systemd unit 原子安装与 timer 回收契约。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"按 isolation、恢复执行与状态收尾相关章节核对 Compose argv、Run/Feed/Dump 生命周期和资源检查。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"verification 人类/JSON 输出与脱敏。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"verify 复用 internal/restore、cli 与 store 的依赖方向。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"隔离/销毁高风险测试、race 与全仓门禁。"}

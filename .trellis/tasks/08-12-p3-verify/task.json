@@ -1,0 +1,37 @@
+{
+  "id": "p3-verify",
+  "name": "p3-verify",
+  "title": "P3-5 ark verify 自动演练",
+  "description": "实现隔离恢复、健康检查、销毁与状态库记录的 ark verify 自动演练。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-12",
+  "completedAt": "2026-08-14",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-12-p3-restore-ready",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {},
+  "progress": {
+    "updatedAt": "2026-08-14T05:51:53Z",
+    "completedSteps": [
+      "实现 ark verify 自动演练、生产基线和精确清理",
+      "接入 weekly systemd 调度与状态持久化",
+      "完成 full Check-All 与可执行规范更新"
+    ],
+    "partialStep": null,
+    "nextStep": "运行 trellis-finish-work 归档任务",
+    "notes": "目标包竞态测试、十轮稳定性测试、真实 Docker 隔离集成、systemd-analyze、make check、常规与无 CGO 构建均通过。"
+  }
+}
