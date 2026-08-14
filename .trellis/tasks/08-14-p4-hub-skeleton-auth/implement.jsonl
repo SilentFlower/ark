@@ -1,0 +1,7 @@
+{"file":".trellis/tasks/08-14-p4-hub-skeleton-auth/research/auth-design.md","reason":"P4-1 本地鉴权、Go 1.22 依赖版本、凭证文件、会话与 systemd 边界的研究结论。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"约束 cmd/ark-hub 薄入口、internal/hub 归属和单向依赖。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"约束 ark-hub 只能通过 store.Store 公开 API 使用 ark.db。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"约束常驻 hub 的输出、结构化状态与鉴权秘密日志红线。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"约束中文错误、错误链、单点输出和零 panic。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"约束中文文档注释、安全文件原子更新和提交前质量门禁。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"约束现有 systemd timer 与 ark-hub 常驻 service 的职责隔离。"}

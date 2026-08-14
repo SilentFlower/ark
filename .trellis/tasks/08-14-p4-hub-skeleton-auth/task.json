@@ -1,0 +1,62 @@
+{
+  "id": "p4-hub-skeleton-auth",
+  "name": "p4-hub-skeleton-auth",
+  "title": "P4-1 ark-hub 骨架与鉴权",
+  "description": "建立 ark-hub 常驻 HTTP 服务骨架与本地管理员密码、会话和默认鉴权边界，不实现 TOTP，也不提前实现 P4-2 API 或 P4-3 前端。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P4",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-14",
+  "completedAt": "2026-08-14",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-14T07:07:51Z",
+      "contextKey": "codex_019ff08b-d5c6-72f2-b153-5da3d92ee3af",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "9c5f641fb2763f92cb0033de58be92b21875e8fd",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "9c5f641fb2763f92cb0033de58be92b21875e8fd",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "f835bab2650825d62de398015b7bc331f53edb9bd3d190af818b053dbfb97bf0"
+          }
+        ],
+        "fingerprint": "045942d41ca1f43a087cf33318e9671f691b46cc64cc3ca73dcda1a80bfa4e21"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-14T09:03:49Z",
+    "completedSteps": [
+      "实现 ark-hub 服务骨架、本地密码鉴权与 systemd service",
+      "完成并发、故障注入、构建和实机 HTTP 生命周期验收",
+      "通过 full Check-All 并补充 Hub code-spec"
+    ],
+    "partialStep": null,
+    "nextStep": "归档 P4-1 任务并进入下一项 roadmap",
+    "notes": "P4-1 未提前实现 P4-2 业务 API 或 P4-3 前端。"
+  }
+}
