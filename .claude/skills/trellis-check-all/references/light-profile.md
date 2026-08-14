@@ -59,6 +59,14 @@ untracked 上下文没有 task artifacts，本维度标记 `N/A`，不得根据�
 
 在 Check-All 内执行时，`trellis-check` 中任何直接修复、补测试、反复修到通过的指令一律失效。验证失败记录为 `CHK-*` 并继续其它独立验证。
 
+实际变更位于 Maven reactor 时，读取 `maven_verify.py` 的 evidence schema，只调用：
+
+```bash
+python3 ./.trellis/scripts/maven_verify.py check --latest --require-plan <final-plan.json>
+```
+
+`reusable` 计入定向验证；`partial` / `stale` / `failed` / `blocked` 记录精确验证缺口、原因和所需计划。Check-All 是 audit-only，不得调用 `plan` / `run` 或任何 Maven goal；Maven model/goal 可能写 `target/`、本地仓库或缓存。没有 Maven evidence 时不得无条件全仓构建，报告由主会话或 implement 路径执行的精确重跑需求。
+
 所有发现候选按 `references/fallback-findings.md` 先判定 `CHK-*` / `FBK-*`，再分配严重度。不得因场景极端、修复困难或影响较低改变根因通道；不满足三项硬准入的泛化建议不报告，保护收益或验证环境不完整则保留 FBK 并标记报告缺口。
 
 ---

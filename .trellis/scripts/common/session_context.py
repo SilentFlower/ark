@@ -9,6 +9,8 @@ Provides:
     get_context_text_record   - Text for record mode
     output_json               - Print JSON
     output_text               - Print text
+# BEGIN skill-garden patch session-context-update-docstring v0.6
+# END skill-garden patch session-context-update-docstring v0.6
 """
 
 from __future__ import annotations

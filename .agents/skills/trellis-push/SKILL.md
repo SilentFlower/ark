@@ -67,6 +67,8 @@ python3 ./.trellis/scripts/task_progress.py status --json || true
 git status --short --untracked-files=all -- <task-dir>
 ```
 
+若 `task_progress.py status` 返回 `taskStatus=completed`，立即按需读取 `references/completed-task-recovery.md`，由该 reference 完成只读 preflight 并返回“恢复计划 / 显式 finish-work / 阻断”之一。在得到结果前不得进入普通业务规划，也不得重复已经成功的业务 Git 动作。reference 缺失、不可读或证据无法闭合时失败关闭；`task.json.progress` 只作诊断，不能单独选择恢复动作。
+
 不得把默认 `git status --short` 可能返回的 `?? <task-dir>/` 折叠目录当成 exact file、展示条目或 pathspec。无活动 task 时仍可提交相关代码，但不生成任务进度。untracked 命中时，结合当前请求、work summary 和实际 diff 判断业务 `planned` 文件归属，计划同时显示 work id；无法明确归属的文件只能保留或作为风险。存在活动 task 时，结合 `brief.md`、`implement.md`、当前 diff 与本轮执行范围生成一行语义进度；同时识别当前任务目录中已存在且可归属的 dirty/untracked 产物，供 Step 5 生成任务记录 exact files。不得从旧进度推断 Git 动作。
 
 ## Step 2：预检与文件归属
@@ -126,68 +128,15 @@ auto-loop 内部 `commit-only` 也允许 retained dirty 存在，但每个生成
 
 ## Step 3：展示最小计划
 
-确认前禁止 `git add`、`git commit` 或 `git push`。计划只展示：
+确认前禁止 `git add`、`git commit` 或 `git push`。
 
-```markdown
-## Trellis Push 计划
+普通模式或用户 `commit-only` 在所有计划数据已经收敛、即将展示用户可见计划时，必须即时读取 `references/output-templates.md` 的“计划模板”和“共用展示规则”，再按该 reference 渲染。不得在 Skill 入口、仓库发现或预检阶段提前加载该文件；每次实际计划输出都以这次即时读取为准。
 
-[<PUSH / PUSH · MERGE / COMMIT-ONLY>] <N> 个仓库 · <N> 个 commit · <N> 个文件 · 保留未提交 <N> · 风险 <N>
-
-- **工作**：<任务名 | `Untracked work: <work-id>` | 无活动任务>
-- **顺序**：<repo-a> [-> `<local generation command>`] -> <repo-b> [-> task progress]
-
-### 完成链证据
-- **Check-All**：<通过 / 通过（已接受风险：CHK-001,FBK-002） / 未运行 / 已失效 / 存在未处置 findings / blocked / 部分验证>
-- **Update-Spec**：<no-op / written / needs-review / 未运行 / 已失效>
-
-### 1. <repository-name>
-
-- **Message**：`<commit message>`
-- **分支**：`<branch>` -> `<upstream>`
-- **变更**：<N> 个文件 · `+<adds> -<deletes>`
-- **父提交**：`<pre-merge-head>` + `<merge-head>`（仅已有 merge 时显示）
-- **Push**：<执行 / 跳过（commit-only）>
-
-计划提交：
-- <exact files 或分组摘要>
-
-[生成（多仓需要时显示）：前置仓成功后，在 `<working-directory>` 运行 `<exact local command>`；预计只影响 <后续仓 exact files 或分组摘要>]
-
-### 保留未提交的变更（dirty，仅数量大于 0 时显示）
-- [untracked] <path>
-- [unstaged] <path>
-- [staged] <path>
-
-### 风险（仅数量大于 0 时显示）
-- <Check-All / Update-Spec 风险，或 unknown ahead / branch-upstream / attribution risk>
-
-### 任务记录（仅普通模式且存在活动任务时显示）
-
-- **Message**：`chore(task): update <task-name> progress` · <N> 个文件
-- **仓库**：<repository-name> · 分支：`<branch>` -> `<upstream>`
-- **计划提交**：<当前任务 exact files 或分组摘要>
-- **进度**：completed=<...> | partial=<...> | next=<...>
-- **执行**：<commit -> push -> progress commit -> progress push>
-
-确认执行请回复 `确认`。可调整：`只提交`、`修改 message`、`展开文件`。
-```
-
-展示规则：
-
-- 计划与结果模板中的字段行必须使用 `- **字段**：值` 列表项。这些行在 Markdown 段落内会被折叠成一段，不得改回裸段落行，也不得依赖行尾空格换行。
-- 「任务记录」是与各仓库区平级的独立 `###` 小节，仅普通模式且存在活动任务时整节展示；不再用方括号条件行代替小节标题。
-- 单仓 `planned` 不超过 8 个文件时完整列出。
-- 超过 8 个时按目录归组，最多 12 行；用户要求展开时展示同一 exact set。
-- 顶部仓库/commit/file 总数包含独立任务记录提交所在 Git root、该提交及其 exact files；任务记录文件使用相同的 8 文件展示阈值和展开规则。
-- 保留未提交的变更始终逐项标注 Git 状态；真正风险在独立“风险”区逐项展示。
-- 完成链证据始终显示当前状态，但不重复 Check-All 报告或 Spec review 正文；`未运行`、`已失效`、任一未处置 `CHK-*` / `FBK-*`、blocked、部分验证或 `needs-review` 同时计入风险区。已接受风险的问题也必须按 ID、严重度和影响进入风险区，但不得改标为阻断 finding。
-- 无活动 task、untracked 或 `commit-only` 时省略进度动作。
-- 不重复展示检查结果、规范复核、归档或其他阶段的详细信息。
-- 生成前无法确定的内容和增删行写“生成后计算”，不得填预测值。
+reference 缺失、无法读取或缺少对应章节时停止并报告 `阻塞`，不得凭记忆重建、缩写或自制替代模板。
 
 普通多仓只确认一次。计划已展示生成命令和预计 exact files 时，命令成功且没有出现预计列表外的新 dirty path 就沿用原确认；内容、hash 或统计变化不重问。其它计划边界变化仍按 Step 4 重新规划。
 
-auto-loop 内部 `commit-only` 仍生成同样的逐仓执行数据用于自检和结果记录，但不再次询问用户；它只能在当前任务 artifacts、runner owned dirty 和 protected-retained 边界内形成 exact files/message。
+auto-loop 内部 `commit-only` 不渲染交互式计划或结果，也不再次询问用户，因此不得为了内部执行读取 `references/output-templates.md`。它仍生成同样的逐仓执行数据用于自检、恢复和调用方结果记录，并且只能在当前任务 artifacts、runner owned dirty 和 protected-retained 边界内形成 exact files/message。
 
 ## Step 4：精确提交与推送
 
@@ -249,7 +198,7 @@ auto-loop 内部链失败时向调用方返回全部已完成仓库提交和失�
 
 ## Step 5：同步任务进度
 
-仅普通模式且存在活动 task 时由本 skill 执行。untracked、用户 `commit-only` 与 auto-loop 内部 `commit-only` 都跳过本 Step；Auto-Loop runner 在 action record/next 后按自身契约写入本地 `task.json.progress`，不属于这里的任务进度提交或推送。全部业务仓库成功后先写完整进度并保持 `in_progress`，只在任务进度 commit/push 成功后原子请求 `in_progress -> completed`；已有仓库成功而后续仓库失败时只写 partial 进度，明确 completed、失败位置、next 和 notes，状态保持 `in_progress`。尚未发生成功 Git 动作就失败时，不记录虚假的 completed steps；只有父仓仍可安全提交并推送时才允许记录 failure notes。
+仅普通模式且存在活动 task 时由本 skill 执行。untracked、用户 `commit-only` 与 auto-loop 内部 `commit-only` 都跳过本 Step；Auto-Loop runner 在 action record/next 后按自身契约写入本地 `task.json.progress`，不属于这里的任务记录提交或推送。全部业务仓库成功后一次原子写入最终 progress 与完成态，再提交并推送任务记录；已有仓库成功而后续仓库失败时只写 partial 进度，明确 completed、失败位置、next 和 notes，状态保持 `in_progress`。尚未发生成功 Git 动作就失败时，不记录虚假的 completed steps；只有父仓仍可安全提交并推送时才允许记录 failure notes。
 
 新进度固定为：
 
@@ -271,18 +220,19 @@ auto-loop 内部链失败时向调用方返回全部已完成仓库提交和失�
 - 父仓分支、upstream 和冲突状态安全。
 - 推送不会携带无法归属的历史 ahead commits。
 
-全部业务 commit/push 成功时先通过 helper 写入最终 progress，但不得携带 `--complete`：
+全部业务 commit/push 成功时，通过 helper 用同一份最终 progress 原子写入 `progress`、`status=completed` 与 `completedAt`：
 
 ```bash
 python3 ./.trellis/scripts/task_progress.py write \
   --task <task-dir> \
   --progress-json '<progress-json>' \
+  --complete \
   --json
 ```
 
-部分成功时调用同一 helper，并写入精确恢复位置。用户 `commit-only`、auto-loop 内部 `commit-only` 和尚未发生任何成功业务 Git 动作的失败都不得由本 skill 请求 complete；auto-loop 的本地完成态由 Auto-Loop runner 自己写入，不经过本步骤。helper 写入失败时任务保持原状态，不得继续任务进度提交或报告完成。
+部分成功时调用同一 helper，但不得携带 `--complete`，并写入精确恢复位置。用户 `commit-only`、auto-loop 内部 `commit-only` 和尚未发生任何成功业务 Git 动作的失败都不得由本 skill 请求 complete；auto-loop 的本地完成态由 Auto-Loop runner 自己写入，不经过本步骤。helper 写入失败时任务保持原状态，不得继续任务记录提交或报告完成。
 
-然后只提交并推送首次确认的当前任务 exact files；该集合包含 helper 更新后的 `task.json`，以及首次计划时已存在且可归属的当前任务 dirty/untracked 产物：
+helper 成功后，只提交并推送首次确认的当前任务 exact files；该集合包含完成态 `task.json`，以及首次计划时已存在且可归属的当前任务 dirty/untracked 产物：
 
 ```bash
 git add -- <current-task-exact-files>
@@ -290,54 +240,24 @@ git commit --only -m "chore(task): update <task-name> progress" -- <current-task
 git push origin <current-branch>
 ```
 
-该动作属于用户已确认的普通 push 计划，不增加第二次确认。提交后必须验证 commit 只包含首次确认的当前任务 exact files；其他任务和无关 dirty/staged 文件保持原状。如果写入、提交或推送失败，不回滚已成功的业务 Git 动作，并单独报告进度同步失败；任务必须保持 `in_progress`，不得进入完成态。
+该动作属于用户已确认的普通 push 计划，不增加第二次确认。提交后必须验证 commit 只包含首次确认的当前任务 exact files，且 `task.json` 已包含同一份最终 progress、`status=completed` 与 `completedAt`；其他任务和无关 dirty/staged 文件保持原状。
 
-只有进度 commit 和 push 都成功后，才用同一份最终 progress 原子写入本地 `status=completed` 和 `completedAt`：
+失败时保留真实现场，不 reset、amend、revert 或制造 dirty 回滚：
 
-```bash
-python3 ./.trellis/scripts/task_progress.py write \
-  --task <task-dir> \
-  --progress-json '<same-final-progress-json>' \
-  --complete \
-  --json
-```
+- helper 失败：任务保持 `in_progress`，不得创建任务记录 commit。
+- helper 成功但任务记录 commit 失败：保留本地 `completed` 与当前任务 exact dirty，后续按 Step 1 的任务记录 commit 恢复路径重新验证和确认；不得重复业务提交或 helper 写入。
+- 任务记录 commit 成功但 push 失败：任务目录应为 clean，并保留可归属的 ahead commit；后续只重试该 commit 的 push，不重复业务提交、helper 写入或任务记录 commit。
+- 任务记录 push 成功：本任务产生的当前任务目录变更必须 clean；不得再写入第二份预归档完成态。
 
-该完成态写入不再创建第二个 progress commit；它作为活动任务的预归档生命周期变化保留，由显式 `trellis-finish-work` 的 archive bookkeeping commit 承接。如果完成态写入失败，远端最终 progress 已同步，但任务仍为 `in_progress`；报告完成态激活失败并允许精确重试该 helper，禁止重新执行已成功的业务 push 或 progress push。
+任何恢复都必须验证当前分支、upstream、HEAD、`@{u}..HEAD`、任务记录 commit message 与 exact file set，以及 `task.json` 的最终完成态。无法证明归属时停止，不把未知 ahead 或 dirty 当作可恢复任务记录。
 
 ## Step 6：结果
 
 untracked 的全部已确认 Git 动作成功后，最后运行 `python3 ./.trellis/scripts/untracked_flow.py clear --reason completed --work-id <work-id>`。清理成功才报告完成链已结束；任一仓库、push 或清理失败都保留状态并报告恢复位置，禁止因部分成功伪造完成。用户 `commit-only` 的已确认动作全部成功时同样可以完成并清理。
 
-结果复用计划的视觉顺序，先给总览，再逐仓报告实际 commit/push，最后报告任务进度与保留 dirty：
+普通模式、用户 `commit-only` 或 untracked 路径在即将展示用户可见结果时，必须再次即时读取 `references/output-templates.md` 的“共用展示规则”、“结果模板”和“结果补充规则”，再按该 reference 渲染。不得依赖 Step 3 曾经读取的模板仍在上下文中。
 
-```markdown
-## Trellis Push 结果
-
-[完成 / 部分完成 / 失败] <N> 个仓库 · <N> 个业务 commit
-
-### 1. <repository-name>
-
-- **Commit**：`<short-hash> <actual commit message>`
-- **分支**：`<branch>` -> `<upstream>`
-- **状态**：<✓ 已推送 / · 仅本地提交 / ❌ 失败>
-- **生成**：`<exact local command>` · <✓ 已完成 / ❌ 失败 / · 未执行>（仅多仓需要时显示）
-
-### 任务进度
-
-- **状态**：<✓ 已同步并进入 completed · `<progress-hash>` / ✓ partial 已同步且保持 in_progress / · 已跳过 / ❌ 同步失败，不得报告完成>
-- **记录**：<N> 个当前任务文件
-- **进度**：completed=<...> | partial=<...> | next=<...>
-- **失败原因**：<原因和恢复动作>（仅失败时显示）
-
-### 保留未提交的变更（dirty，仅存在时显示）
-- [untracked] <path>
-- [unstaged] <path>
-- [staged] <path>
-```
-
-untracked 结果用“无任务状态”替代“任务进度”，展示 work id 与 `<已清理/保留待恢复>`；不生成或暗示 task progress commit。
-
-部分完成时必须明确列出已成功仓库、失败仓库/步骤、当前分支和下一恢复动作。业务结果与 progress sync 状态不得合并成一个模糊结论。
+reference 缺失、无法读取或缺少对应章节时停止并报告 `阻塞`，不得凭记忆重建、缩写或自制替代结果。auto-loop 内部 `commit-only` 不读取或渲染该交互式结果模板，只按 Step 4 的失败保留契约向调用方返回逐仓 commits、files、retained、message 和失败位置，由 `trellis-auto-loop` 完成 `record + next`。
 
 ## 禁止事项
 

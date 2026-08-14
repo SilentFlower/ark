@@ -28,11 +28,11 @@ python3 ./.trellis/scripts/task_progress.py status --json
 Treat the structured result as advisory recovery evidence only:
 
 - For `status=ok` with `taskStatus=in_progress`, relay only `summary.partialStep`, `summary.nextStep`, and notes that are necessary to resume safely.
-- For `status=ok` with `taskStatus=completed`, do not resume Phase 2 or Phase 3.3/3.4. Point only to explicit `trellis-finish-work` archive, unless the user explicitly requests rework.
-- For `status=candidates`, relay each healthy candidate with its `taskStatus` plus necessary `invalidCandidates` or `scanWarnings`, and suggest an explicit rebind when appropriate. A completed candidate points to finish-work/archive, not implementation. Never rebind the session or task automatically.
+- For `status=ok` with `taskStatus=completed`, do not resume Phase 2 or Phase 3.3. Enter the `trellis-push` completed-task preflight; it is the one-hop owner that either prepares publication recovery, points to explicit `trellis-finish-work`, or blocks on ambiguous evidence.
+- For `status=candidates`, relay each healthy candidate with its `taskStatus` plus necessary `invalidCandidates` or `scanWarnings`, and suggest an explicit rebind when appropriate. After explicit rebind, a completed candidate uses the same Push preflight. Never rebind the session or task automatically.
 - For `status=no-progress` or `status=no-current-task`, continue without inventing saved progress. For `status=error`, report the structured blocker instead of guessing.
 
-Progress never overrides the task `status`, planning artifacts, or workflow ordering. Do not infer a Phase from progress, restore a previous push mode, or resume Git/commit orchestration from it.
+Progress never overrides the task `status`, planning artifacts, workflow ordering, auto-loop runtime, or Git publication evidence. Do not inspect or classify completed Git recovery here. Do not infer a Phase from progress, restore a previous push mode, or resume Git/commit orchestration from progress text.
 
 To rework a completed task, first obtain an explicit user decision, then run:
 
@@ -69,7 +69,7 @@ Shows the Phase Index (Plan / Execute / Finish) with routing + skill mapping.
 - `status=in_progress` + implementation done, not yet checked → **2.2**
 - `status=in_progress` + check passed → **3.3** (spec update) → **3.4** (commit)
 <!-- BEGIN skill-garden patch trellis-continue-completed-route v0.6 -->
-- `status=completed` (observable after successful final-progress sync) → explicit `trellis-finish-work` archive flow; do not resume Phase 2 or Phase 3.3/3.4
+- `status=completed` -> enter the `trellis-push` completed-task preflight. It either prepares publication recovery, points to explicit `trellis-finish-work`, or blocks on ambiguous evidence. Do not resume Phase 2 or Phase 3.3.
 <!-- END skill-garden patch trellis-continue-completed-route v0.6 -->
 
 Phase rules (full detail in `.trellis/workflow.md`):

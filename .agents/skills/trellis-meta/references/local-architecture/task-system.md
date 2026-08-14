@@ -93,17 +93,17 @@ If the platform or shell environment has no stable session identity, `task.py st
 
 `task.json.status` and the planning artifacts are authoritative. `task.json.progress` is narrow recovery evidence owned by `task_progress.py`; it must not override status, infer a workflow phase, restore a previous push mode, or resume Git orchestration.
 
-When no active pointer exists, `trellis-continue` may surface healthy `in_progress` or `completed` progress candidates, together with necessary invalid-candidate or scan diagnostics. The user must explicitly choose a task before the session is rebound; the recovery flow must never bind a session automatically. A completed candidate points to `trellis-finish-work` and archive; rework requires an explicit `completed -> in_progress` reopen.
+When no active pointer exists, `trellis-continue` may surface healthy `in_progress` or `completed` progress candidates, together with necessary invalid-candidate or scan diagnostics. The user must explicitly choose a task before the session is rebound; the recovery flow must never bind a session automatically. After explicit rebind, a completed candidate enters the `trellis-push` completed-task preflight, which owns publication recovery and the handoff to explicit `trellis-finish-work`. Rework requires an explicit `completed -> in_progress` reopen.
 
 The normal completion boundary is:
 
 ```text
-in_progress -> trellis-push final progress commit/push -> local completed
-completed -> explicit trellis-finish-work -> archive
+in_progress -> business push -> atomic final progress + completed -> task-record commit/push
+completed -> trellis-push completed-task preflight -> recovery or explicit trellis-finish-work -> archive
 completed -> explicit reopen -> in_progress
 ```
 
-Partial pushes, user `commit-only`, auto-loop internal commits, and progress-sync failures remain `in_progress`. `trellis-finish-work` archives an already completed task; it does not manufacture completion from progress text.
+Partial pushes, user `commit-only`, and normal helper failures remain `in_progress`. Auto-loop internal commits keep their separate local completion and `pending_archive` contract. `trellis-finish-work` independently enforces archive eligibility for direct invocation, but does not reproduce Push recovery classification or manufacture completion from progress text.
 <!-- END skill-garden patch trellis-meta-managed-active-task-lifecycle v0.6 -->
 ## JSONL Context
 

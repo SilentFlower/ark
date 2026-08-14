@@ -15,9 +15,11 @@ Before moving files, record:
 - The active task source path, task name, and `task.json.children`.
 - Current branch, upstream, `HEAD`, upstream HEAD, and `@{u}..HEAD`.
 - `baseline_synced=true` only when an upstream exists and the initial `HEAD` equals upstream HEAD.
+- File-level `git status --short --untracked-files=all -- <current-task-dir>` and commits in `@{u}..HEAD` that modify the current task when an upstream exists.
+- `python3 ./.trellis/scripts/auto_loop.py status --verbose` output needed to identify a healthy terminal `pending_archive.tasks_awaiting_archive` handoff for this exact task.
 - Existing staged paths outside this task so they can be verified after scoped commits.
 
-Unrelated planning tasks, old archives, and files from other windows remain untouched. They do not require classification and do not block finish-work. Stop and return to Phase 3.4 only when the current task still has uncommitted business files, or when Git is unsafe because of detached HEAD, conflicts, rebase, or another blocking state.
+Unrelated planning tasks, old archives, and files from other windows remain untouched. They do not require classification and do not block finish-work. Stop when publication or the validated auto-loop handoff cannot be proven, when the current task has uncommitted files outside the exception below, or when Git is unsafe because of detached HEAD, conflicts, rebase, or another blocking state.
 
 Follow the steps below in order.
 
@@ -32,8 +34,16 @@ python3 ./.trellis/scripts/task_progress.py status --task <task-name> --json
 Read the current task's `task.json` as the authoritative lifecycle record. Continue only when `taskStatus=completed` and `completedAt` is present. Progress text is recovery evidence and never substitutes for the task status.
 
 - `in_progress`: stop and return to Phase 3.4 `trellis-push`; finish-work must not manufacture completion.
-- `completed`: keep the active task pointer until archive succeeds, then continue below.
+- `completed`: keep the active task pointer until archive succeeds, then apply the archive eligibility gate below before continuing.
 - Missing, corrupt, or any other status: fail closed and report the exact blocker.
+
+This skill decides only whether archive is allowed; it does not classify the normal task record into commit recovery versus push recovery. Progress text is diagnostic only.
+
+- **Validated auto-loop exception**: a healthy terminal or recent run has `pending_archive.tasks_awaiting_archive` containing the exact current task, its recorded local commits still validate, and current-task dirty is only `<task-dir>/task.json` with the runner-owned progress/lifecycle change after that commit. This branch may continue without a task-record remote push. Extra task dirty, missing commit evidence, task mismatch, or contradictory runtime evidence blocks archive.
+- **Normal synchronized completion**: continue only when the current-task directory is clean, an upstream exists, and no commit in `@{u}..HEAD` modifies the current task.
+- **Any other normal or ambiguous state**: stop before release audit and enter `trellis-push` completed-task preflight. That owner decides whether task-record commit/push recovery is possible or evidence remains blocked; finish-work must not reproduce its recovery matrix.
+
+`trellis-finish-work` must not recommit or push the normal task record itself. The auto-loop exception authorizes only archival of the validated runner bookkeeping diff; it does not authorize unrelated dirty files or an automatic push of auto-loop commits.
 
 ### 2. Decision Audit
 

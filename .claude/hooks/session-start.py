@@ -67,9 +67,10 @@ def _normalize_windows_shell_path(path_str: str) -> str:
     return path_str
 
 
-FIRST_REPLY_NOTICE = """<first-reply-notice>
-On the first visible assistant reply in this session, briefly acknowledge that Trellis SessionStart context loaded.
-Choose the acknowledgment language in this order:
+_FIRST_REPLY_NOTICE_HEAD = """<first-reply-notice>
+On the first visible assistant reply in this session, briefly acknowledge that Trellis SessionStart context loaded."""
+
+_FIRST_REPLY_NOTICE_TAIL = """Choose the acknowledgment language in this order:
 1. Use the language of the user's current request (the user message that triggered this reply).
 2. If that request has no clear natural language, use an explicitly established project communication language.
 3. If neither provides a language, output the language-neutral fallback exactly: `Trellis SessionStart ✓`.
@@ -77,6 +78,16 @@ Continue directly with the user's request after the acknowledgment.
 The acknowledgment must not alter the language used for the remainder of the response.
 This notice is one-shot: do not repeat it after the first visible assistant reply in this session.
 </first-reply-notice>"""
+
+FIRST_REPLY_NOTICE = f"{_FIRST_REPLY_NOTICE_HEAD}\n{_FIRST_REPLY_NOTICE_TAIL}"
+
+
+# BEGIN skill-garden patch session-start-update-notice-builder v0.6
+def _build_first_reply_notice() -> str:
+    """Return the first-reply notice without adding a second update channel."""
+    return FIRST_REPLY_NOTICE
+# END skill-garden patch session-start-update-notice-builder v0.6
+
 
 # Force UTF-8 on stdin/stdout/stderr on Windows. Default codepage there is
 # cp936 / cp1252 / etc. — non-ASCII content (Chinese task names, prd snippets)
@@ -194,11 +205,16 @@ def _format_git_state(repo_root: Path) -> str:
 def _detect_platform(input_data: dict) -> str | None:
     if isinstance(input_data.get("cursor_version"), str):
         return "cursor"
+    # CLAUDE_PROJECT_DIR is a compatibility alias that several hosts set
+    # alongside their own variable — CodeBuddy, ZCode and Trae all do. It must
+    # therefore be checked LAST, or every one of them is detected as claude and
+    # the context key becomes `claude_<their-session-id>`. That key does not
+    # match the session file `task.py start` wrote under the host's real name,
+    # so every turn reports no_task while the pointer exists on disk.
+    # Observed on CodeBuddy IDE 4.10.4: session file `codebuddy_ae54840e….json`
+    # alongside marker `update-check-claude_ae54840e….marker`, same id.
     env_map = {
-        # ZCode may set both ZCODE_PROJECT_DIR and CLAUDE_PROJECT_DIR; check
-        # ZCODE first so ZCode sessions aren't misdetected as claude.
         "ZCODE_PROJECT_DIR": "zcode",
-        "CLAUDE_PROJECT_DIR": "claude",
         "CURSOR_PROJECT_DIR": "cursor",
         "CODEBUDDY_PROJECT_DIR": "codebuddy",
         "FACTORY_PROJECT_DIR": "droid",
@@ -207,6 +223,8 @@ def _detect_platform(input_data: dict) -> str | None:
         "KIRO_PROJECT_DIR": "kiro",
         "COPILOT_PROJECT_DIR": "copilot",
         "TRAE_PROJECT_DIR": "trae",
+        # Last: the shared alias, only meaningful once no vendor key matched.
+        "CLAUDE_PROJECT_DIR": "claude",
     }
     for env_name, platform in env_map.items():
         if os.environ.get(env_name):
@@ -251,17 +269,52 @@ def _persist_context_key_for_bash(context_key: str | None) -> None:
     variables are then available to Bash tools in the same conversation. Without
     this bridge, `task.py start` has hook stdin during SessionStart but no
     session identity when the AI later runs it as a normal shell command.
+
+    CLAUDE_ENV_FILE is user-owned (conda init, proxy settings, ...) and the host
+    shell sources it for every command, so an unconditional append grows it
+    without bound — one line per SessionStart forever. Skip the write when the
+    *last* existing TRELLIS_CONTEXT_ID export already assigns this value. Last
+    wins in shell, so only the final assignment describes the effective state:
+    "the value appears somewhere in the file" would wrongly skip after a switch
+    A -> B -> A, leaving the shell on B.
     """
     if not context_key:
         return
     env_file = os.environ.get("CLAUDE_ENV_FILE")
     if not env_file:
         return
+    export_line = f"export TRELLIS_CONTEXT_ID={shlex.quote(context_key)}"
     try:
+        if _last_context_key_export(env_file) == export_line:
+            return
         with open(env_file, "a", encoding="utf-8") as handle:
-            handle.write(f"export TRELLIS_CONTEXT_ID={shlex.quote(context_key)}\n")
+            handle.write(f"{export_line}\n")
     except OSError:
         pass  # Optional shell bridge; keep session-start non-fatal.
+
+
+def _last_context_key_export(env_file: str) -> str | None:
+    """Return the last `export TRELLIS_CONTEXT_ID=` line in env_file, if any.
+
+    A missing file means "no previous export" (the caller then creates it).
+    `errors="replace"` matters: a user env file with non-UTF-8 bytes would
+    otherwise raise UnicodeDecodeError, which is a ValueError — not an OSError —
+    and would escape the caller's non-fatal guard.
+    """
+    last_export = None
+    try:
+        with open(env_file, "r", encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                stripped = raw_line.strip()
+                if stripped.startswith("export TRELLIS_CONTEXT_ID="):
+                    last_export = stripped
+    except FileNotFoundError:
+        return None
+    return last_export
+
+
+# BEGIN skill-garden patch session-start-update-hint-resolver v0.6
+# END skill-garden patch session-start-update-hint-resolver v0.6
 
 
 def _resolve_active_task(trellis_dir: Path, input_data: dict):
@@ -821,7 +874,9 @@ Trellis compact SessionStart context. Use it to orient the session; load details
 </session-context>
 
 """)
-    output.write(FIRST_REPLY_NOTICE)
+# BEGIN skill-garden patch session-start-update-notice-output v0.6
+    output.write(_build_first_reply_notice())
+# END skill-garden patch session-start-update-notice-output v0.6
     output.write("\n\n")
 
     # Legacy migration warning

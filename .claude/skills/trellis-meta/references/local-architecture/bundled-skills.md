@@ -37,40 +37,35 @@ The list is discovered at runtime, so adding a new directory under `bundled-skil
 <!-- BEGIN skill-garden patch trellis-meta-managed-platform-skill-roots v0.6 -->
 ## Where Bundled Skills Land Per Platform
 
-Each platform configurator writes the result of `resolveBundledSkills(ctx)` into a specific skill root during `trellis init`, and its collector must return the same paths for `trellis update` hash tracking.
+A platform's whole file set is described exactly once by `collect<Platform>Templates()` in `packages/cli/src/configurators/<platform>.ts`. `resolveBundledSkills(ctx)` loads the upstream bundled-skill tree, and `collectSkillTemplates(<skillsRoot>, <workflowSkills>, <bundledSkills>)` places it in the platform's `Map<filePath, content>`. `trellis init` writes that map through `writeTemplateMap`; `trellis update` reads the same map through `collectPlatformTemplates(platformId)` for drift detection and `.trellis/.template-hashes.json`.
 
-| Platform | Bundled skill root | Notes |
+| Platform | Bundled skill root | Flower ownership note |
 | --- | --- | --- |
-| Claude Code | `.claude/skills/<skill>/` | `configureClaude` |
-| Cursor | `.cursor/skills/<skill>/` | `configureCursor` |
-| OpenCode | `.opencode/skills/<skill>/` | `collectOpenCodeTemplates` and `configureOpenCode` |
+| Claude Code | `.claude/skills/<skill>/` | Private platform root |
+| Cursor | `.cursor/skills/<skill>/` | Private platform root |
+| OpenCode | `.opencode/skills/<skill>/` | Private platform root |
 | Codex | `.agents/skills/<skill>/` | Shared neutral root |
 | Gemini CLI | `.agents/skills/<skill>/` | Shared neutral root |
-| Pi Agent | `.agents/skills/<skill>/` | Shared neutral root; `.pi/` holds prompts, agents, extensions, and settings |
-| Kimi Code | `.agents/skills/<skill>/` | Shared neutral root; `.kimi-code/skills/` holds commands and agent prompts, not bundled skills |
-| Kiro | `.kiro/skills/<skill>/` | `configureKiro` |
-| Qoder | `.qoder/skills/<skill>/` | `configureQoder` |
-| CodeBuddy | `.codebuddy/skills/<skill>/` | `configureCodebuddy` |
-| GitHub Copilot | `.github/skills/<skill>/` | `configureCopilot` |
-| Factory Droid | `.factory/skills/<skill>/` | `configureDroid` |
-| Antigravity | `.agent/skills/<skill>/` | `configureAntigravity` |
-| Devin | `.devin/skills/<skill>/` | `configureDevin` |
-| Kilo | `.kilocode/skills/<skill>/` | `configureKilo` |
-| ZCode | `.zcode/skills/<skill>/` | `configureZcode` |
-| Trae | `.trae/skills/<skill>/` | `configureTrae` |
-| Reasonix | `.reasonix/skills/<skill>/` | Workflow, bundled, and sub-agent skills share one root |
-| Oh My Pi | `.omp/skills/<skill>/` | `configureOmp` |
-| Grok Build | `.grok/skills/<skill>/` | `configureGrok` |
-| Snow CLI | `.snow/skills/<skill>/` | `configureSnow` |
+| Pi Agent | `.agents/skills/<skill>/` | Shared neutral root; `.pi/` keeps prompts, agents, extensions, and settings |
+| Kimi Code | `.agents/skills/<skill>/` | Shared neutral root; `.kimi-code/skills/` keeps commands and agent prompts |
+| Kilo | `.kilocode/skills/<skill>/` | Private platform root |
+| Kiro | `.kiro/skills/<skill>/` | Private platform root |
+| Antigravity | `.agent/skills/<skill>/` | Private platform root |
+| Devin | `.devin/skills/<skill>/` | Private platform root |
+| Qoder | `.qoder/skills/<skill>/` | Private platform root |
+| CodeBuddy | `.codebuddy/skills/<skill>/` | Private platform root |
+| GitHub Copilot | `.github/skills/<skill>/` | Private platform root |
+| Factory Droid | `.factory/skills/<skill>/` | Private platform root |
+| Reasonix | `.reasonix/skills/<skill>/` | Private platform root; agent behavior also uses skill frontmatter |
+| ZCode | `.zcode/skills/<skill>/` | Private platform root |
+| Trae | `.trae/skills/<skill>/` | Private platform root |
+| Oh My Pi | `.omp/skills/<skill>/` | Private platform root |
+| Grok Build | `.grok/skills/<skill>/` | Private platform root |
+| Snow CLI | `.snow/skills/<skill>/` | Private platform root |
 
-The physical bundled-skill roots are therefore the platform-private roots above plus the single shared `.agents/skills/` root. `.pi/skills/` is not a current target, and `.kimi-code/skills/` must not receive a second bundled copy.
+The physical roots are the platform-private roots above plus one shared `.agents/skills/` tree. `.pi/skills/` is not a current target, and `.kimi-code/skills/` must not receive a second bundled copy. Codex, Gemini CLI, Pi Agent, and Kimi Code must receive byte-identical neutral content whenever they share a path.
 
-Two paths exercise the same data:
-
-1. `configureX(cwd)` writes files during `trellis init`.
-2. `collectPlatformTemplates(platformId)` (in `configurators/index.ts`) returns a `Map<filePath, content>` that `trellis update` uses to detect drift and to populate `.trellis/.template-hashes.json`.
-
-Both paths must resolve to byte-identical bundled-skill output for a given root. Shared `.agents/skills/` writers additionally use the neutral resolver so Codex, Gemini CLI, Pi Agent, and Kimi Code do not overwrite each other with platform-specific text.
+Flower does not maintain a second platform file map. It discovers enabled logical platforms from their native entry points, projects managed additions only to those platforms, and applies declared Skill-Garden Patches after the upstream map exists. A shared physical root is never evidence that every logical consumer is enabled.
 <!-- END skill-garden patch trellis-meta-managed-platform-skill-roots v0.6 -->
 ## Dispatch Wiring (Code Path)
 
@@ -83,10 +78,10 @@ The mechanism that auto-dispatches bundled skills to platform skill roots lives 
 
 2. `packages/cli/src/configurators/shared.ts`
    - `resolveBundledSkills(ctx)` flattens that list into `ResolvedSkillFile[]` with `<skill>/<relativePath>` paths and resolved placeholders.
-   - `writeSkills(skillsRoot, workflowSkills, bundledSkills)` writes both workflow skills and bundled skill files under `skillsRoot`.
-   - `collectSkillTemplates(skillsRoot, workflowSkills, bundledSkills)` returns the same shape as a `Map<filePath, content>` for the update / hash pipeline.
+   - `collectSkillTemplates(skillsRoot, workflowSkills, bundledSkills)` returns workflow skills and bundled skill files together as a `Map<filePath, content>` rooted at `skillsRoot`.
+   - `writeTemplateMap(cwd, files)` is the single writer that puts a collected map on disk.
 
-Every platform configurator that supports skills imports both helpers (see `claude.ts`, `cursor.ts`, `codex.ts`, `gemini.ts`, `kiro.ts`, `qoder.ts`, `codebuddy.ts`, `copilot.ts`, `droid.ts`, `antigravity.ts`, `devin.ts`, `kilo.ts`). The `index.ts` `PLATFORM_FUNCTIONS` registry also calls `resolveBundledSkills(ctx)` inside each `collectTemplates` closure so `trellis update` tracking stays consistent.
+Every platform that supports skills reaches those two helpers from its own `collect<Platform>Templates()` — either directly (`claude.ts`, `codex.ts`, `copilot.ts`, `gemini.ts`, `grok.ts`, `kimi.ts`, `kiro.ts`, `omp.ts`, `opencode.ts`, `pi.ts`, `reasonix.ts`, `snow.ts`, `zcode.ts`) or through `collectBothTemplates(ctx, cmdPath, skillRoot)` in `shared.ts`, which makes the same two calls on behalf of platforms that have both a commands directory and a skills root (`antigravity.ts`, `codebuddy.ts`, `cursor.ts`, `devin.ts`, `droid.ts`, `kilo.ts`, `qoder.ts`, `trae.ts`).
 
 ## Adding a New Bundled Skill
 
@@ -148,7 +143,7 @@ There is no per-project opt-out flag for bundled skills. Two options:
 
 2. **Pin a Trellis version that did not ship the skill.** The bundled-skill set is determined at build time, so installing an older release of the CLI is the only way to permanently exclude a skill that the current release ships.
 
-A third option — globally disabling all bundled skills — is not supported. The dispatch is unconditional in every configurator. Adding such a flag would require changing `PLATFORM_FUNCTIONS` in `configurators/index.ts` and every `configureX` function.
+A third option — globally disabling all bundled skills — is not supported. The dispatch is unconditional: `collect<Platform>Templates()` takes no arguments, so there is nowhere for a flag to enter. Adding one would mean changing that signature across all 21 platforms plus `collectPlatformTemplates` in `configurators/index.ts`.
 
 ## Operating Rules
 

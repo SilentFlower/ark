@@ -120,6 +120,21 @@ full 提取所有适用条目。每条记录来源位置，实际阅读对应代
 
 验证失败时记录命令、退出状态和关键错误到统一问题集合，继续其它独立验证。可能写业务数据或外部系统的验证不直接运行，按真正阻塞规则处理。
 
+### Maven Evidence 复用
+
+实际变更位于 Maven reactor 时，读取 `maven_verify.py` 的 evidence schema，并只读执行：
+
+```bash
+python3 ./.trellis/scripts/maven_verify.py check --latest --require-plan <final-plan.json>
+```
+
+- `reusable`：核对 lifecycle、模块、消费者、测试、附属制品和 skip 项后纳入验证证据。
+- `partial`：记录未覆盖的 module/consumer/test/artifact 或更高 lifecycle 要求。
+- `stale`：记录源码、测试、POM、外部父 POM、Git 或工具链失效原因。
+- `failed` / `blocked`：保留命令退出或证据损坏事实，不把未执行验证写成通过。
+
+Check-All 与 dedicated subagent 都是 audit-only：不得调用 `maven_verify.py plan/run`，不得运行任何会写 `target/`、本地仓库或缓存的 Maven goal。缺少可复用 evidence 时，输出由主会话或 implement 路径执行的精确重跑计划需求；不得默认 `clean package/install`、`-amd` 或全 reactor。
+
 所有发现候选按 `references/fallback-findings.md` 先判定 `CHK-*` / `FBK-*`，再分配严重度。严重度不得反向决定通道；不满足三项硬准入的泛化建议不报告，保护收益或验证环境不完整则保留 FBK 并标记报告缺口。
 
 ---

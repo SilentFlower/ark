@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maven 分层验证"
+  short_description: "加速 Maven 增量验证并复用可审计的分层证据"
+  default_prompt: "使用 $trellis-maven-verify 为当前 Maven 变更生成安全、快速且可复用的验证计划。"
