@@ -96,7 +96,7 @@ networks:
 		Root:                 isolationRoot,
 		FilesRoot:            filepath.Join(isolationRoot, "files"),
 		GeneratedComposeFile: filepath.Join(isolationRoot, "compose.generated.json"),
-		PortAllocation:       isolationPortRuntimeAuto,
+		PortAllocation:       IsolationPortRuntimeAuto,
 	}
 	generated, services, volumes, networks, ports, _, err := transformIsolationCompose([]byte(canonical), spec)
 	if err != nil {
@@ -180,6 +180,149 @@ networks:
 	}
 	if _, err := os.Stat(isolationRoot); !os.IsNotExist(err) {
 		t.Fatalf("隔离根目录未清理: %v", err)
+	}
+}
+
+func TestIsolationDockerIntegration_Verify不发布端口且不改变生产基线(t *testing.T) {
+	if testing.Short() || os.Getenv("ARK_DOCKER_INTEGRATION") != "1" {
+		t.Skip("设置 ARK_DOCKER_INTEGRATION=1 后运行真实 Docker 隔离测试")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	runner := sshexec.NewLocal()
+	if _, err := runner.Run(ctx, "docker", "info"); err != nil {
+		t.Skipf("Docker 不可用: %v", err)
+	}
+	if _, err := runner.Run(ctx, "docker", "image", "inspect", "redis:7-alpine"); err != nil {
+		t.Skip("本机没有 redis:7-alpine，测试不会自动拉取镜像")
+	}
+
+	id := dockerIntegrationID(t)
+	shortID := id[:12]
+	prefix := "ark-verify-it-" + shortID
+	productionProject := prefix + "-prod"
+	productionContainer := prefix + "-container"
+	productionVolume := prefix + "-data"
+	productionNetwork := prefix + "-net"
+	isolationProject := productionProject + "-verify-" + shortID
+	isolationVolume := isolationResourceName(productionVolume, IsolationPurposeVerify, shortID)
+	isolationNetwork := isolationResourceName(productionNetwork, IsolationPurposeVerify, shortID)
+	isolationRoot := filepath.Join(isolationBase, id)
+	productionPort := dockerIntegrationFreePort(t)
+	temporaryDirectory := t.TempDir()
+	productionCompose := filepath.Join(temporaryDirectory, "compose.yaml")
+	composeContent := fmt.Sprintf(`services:
+  app:
+    image: redis:7-alpine
+    container_name: %s
+    command: ["redis-server", "--save", ""]
+    ports:
+      - "127.0.0.1:%d:6379"
+    volumes:
+      - data:/data
+    networks:
+      - app
+volumes:
+  data:
+    name: %s
+networks:
+  app:
+    name: %s
+`, productionContainer, productionPort, productionVolume, productionNetwork)
+	if err := os.WriteFile(productionCompose, []byte(composeContent), 0o600); err != nil {
+		t.Fatalf("写入生产 Compose 夹具失败: %v", err)
+	}
+
+	productionArgv := []string{"docker", "compose", "-f", productionCompose, "-p", productionProject}
+	defer func() {
+		_, _ = runner.Run(context.Background(), append(productionArgv, "down", "-v", "--remove-orphans")...)
+		_, _ = runner.Run(context.Background(), "docker", "network", "rm", isolationNetwork)
+		_, _ = runner.Run(context.Background(), "docker", "volume", "rm", isolationVolume)
+		_ = os.RemoveAll(isolationRoot)
+	}()
+	if _, err := runner.Run(ctx, append(productionArgv, "up", "-d", "--no-build", "--pull", "never")...); err != nil {
+		t.Fatalf("启动生产 Compose 夹具失败: %v", err)
+	}
+	if err := waitDockerContainerRunning(ctx, runner, productionContainer); err != nil {
+		t.Fatal(err)
+	}
+	baseline := dockerIntegrationBaseline(t, ctx, runner, productionContainer, productionVolume, productionNetwork)
+
+	canonical, err := runner.Run(ctx, append(productionArgv, "config", "--format", "json", "--no-env-resolution")...)
+	if err != nil {
+		t.Fatalf("读取生产 Compose canonical JSON 失败: %v", err)
+	}
+	spec := &IsolationSpec{
+		SchemaVersion: isolationSchemaVersion, ID: id, ShortID: shortID, Purpose: IsolationPurposeVerify,
+		ProjectName: isolationProject, Root: isolationRoot, FilesRoot: filepath.Join(isolationRoot, "files"),
+		GeneratedComposeFile: filepath.Join(isolationRoot, "compose.generated.json"),
+		PortAllocation:       IsolationPortDisabled,
+	}
+	generated, services, volumes, networks, ports, hostIPs, err := transformIsolationCompose([]byte(canonical), spec)
+	if err != nil {
+		t.Fatalf("转换 verify Compose 失败: %v", err)
+	}
+	if len(services) != 1 || len(volumes) != 1 || len(networks) != 1 || len(ports) != 1 || len(hostIPs) != 0 {
+		t.Fatalf("verify 隔离资源清单错误: services=%#v volumes=%#v networks=%#v ports=%#v hostIPs=%#v",
+			services, volumes, networks, ports, hostIPs)
+	}
+	if strings.Contains(string(generated), `"ports"`) || ports[0].AllocatedPort != IsolationPortDisabled {
+		t.Fatalf("verify Compose 仍发布端口: generated=%s ports=%#v", generated, ports)
+	}
+	if err := os.MkdirAll(isolationRoot, 0o700); err != nil {
+		t.Fatalf("创建 verify isolation root 失败: %v", err)
+	}
+	if err := os.WriteFile(spec.GeneratedComposeFile, append(generated, '\n'), 0o600); err != nil {
+		t.Fatalf("写入 verify Compose 失败: %v", err)
+	}
+	plan := Plan{
+		DestinationHost: "docker-integration",
+		Project:         Project{Name: prefix, ComposeFile: spec.GeneratedComposeFile, ProjectName: isolationProject},
+		Isolation:       spec,
+	}
+	state := isolationState{
+		SchemaVersion: isolationSchemaVersion, ID: id, Purpose: IsolationPurposeVerify,
+		ExecutionID: "docker-integration", Destination: plan.DestinationHost,
+		ProjectName: isolationProject, Root: isolationRoot, ComposeFile: spec.GeneratedComposeFile,
+		Services: services, Volumes: volumes, Networks: networks, Ports: ports,
+	}
+	statePayload, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("编码 verify 隔离状态失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(isolationRoot, "state.json"), append(statePayload, '\n'), 0o600); err != nil {
+		t.Fatalf("写入 verify 隔离状态失败: %v", err)
+	}
+	defer func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_, _ = CleanupIsolation(cleanupContext, runner, plan.DestinationHost, id)
+	}()
+	isolationArgv := []string{"docker", "compose", "-f", spec.GeneratedComposeFile, "-p", isolationProject}
+	if _, err := runner.Run(ctx, append(isolationArgv, "up", "-d", "--no-build", "--pull", "never")...); err != nil {
+		t.Fatalf("启动 verify Compose 失败: %v", err)
+	}
+	state, err = inspectIsolationPorts(ctx, plan, runner, state)
+	if err != nil || len(state.Containers) != 1 {
+		t.Fatalf("读取 verify 容器失败: state=%#v err=%v", state, err)
+	}
+	published, err := runner.Run(ctx, "docker", "port", state.Containers[0].ID)
+	if err != nil || strings.TrimSpace(published) != "" {
+		t.Fatalf("verify 容器存在宿主机 published ports: output=%q err=%v", published, err)
+	}
+	if after := dockerIntegrationBaseline(t, ctx, runner, productionContainer, productionVolume, productionNetwork); after != baseline {
+		t.Fatalf("verify 副本启动后生产项目发生变化:\n前=%s\n后=%s", baseline, after)
+	}
+
+	cleanupResult, err := CleanupIsolation(ctx, runner, plan.DestinationHost, id)
+	if err != nil || cleanupResult.Status != "ok" {
+		t.Fatalf("CleanupIsolation result=%#v err=%v", cleanupResult, err)
+	}
+	if after := dockerIntegrationBaseline(t, ctx, runner, productionContainer, productionVolume, productionNetwork); after != baseline {
+		t.Fatalf("清理 verify 副本后生产项目发生变化:\n前=%s\n后=%s", baseline, after)
+	}
+	if _, err := os.Stat(isolationRoot); !os.IsNotExist(err) {
+		t.Fatalf("verify 隔离根目录未清理: %v", err)
 	}
 }
 

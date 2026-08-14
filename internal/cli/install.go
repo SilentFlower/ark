@@ -32,7 +32,7 @@ func newInstallCmdWithDependencies(configPath *string, dependencies installDepen
 	asJSON := false
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "生成并安装 systemd 备份任务",
+		Short: "生成并安装 systemd 备份与恢复演练任务",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if dependencies.loadConfig == nil || dependencies.executable == nil || dependencies.install == nil {

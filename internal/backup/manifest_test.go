@@ -333,6 +333,54 @@ func TestLoadManifestSelection_显式ID唯一匹配并返回快照元数据(t *t
 	}
 }
 
+func TestLoadLatestManifestSelections_按Host选择各自最新Manifest(t *testing.T) {
+	web01 := testManifest()
+	web01.RunID = "run-web-01"
+	web02 := testManifest()
+	web02.RunID = "run-web-02"
+	web02.Hosts[0].Host = "web-02"
+	for index := range web02.Hosts[0].Targets {
+		web02.Hosts[0].Targets[index].Host = "web-02"
+	}
+	payloads := make(map[string]string)
+	for snapshotID, manifest := range map[string]Manifest{"manifest-web-01": web01, "manifest-web-02": web02} {
+		payload, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatalf("编码 %s 失败: %v", snapshotID, err)
+		}
+		payloads[snapshotID] = string(payload)
+	}
+	base := time.Date(2026, 8, 13, 5, 0, 0, 0, time.UTC)
+	var dumped []string
+	result, found, err := loadLatestManifestSelections(
+		context.Background(),
+		[]string{"web-01", "web-02"},
+		manifestRepository{
+			snapshots: func(context.Context, []string) ([]restic.Snapshot, error) {
+				return []restic.Snapshot{
+					{ID: "manifest-web-01", Time: base, Paths: []string{"/" + ManifestFilename}, Tags: []string{ManifestTag, "run:run-web-01"}},
+					{ID: "manifest-web-02", Time: base.Add(time.Hour), Paths: []string{"/" + ManifestFilename}, Tags: []string{ManifestTag, "run:run-web-02"}},
+				}, nil
+			},
+			dump: func(_ context.Context, snapshotID string, _ string) (io.ReadCloser, error) {
+				dumped = append(dumped, snapshotID)
+				return io.NopCloser(strings.NewReader(payloads[snapshotID])), nil
+			},
+		},
+	)
+	if err != nil || !found {
+		t.Fatalf("selections=%#v found=%v err=%v", result, found, err)
+	}
+	if result.Latest.Snapshot.ID != "manifest-web-02" ||
+		result.ByHost["web-01"].Snapshot.ID != "manifest-web-01" ||
+		result.ByHost["web-02"].Snapshot.ID != "manifest-web-02" {
+		t.Fatalf("selections=%#v", result)
+	}
+	if !reflect.DeepEqual(dumped, []string{"manifest-web-02", "manifest-web-01"}) {
+		t.Fatalf("dumped=%#v", dumped)
+	}
+}
+
 func TestLoadManifestSelection_显式选择失败时不回退(t *testing.T) {
 	base := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
 	snapshots := []restic.Snapshot{

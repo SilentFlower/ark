@@ -28,6 +28,9 @@ ark 有两条必须隔离的数据库路径：
   `*sql.DB`、拼 SQL 或依赖 SQLite 实现细节。
 - `internal/store` 只负责连接、迁移、字段校验与 SQL；不得反向依赖
   config、doctor、backup 等业务包。
+- `verifications.run_id` 是可空外键：关联的 backup run 存在时写入，run 删除后由
+  `ON DELETE SET NULL` 保留演练事实；若从历史 restic manifest 恢复且本地从未有该 run，写入时也必须
+  降级为 `NULL`。`detail_json` 始终保存来源 run ID 和 manifest snapshot。
 - 生产默认路径是 `/var/lib/ark/ark.db`。在线一致性导出属于 `Store` 的公开边界，
   但不得向调用方暴露 `*sql.DB` 或 SQLite driver connection。
 
@@ -104,6 +107,8 @@ func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
 | 写锁竞争超过 5 秒 | 返回保留 SQLite 错误链的失败 |
 | context 更早取消或超时 | 立即返回保留 context 与 SQLite 错误链的失败 |
 | `Close` 或连接恢复失败 | 返回错误，不静默吞掉资源清理失败 |
+| Verification 的 run 后续被删除 | verification 保留，`run_id` 自动置空，detail 不改写 |
+| Verification 来源 run 在本地从未存在 | verification 正常写入，`run_id=NULL`，detail 保留来源 run ID |
 | 导出期间源库持续写入 | 固定 WAL 读快照并完成一致副本，writer 仍可提交 |
 | Online Backup 返回 busy/locked | 25ms 间隔重试，单次无进展最多 5 秒，context 优先 |
 | 导出副本 integrity/foreign key 失败 | 不返回 reader，删除临时目录并返回阶段错误 |
@@ -130,7 +135,7 @@ go test ./internal/store -race -count=10
 make check
 make build
 CGO_ENABLED=0 go test ./internal/store -count=1
-CGO_ENABLED=0 go build ./cmd/ark
+CGO_ENABLED=0 go build -o bin/ark-nocgo ./cmd/ark
 go mod verify
 ```
 

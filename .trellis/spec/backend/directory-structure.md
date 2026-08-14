@@ -51,6 +51,7 @@ roadmap 已经规划、但尚未创建的包（新建时按此归位，不要另
 | `internal/backup/` | 各 target 执行器 + 流完整性 + 快照清单 | P2-3 / P2-4 / P2-5 |
 | `internal/systemd/` | systemd unit 模板 | P2-6 |
 | `internal/restore/` | 恢复计划与执行 | P3-1 / P3-2 |
+| `internal/verify/` | 原 host 隔离恢复演练、生产基线与结果持久化 | P3-5 |
 | `internal/hub/` + `cmd/ark-hub/` | hub 后端（界面与 API） | P4-1 / P4-2 |
 | `web/` | Vue 3 前端，构建产物 go:embed 进 ark-hub | P4-3 / P4-4 |
 

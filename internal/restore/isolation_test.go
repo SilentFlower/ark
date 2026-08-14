@@ -202,19 +202,19 @@ func TestWithIsolationOptions_Verify按InstanceKey稳定派生且复用转换(t 
 		t.Fatalf("BuildPlan 失败: %v", err)
 	}
 	first, err := WithIsolationOptions(plan, IsolationOptions{
-		Purpose: IsolationPurposeVerify, InstanceKey: "verification-2026w33",
+		Purpose: IsolationPurposeVerify, InstanceKey: "verification-2026w33", PortAllocation: IsolationPortDisabled,
 	})
 	if err != nil {
 		t.Fatalf("verify isolation 失败: %v", err)
 	}
 	again, err := WithIsolationOptions(plan, IsolationOptions{
-		Purpose: IsolationPurposeVerify, InstanceKey: "verification-2026w33",
+		Purpose: IsolationPurposeVerify, InstanceKey: "verification-2026w33", PortAllocation: IsolationPortDisabled,
 	})
 	if err != nil {
 		t.Fatalf("再次 verify isolation 失败: %v", err)
 	}
 	other, err := WithIsolationOptions(plan, IsolationOptions{
-		Purpose: IsolationPurposeVerify, InstanceKey: "verification-2026w34",
+		Purpose: IsolationPurposeVerify, InstanceKey: "verification-2026w34", PortAllocation: IsolationPortDisabled,
 	})
 	if err != nil {
 		t.Fatalf("另一 verify isolation 失败: %v", err)
@@ -223,8 +223,38 @@ func TestWithIsolationOptions_Verify按InstanceKey稳定派生且复用转换(t 
 		!strings.Contains(first.Project.ProjectName, "-verify-") {
 		t.Fatalf("verify identity 不稳定或未隔离: first=%#v other=%#v", first.Isolation, other.Isolation)
 	}
+	if first.Isolation.PortAllocation != IsolationPortDisabled || len(first.Isolation.Ports) == 0 {
+		t.Fatalf("verify 端口策略未写入 Plan: %#v", first.Isolation)
+	}
+	for _, port := range first.Isolation.Ports {
+		if port.AllocatedPort != IsolationPortDisabled {
+			t.Fatalf("verify 端口未禁用: %#v", first.Isolation.Ports)
+		}
+	}
 	if err := validateIsolationPlan(first); err != nil {
 		t.Fatalf("verify isolation Plan 无法由统一 Executor 接受: %v", err)
+	}
+}
+
+func TestTransformIsolationCompose_Verify删除全部PublishedPorts(t *testing.T) {
+	spec := testIsolationSpec(t)
+	spec.Purpose = IsolationPurposeVerify
+	spec.PortAllocation = IsolationPortDisabled
+	canonical := `{"services":{"api":{"ports":[{"target":8080,"published":"8080","host_ip":"127.0.0.1","protocol":"tcp"}]}}}`
+	generated, _, _, _, ports, hostIPs, err := transformIsolationCompose([]byte(canonical), spec)
+	if err != nil {
+		t.Fatalf("转换 verify Compose 失败: %v", err)
+	}
+	if len(ports) != 1 || ports[0].AllocatedPort != IsolationPortDisabled || len(hostIPs) != 0 {
+		t.Fatalf("verify 端口摘要错误: ports=%#v hostIPs=%#v", ports, hostIPs)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(generated, &document); err != nil {
+		t.Fatalf("解析 verify Compose 失败: %v", err)
+	}
+	api := document["services"].(map[string]any)["api"].(map[string]any)
+	if _, exists := api["ports"]; exists {
+		t.Fatalf("verify Compose 仍发布宿主机端口: %#v", api)
 	}
 }
 

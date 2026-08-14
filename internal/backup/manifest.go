@@ -53,6 +53,22 @@ type ManifestHost struct {
 	Targets []TargetResult
 }
 
+// ManifestSelection 保存一份已完成元数据与内容一致性校验的 manifest 选择结果。
+type ManifestSelection struct {
+	// Manifest 是通过 schema、run tag 与内容一致性校验的备份清单。
+	Manifest Manifest
+	// Snapshot 是承载 Manifest 的精确 restic 快照元数据。
+	Snapshot restic.Snapshot
+}
+
+// LatestManifestSelections 保存全局最新 manifest 与各 host 的最新可用 manifest。
+type LatestManifestSelections struct {
+	// Latest 是仓库中按时间和 ID 排序后的全局最新 manifest。
+	Latest ManifestSelection
+	// ByHost 按 host 标识索引该 host 最近一次出现的 manifest。
+	ByHost map[string]ManifestSelection
+}
+
 type manifestWire struct {
 	SchemaVersion int                `json:"schema_version"`
 	RunID         string             `json:"run_id"`
@@ -260,6 +276,27 @@ func LoadManifestSelection(
 	})
 }
 
+// LoadLatestManifestSelections 按 host 解析各自最近一次出现的 manifest。
+// @param ctx 控制 restic 快照查询和 dump 取消；本方法不附加固定超时。
+// @param repo 已初始化的 restic 仓库。
+// @param hosts 需要解析的非空且不重复 host 标识。
+// @return LatestManifestSelections 全局最新 manifest 与各 host 的最新选择。
+// @return bool 仓库中是否存在 manifest；不存在是正常分支。
+// @return error 参数、快照元数据、dump、JSON 或一致性校验失败时的错误。
+func LoadLatestManifestSelections(
+	ctx context.Context,
+	repo *restic.Repo,
+	hosts []string,
+) (LatestManifestSelections, bool, error) {
+	if repo == nil {
+		return LatestManifestSelections{}, false, fmt.Errorf("读取 manifest 失败: restic repo 不能为空")
+	}
+	return loadLatestManifestSelections(ctx, hosts, manifestRepository{
+		snapshots: repo.Snapshots,
+		dump:      repo.Dump,
+	})
+}
+
 func saveManifest(
 	ctx context.Context,
 	manifest Manifest,
@@ -341,6 +378,64 @@ func loadManifestSelection(
 	return manifest, candidate, true, nil
 }
 
+func loadLatestManifestSelections(
+	ctx context.Context,
+	hosts []string,
+	repository manifestRepository,
+) (LatestManifestSelections, bool, error) {
+	if ctx == nil {
+		return LatestManifestSelections{}, false, fmt.Errorf("读取 manifest 失败: context 不能为空")
+	}
+	if repository.snapshots == nil || repository.dump == nil {
+		return LatestManifestSelections{}, false, fmt.Errorf("读取 manifest 失败: 仓库依赖不完整")
+	}
+	requested := make(map[string]struct{}, len(hosts))
+	for index, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			return LatestManifestSelections{}, false, fmt.Errorf("读取 manifest 失败: hosts[%d] 不能为空", index)
+		}
+		if _, exists := requested[host]; exists {
+			return LatestManifestSelections{}, false, fmt.Errorf("读取 manifest 失败: host %q 重复", host)
+		}
+		requested[host] = struct{}{}
+	}
+	if len(requested) == 0 {
+		return LatestManifestSelections{}, false, fmt.Errorf("读取 manifest 失败: hosts 不能为空")
+	}
+	snapshots, err := repository.snapshots(ctx, []string{ManifestTag})
+	if err != nil {
+		return LatestManifestSelections{}, false, fmt.Errorf("查询 manifest 快照失败: %w", err)
+	}
+	if len(snapshots) == 0 {
+		return LatestManifestSelections{}, false, nil
+	}
+	ordered := orderManifestSnapshotsNewestFirst(snapshots)
+	result := LatestManifestSelections{ByHost: make(map[string]ManifestSelection, len(requested))}
+	for index, candidate := range ordered {
+		manifest, err := readManifestSnapshot(ctx, candidate, repository)
+		if err != nil {
+			return LatestManifestSelections{}, false, err
+		}
+		selection := ManifestSelection{Manifest: manifest, Snapshot: candidate}
+		if index == 0 {
+			result.Latest = selection
+		}
+		for _, manifestHost := range manifest.Hosts {
+			if _, wanted := requested[manifestHost.Host]; !wanted {
+				continue
+			}
+			if _, selected := result.ByHost[manifestHost.Host]; !selected {
+				result.ByHost[manifestHost.Host] = selection
+			}
+		}
+		if len(result.ByHost) == len(requested) {
+			break
+		}
+	}
+	return result, true, nil
+}
+
 func selectManifestSnapshot(
 	snapshots []restic.Snapshot,
 	selector string,
@@ -375,14 +470,19 @@ func selectManifestSnapshot(
 		}
 	}
 
+	ordered := orderManifestSnapshotsNewestFirst(snapshots)
+	return ordered[0], true, nil
+}
+
+func orderManifestSnapshotsNewestFirst(snapshots []restic.Snapshot) []restic.Snapshot {
 	ordered := append([]restic.Snapshot(nil), snapshots...)
 	sort.Slice(ordered, func(i, j int) bool {
 		if ordered[i].Time.Equal(ordered[j].Time) {
-			return ordered[i].ID < ordered[j].ID
+			return ordered[i].ID > ordered[j].ID
 		}
-		return ordered[i].Time.Before(ordered[j].Time)
+		return ordered[i].Time.After(ordered[j].Time)
 	})
-	return ordered[len(ordered)-1], true, nil
+	return ordered
 }
 
 func readManifestSnapshot(

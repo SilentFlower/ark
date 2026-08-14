@@ -96,7 +96,9 @@ systemd 合同：
 - 生成 `ark-backup.service`、`ark-backup@.service` 和每 host 一个
   `ark-backup@<host>.timer`。service 固定 `Type=oneshot`；timer 使用
   `ScheduleFor(host)`、`Persistent=true`、`RandomizedDelaySec=600`。
-- 两种 service 都固定 `CacheDirectory=ark`、`CacheDirectoryMode=0700` 和
+- 同时生成单个 `ark-verify.service` 与 `ark-verify.timer`；service 不带 `--host`，timer 固定
+  `OnCalendar=weekly`、`Persistent=true`、`RandomizedDelaySec=21600`，一次串行演练全部 host。
+- 三种 service 都固定 `CacheDirectory=ark`、`CacheDirectoryMode=0700` 和
   `Environment=XDG_CACHE_HOME=/var/cache/ark`，由 systemd 创建受管缓存目录；不得依赖
   system service 继承交互 shell 的 `HOME`。
 - unit 只含 ark 二进制绝对路径、清单绝对路径和 host 参数，不读取或嵌入密码、对象存储
@@ -105,8 +107,8 @@ systemd 合同：
   `systemd-analyze verify`。verify 成功后逐文件 rename；任一步失败恢复旧内容和权限。
 - 既有同名 unit 必须以 `ManagedMarker` 开头且是普通文件；非 ark 管理文件、符号链接、
   目录或其它类型一律拒绝覆盖。
-- 只删除 `ark-backup@*.timer` 中不再属于当前 host 且带 `ManagedMarker` 的普通文件；
-  用户文件和符号链接不得删除。
+- 只删除不再需要、带 `ManagedMarker` 且为普通文件的 `ark-backup@*.timer` 或
+  `ark-verify*.timer`；用户文件和符号链接不得删除。
 
 ### 4. Validation & Error Matrix
 
@@ -173,7 +175,8 @@ systemd 合同：
 `internal/systemd/unit_test.go` 至少覆盖：
 
 - 全量 service、模板 service、per-host schedule、Persistent 和随机延迟；
-- 两种 service 都包含 `CacheDirectory=ark`、0700 mode 和 `/var/cache/ark` 环境；
+- backup/verify service 都包含 `CacheDirectory=ark`、0700 mode 和 `/var/cache/ark` 环境；
+- verify service 不带 host，weekly timer 使用 21600 秒随机延迟；
 - unit 不含密码/env/私钥内容；
 - 真实 `systemd-analyze verify`，由 `testing.Short` 和 `LookPath` 保护；
 - verify 前不改旧文件，rename 中途失败完整回滚；

@@ -502,7 +502,8 @@ ark restore --host web-01 [--to <target-host>] [--snapshot latest] [--dry-run]
 
 `ark verify` 定期（建议每周）挑一个快照，恢复到一个隔离环境，跑健康检查，通过后销毁：
 
-- compose 项目名加 `-verify` 后缀，端口整体偏移，volume 独立命名
+- 复用隔离恢复派生独立 compose project、container、volume、network 与 files root
+- 删除全部 published ports，只通过 Compose health、容器内数据库 CLI 与 digest 做内部检查
 - **绝对不能碰生产项目的任何资源**——所有操作前校验 `com.docker.compose.project` 标签
 - 演练环境不绑定生产域名和生产 IP，避免被 dnsmgr 的健康检测扫到（见 §11）
 - 结果写入状态库，在 hub 页面作为一等公民展示

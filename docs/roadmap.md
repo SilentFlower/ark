@@ -496,7 +496,12 @@ files → 镜像 digest → volume → 起数据库 → 灌数据 → 起应用 
 
 ### P3-4 hub 自身重建实测
 
-ADR-012 承诺的那条路径必须真的走一遍，否则它只是一句好听的话。
+> **本轮取消（2026-08-13）**：当前没有额外干净机器，现有宿主机也没有创建隔离 VM 的空间。
+> 同宿主机目录或容器隔离无法证明恢复过程脱离旧 hub 的磁盘残留，且与 P3-3 的受限隔离验证
+> 高度重复，因此经确认不执行、不计为通过，也不阻塞本轮后续任务。未来需要验证 ADR-012 时，
+> 应在具备独立故障域的机器上重新立项。
+
+以下保留原验收口径，未来重新立项时必须完整执行，不能用同宿主机隔离演练替代。
 
 在一台干净机器上：装 ark 和 restic → 从离线介质取回 restic 密码和对象存储凭证
 → `restic restore` 取回 `/etc/ark/ark.yaml` 和 `/var/lib/ark/ark.db`
@@ -510,7 +515,8 @@ ADR-012 承诺的那条路径必须真的走一遍，否则它只是一句好听
 
 定期挑一个快照恢复到隔离环境，跑健康检查，通过后销毁。
 
-- compose 项目名加 `-verify` 后缀，端口整体偏移，volume 独立命名
+- 复用隔离恢复派生独立 compose project、container、volume、network 与 files root
+- 删除全部 published ports，只通过 Compose health、容器内数据库 CLI 与 digest 做内部检查
 - **绝对不能碰生产项目的任何资源**——所有操作前校验
   `com.docker.compose.project` 标签
 - 演练环境不绑定生产域名和生产 IP，避免被 dnsmgr 的健康检测扫到

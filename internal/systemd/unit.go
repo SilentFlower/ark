@@ -1,4 +1,4 @@
-// Package systemd 生成、校验并原子安装 ark 的 oneshot service 与 per-host timer。
+// Package systemd 生成、校验并原子安装 ark 的备份与恢复演练 systemd units。
 //
 // unit 只保存二进制路径、清单路径和 host 参数，不嵌入任何仓库凭证或 SSH 私钥内容。
 // 所有文件先在目标目录内完成写入和 systemd-analyze 校验，再通过 rename 提交；失败时
@@ -24,6 +24,8 @@ import (
 const (
 	// DefaultUnitDir 是 ark 在 Linux 上安装 systemd system unit 的默认目录。
 	DefaultUnitDir = "/etc/systemd/system"
+	// DefaultVerifyOnCalendar 是 all-host 恢复演练的固定首版频率。
+	DefaultVerifyOnCalendar = "weekly"
 	// ManagedMarker 标识由 ark 管理、允许后续 install 更新或回收的 unit。
 	ManagedMarker = "# Managed by ark; DO NOT EDIT."
 
@@ -71,7 +73,7 @@ type fileBackup struct {
 	data   []byte
 }
 
-// BuildUnits 按清单顺序生成手动全量 service、实例 service 模板和每 host timer。
+// BuildUnits 按清单顺序生成备份 units 与单个 all-host 恢复演练 service/timer。
 // @param cfg 已完成静态校验的备份清单。
 // @param binaryPath ExecStart 使用的 ark 绝对路径。
 // @param configPath ExecStart 传给 --config 的清单绝对路径。
@@ -105,6 +107,17 @@ func BuildUnits(cfg *config.Config, binaryPath, configPath string) ([]Unit, erro
 				fmt.Sprintf("%s --config %s backup --host %%i", binaryArg, configArg),
 			),
 		},
+		{
+			Name: "ark-verify.service",
+			Content: serviceUnit(
+				"ark 全 host 隔离恢复演练",
+				fmt.Sprintf("%s --config %s verify", binaryArg, configArg),
+			),
+		},
+		{
+			Name:    "ark-verify.timer",
+			Content: scheduledTimerUnit("ark 每周全 host 隔离恢复演练", DefaultVerifyOnCalendar, 21600, "ark-verify.service"),
+		},
 	}
 	for i := range cfg.Hosts {
 		host := &cfg.Hosts[i]
@@ -117,7 +130,7 @@ func BuildUnits(cfg *config.Config, binaryPath, configPath string) ([]Unit, erro
 		}
 		units = append(units, Unit{
 			Name:    "ark-backup@" + host.Host + ".timer",
-			Content: timerUnit(host.Host, schedule),
+			Content: backupTimerUnit(host.Host, schedule),
 		})
 	}
 	sort.Slice(units, func(i, j int) bool { return units[i].Name < units[j].Name })
@@ -267,17 +280,21 @@ func serviceUnit(description, execStart string) string {
 	}, "\n")
 }
 
-func timerUnit(host, schedule string) string {
+func backupTimerUnit(host, schedule string) string {
+	return scheduledTimerUnit("ark host "+host+" 定时备份", schedule, 600, "ark-backup@"+host+".service")
+}
+
+func scheduledTimerUnit(description, schedule string, randomizedDelaySeconds int, service string) string {
 	return strings.Join([]string{
 		ManagedMarker,
 		"[Unit]",
-		"Description=ark host " + host + " 定时备份",
+		"Description=" + description,
 		"",
 		"[Timer]",
 		"OnCalendar=" + schedule,
 		"Persistent=true",
-		"RandomizedDelaySec=600",
-		"Unit=ark-backup@" + host + ".service",
+		"RandomizedDelaySec=" + strconv.Itoa(randomizedDelaySeconds),
+		"Unit=" + service,
 		"",
 		"[Install]",
 		"WantedBy=timers.target",
@@ -345,8 +362,7 @@ func managedStaleTimers(unitDir string, desired map[string]bool) ([]string, erro
 	var stale []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.Type().IsRegular() || desired[name] || !strings.HasPrefix(name, "ark-backup@") ||
-			!strings.HasSuffix(name, ".timer") {
+		if !entry.Type().IsRegular() || desired[name] || !managedTimerCandidate(name) {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(unitDir, name))
@@ -359,6 +375,11 @@ func managedStaleTimers(unitDir string, desired map[string]bool) ([]string, erro
 	}
 	sort.Strings(stale)
 	return stale, nil
+}
+
+func managedTimerCandidate(name string) bool {
+	return strings.HasSuffix(name, ".timer") &&
+		(strings.HasPrefix(name, "ark-backup@") || strings.HasPrefix(name, "ark-verify"))
 }
 
 func backupFile(path string) (fileBackup, error) {

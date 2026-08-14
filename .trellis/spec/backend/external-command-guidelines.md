@@ -653,7 +653,7 @@ func Execute(
   Compose 端口元数据和每级 inspect/解析失败。
 - 共享流结果覆盖 Stream 启动失败、半初始化回收、Wait/Close 错误链和重复调用次数。
 - 至少运行 `go test ./internal/backup -race -count=1`、`make check`、标准构建、
-  `CGO_ENABLED=0 go build ./cmd/ark` 和 `git diff --check`。
+  `CGO_ENABLED=0 go build -o bin/ark-nocgo ./cmd/ark` 和 `git diff --check`。
 
 #### 7. Wrong vs Correct
 

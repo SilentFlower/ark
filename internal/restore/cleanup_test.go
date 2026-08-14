@@ -29,6 +29,8 @@ func TestCleanupIsolation_校验归属后按顺序删除(t *testing.T) {
 		t.Fatalf("编码状态失败: %v", err)
 	}
 	var destructive []string
+	dockerResourcesRemoved := false
+	dockerDeleteCount := 0
 	runner := &runnerFuncs{run: func(_ context.Context, argv ...string) (string, error) {
 		joined := strings.Join(argv, " ")
 		switch {
@@ -41,18 +43,32 @@ func TestCleanupIsolation_校验归属后按顺序删除(t *testing.T) {
 		case reflect.DeepEqual(argv, []string{"cat", "--", root + "/state.json"}):
 			return string(stateJSON), nil
 		case strings.HasPrefix(joined, "docker ps -a "):
+			if dockerResourcesRemoved {
+				return "", nil
+			}
 			return "cid-api\n", nil
 		case reflect.DeepEqual(argv, []string{"docker", "container", "inspect", "--format", "{{json .Config.Labels}}", "cid-api"}):
 			return `{"com.docker.compose.project":"app-restore-aaaaaaaaaaaa","com.docker.compose.service":"api","io.ark.restore.isolation":"` + isolationID + `"}`, nil
 		case strings.HasPrefix(joined, "docker network ls "):
+			if dockerResourcesRemoved {
+				return "", nil
+			}
 			return "app-net-restore-aaaaaaaaaaaa\n", nil
 		case reflect.DeepEqual(argv, []string{"docker", "network", "inspect", "--format", "{{json .Labels}}", "app-net-restore-aaaaaaaaaaaa"}):
 			return `{"com.docker.compose.project":"app-restore-aaaaaaaaaaaa","io.ark.restore.isolation":"` + isolationID + `"}`, nil
 		case strings.HasPrefix(joined, "docker volume ls "):
+			if dockerResourcesRemoved {
+				return "", nil
+			}
 			return "app-data-restore-aaaaaaaaaaaa\n", nil
 		case reflect.DeepEqual(argv, []string{"docker", "volume", "inspect", "--format", "{{json .Labels}}", "app-data-restore-aaaaaaaaaaaa"}):
 			return `{"com.docker.compose.project":"app-restore-aaaaaaaaaaaa","io.ark.restore.isolation":"` + isolationID + `"}`, nil
-		case argv[0] == "docker" && (argv[1] == "rm" || argv[2] == "rm"), argv[0] == "rm":
+		case argv[0] == "docker" && (argv[1] == "rm" || argv[2] == "rm"):
+			destructive = append(destructive, joined)
+			dockerDeleteCount++
+			dockerResourcesRemoved = dockerDeleteCount == 3
+			return "", nil
+		case argv[0] == "rm":
 			destructive = append(destructive, joined)
 			return "", nil
 		default:
@@ -162,6 +178,103 @@ func TestCleanupIsolation_状态目录丢失但存在孤立资源时失败(t *te
 	}
 }
 
+func TestValidateIsolationOwnership_状态存在但Isolation标签有未知资源时失败(t *testing.T) {
+	isolationID := strings.Repeat("f", 64)
+	root := isolationBase + "/" + isolationID
+	state := isolationState{
+		SchemaVersion: isolationSchemaVersion,
+		ID:            isolationID,
+		Purpose:       IsolationPurposeVerify,
+		Destination:   "destination-01",
+		ProjectName:   "app-verify-ffffffffffff",
+		Root:          root,
+		ComposeFile:   root + "/compose.generated.json",
+	}
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("编码状态失败: %v", err)
+	}
+	runner := &runnerFuncs{run: func(_ context.Context, argv ...string) (string, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case len(argv) == 3 && argv[0] == "test" && argv[1] == "-e":
+			return "", nil
+		case len(argv) == 4 && argv[0] == "test":
+			return "", nil
+		case len(argv) == 4 && argv[0] == "readlink":
+			return argv[3] + "\n", nil
+		case reflect.DeepEqual(argv, []string{"cat", "--", root + "/state.json"}):
+			return string(stateJSON), nil
+		case strings.Contains(joined, "label=com.docker.compose.project=app-verify-ffffffffffff"):
+			return "", nil
+		case strings.Contains(joined, "label=io.ark.restore.isolation="+isolationID) && argv[1] == "ps":
+			return "rogue-container\n", nil
+		case strings.Contains(joined, "label=io.ark.restore.isolation="+isolationID):
+			return "", nil
+		default:
+			t.Fatalf("未配置命令响应: %#v", argv)
+			return "", nil
+		}
+	}}
+	_, err = ValidateIsolationOwnership(context.Background(), runner, "destination-01", isolationID)
+	if err == nil || !strings.Contains(err.Error(), "rogue-container") {
+		t.Fatalf("ownership err=%v", err)
+	}
+}
+
+func TestCleanupIsolation_删除后仍有Isolation标签残留时失败(t *testing.T) {
+	isolationID := strings.Repeat("1", 64)
+	root := isolationBase + "/" + isolationID
+	state := isolationState{
+		SchemaVersion: isolationSchemaVersion,
+		ID:            isolationID,
+		Purpose:       IsolationPurposeVerify,
+		Destination:   "destination-01",
+		ProjectName:   "app-verify-111111111111",
+		Root:          root,
+		ComposeFile:   root + "/compose.generated.json",
+	}
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("编码状态失败: %v", err)
+	}
+	labelScans := 0
+	rootRemoved := false
+	runner := &runnerFuncs{run: func(_ context.Context, argv ...string) (string, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case len(argv) == 3 && argv[0] == "test" && argv[1] == "-e":
+			return "", nil
+		case len(argv) == 4 && argv[0] == "test":
+			return "", nil
+		case len(argv) == 4 && argv[0] == "readlink":
+			return argv[3] + "\n", nil
+		case reflect.DeepEqual(argv, []string{"cat", "--", root + "/state.json"}):
+			return string(stateJSON), nil
+		case strings.Contains(joined, "label=com.docker.compose.project=app-verify-111111111111"):
+			return "", nil
+		case strings.Contains(joined, "label=io.ark.restore.isolation="+isolationID):
+			if argv[1] == "ps" {
+				labelScans++
+				if labelScans == 2 {
+					return "residual-container\n", nil
+				}
+			}
+			return "", nil
+		case reflect.DeepEqual(argv, []string{"rm", "-rf", "--", root}):
+			rootRemoved = true
+			return "", nil
+		default:
+			t.Fatalf("未配置命令响应: %#v", argv)
+			return "", nil
+		}
+	}}
+	result, err := CleanupIsolation(context.Background(), runner, "destination-01", isolationID)
+	if err == nil || result.Status != "fail" || !strings.Contains(err.Error(), "residual-container") || rootRemoved {
+		t.Fatalf("cleanup result=%#v err=%v rootRemoved=%v", result, err, rootRemoved)
+	}
+}
+
 func TestValidIsolationID_只接受完整小写摘要(t *testing.T) {
 	if !ValidIsolationID(strings.Repeat("a", 64)) {
 		t.Fatal("合法 isolation ID 被拒绝")
@@ -224,5 +337,54 @@ func TestCleanupIsolation_状态记录Volume标签漂移时零删除(t *testing.
 	result, err := CleanupIsolation(context.Background(), runner, "destination-01", isolationID)
 	if err == nil || result.Status != "fail" || deleted {
 		t.Fatalf("cleanup result=%#v err=%v deleted=%v", result, err, deleted)
+	}
+}
+
+func TestValidateIsolationOwnership_只读返回已校验资源(t *testing.T) {
+	isolationID := strings.Repeat("e", 64)
+	root := isolationBase + "/" + isolationID
+	state := isolationState{
+		SchemaVersion: isolationSchemaVersion,
+		ID:            isolationID,
+		Purpose:       IsolationPurposeVerify,
+		Destination:   "destination-01",
+		ProjectName:   "app-verify-eeeeeeeeeeee",
+		Root:          root,
+		ComposeFile:   root + "/compose.generated.json",
+		Services:      []string{"api"},
+	}
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("编码状态失败: %v", err)
+	}
+	deleted := false
+	runner := &runnerFuncs{run: func(_ context.Context, argv ...string) (string, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case len(argv) == 3 && argv[0] == "test" && argv[1] == "-e":
+			return "", nil
+		case len(argv) == 4 && argv[0] == "test":
+			return "", nil
+		case len(argv) == 4 && argv[0] == "readlink":
+			return argv[3] + "\n", nil
+		case reflect.DeepEqual(argv, []string{"cat", "--", root + "/state.json"}):
+			return string(stateJSON), nil
+		case strings.HasPrefix(joined, "docker ps -a "):
+			return "cid-api\n", nil
+		case reflect.DeepEqual(argv, []string{"docker", "container", "inspect", "--format", "{{json .Config.Labels}}", "cid-api"}):
+			return `{"com.docker.compose.project":"app-verify-eeeeeeeeeeee","com.docker.compose.service":"api","io.ark.restore.isolation":"` + isolationID + `"}`, nil
+		case strings.Contains(joined, "docker network ls"), strings.Contains(joined, "docker volume ls"):
+			return "", nil
+		case argv[0] == "docker" || argv[0] == "rm":
+			deleted = true
+			return "", nil
+		default:
+			t.Fatalf("未配置命令响应: %#v", argv)
+			return "", nil
+		}
+	}}
+	ownership, err := ValidateIsolationOwnership(context.Background(), runner, "destination-01", isolationID)
+	if err != nil || deleted || ownership.ProjectName != state.ProjectName || len(ownership.Containers) != 1 {
+		t.Fatalf("ownership=%#v err=%v deleted=%v", ownership, err, deleted)
 	}
 }

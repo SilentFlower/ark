@@ -834,7 +834,7 @@ func acquireBackupLock(path string) (io.Closer, error) {
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		closeErr := file.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return nil, errors.Join(fmt.Errorf("已有 ark backup 或 restore 正在运行，未等待锁 %s", path), closeErr)
+			return nil, errors.Join(fmt.Errorf("已有 ark backup、restore 或 verify 正在运行，未等待锁 %s", path), closeErr)
 		}
 		return nil, errors.Join(fmt.Errorf("获取 ark 全局锁 %s 失败: %w", path, err), closeErr)
 	}

@@ -125,7 +125,7 @@ manifest schema 自身无效时由 `Manifest.Validate` 先拒绝，不用不可�
 go test ./internal/restore ./internal/backup ./internal/cli -race -count=1
 make check
 make build
-CGO_ENABLED=0 go build ./cmd/ark
+CGO_ENABLED=0 go build -o bin/ark-nocgo ./cmd/ark
 git diff --check
 ```
 
@@ -339,6 +339,9 @@ target、protocol、可选 app protocol 和 mode。
 - cleanup 只删除 state 中记录且 project/isolation label、名称和路径全部匹配的 container、network、
   volume 与 isolation root。root 不存在时仍按 isolation label 扫描孤立 Docker 资源；发现孤儿必须
   报错，只有 state 与带标签资源都不存在才算幂等成功。
+- state/root 是部分清理失败后证明归属并按同一 ID 重试的最后凭据。删除 container、network、volume
+  后必须再次按 isolation label 扫描；只有确认无残留资源后才能删除 root。扫描失败或仍有残留时
+  返回失败并保留 state/root，不能先删状态再报告孤儿。
 - CLI 人类与 JSON 输出只包含安全资源摘要、端口、访问地址和精确 cleanup 命令；canonical Compose、
   environment、secret、仓库凭证和底层外部命令诊断不得进入输出。
 
@@ -358,6 +361,7 @@ target、protocol、可选 app protocol 和 mode。
 | state/root 不存在且无带标签资源 | cleanup 幂等成功 |
 | state/root 不存在但仍有带 isolation 标签资源 | cleanup 失败并列出孤儿，不静默成功 |
 | cleanup 中任一资源归属或路径无法证明 | 停止删除并保留 state 供同 ID 重试 |
+| Docker 删除后标签复扫失败或仍有残留 | cleanup 失败并保留 state/root，不删除最后归属凭据 |
 
 ### 5. Good/Base/Bad Cases
 
@@ -377,7 +381,8 @@ target、protocol、可选 app protocol 和 mode。
   secret 映射，以及 external、host namespace、driver、driver_opts、重复/未知协议矩阵。
 - fake Runner：canonical stdout/stderr 隔离、备份端口漂移、host IP、root-only state、标签冲突、
   inspect 端口恢复、同 ID 续跑和阶段错误脱敏。
-- cleanup：精确删除顺序、部分失败续跑、重复执行、state/标签/名称/路径漂移、root 缺失且有/无孤儿。
+- cleanup：精确删除顺序、部分失败续跑、重复执行、state/标签/名称/路径漂移、root 缺失且有/无孤儿，
+  以及删除后标签复扫发现残留时 root 未被删除。
 - 可选真实 Docker 集成测试使用唯一 project 和临时目录，覆盖 production 与隔离副本并存、TCP/UDP
   自动端口、显式资源名、原项目基线不变和被测 cleanup API；失败清理只能使用精确 ID/名称。
 - 提交前运行关键包十轮 race、`make check`、双构建、`go mod verify`、`git diff --check`，并在有

@@ -29,6 +29,74 @@ type CleanupResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+// IsolationOwnership 是一份通过 state、project label、isolation label 和路径校验的只读资源摘要。
+type IsolationOwnership struct {
+	// IsolationID 是已校验的完整隔离标识。
+	IsolationID string `json:"isolation_id"`
+	// DestinationHost 是清单中的目标 host。
+	DestinationHost string `json:"destination_host"`
+	// ProjectName 是隔离 Compose project 名。
+	ProjectName string `json:"project_name"`
+	// Root 是受保护的隔离根目录。
+	Root string `json:"root"`
+	// Containers 是已校验归属的容器。
+	Containers []IsolationContainer `json:"containers"`
+	// Networks 是已校验归属的 network 名称。
+	Networks []string `json:"networks"`
+	// Volumes 是已校验归属的 volume 名称。
+	Volumes []string `json:"volumes"`
+	// CleanupCommand 是对应的幂等安全清理命令。
+	CleanupCommand string `json:"cleanup_command"`
+}
+
+// ValidateIsolationOwnership 只读校验一份隔离状态及全部 Docker 资源归属。
+// @param ctx 控制目标机状态、路径与标签检查的取消。
+// @param runner destination 的本地或 SSH Runner。
+// @param destinationHost 清单中的恢复目标 host。
+// @param isolationID 完整的 64 位小写十六进制 isolation ID。
+// @return IsolationOwnership 已证明属于该 isolation 的安全资源摘要。
+// @return error 状态目录缺失、字段漂移、路径越界或资源标签不匹配时的错误。
+func ValidateIsolationOwnership(
+	ctx context.Context,
+	runner sshexec.Runner,
+	destinationHost string,
+	isolationID string,
+) (IsolationOwnership, error) {
+	if ctx == nil || runner == nil {
+		return IsolationOwnership{}, fmt.Errorf("校验隔离资源归属失败: context 或 runner 为空")
+	}
+	if strings.TrimSpace(destinationHost) == "" || !ValidIsolationID(isolationID) {
+		return IsolationOwnership{}, fmt.Errorf("校验隔离资源归属失败: destination host 或 isolation ID 无效")
+	}
+	root := path.Join(isolationBase, isolationID)
+	exists, err := targetPathExists(ctx, runner, root)
+	if err != nil {
+		return IsolationOwnership{}, err
+	}
+	if !exists {
+		return IsolationOwnership{}, fmt.Errorf("校验隔离资源归属失败: isolation root 不存在")
+	}
+	state, containers, networks, volumes, err := loadOwnedIsolationResources(
+		ctx, runner, destinationHost, isolationID, root,
+	)
+	if err != nil {
+		return IsolationOwnership{}, err
+	}
+	result := IsolationOwnership{
+		IsolationID:     isolationID,
+		DestinationHost: destinationHost,
+		ProjectName:     state.ProjectName,
+		Root:            root,
+		Networks:        append([]string(nil), networks...),
+		Volumes:         append([]string(nil), volumes...),
+		CleanupCommand:  fmt.Sprintf("ark restore cleanup --host %s --isolation %s", destinationHost, isolationID),
+	}
+	for _, container := range containers {
+		result.Containers = append(result.Containers, IsolationContainer{ID: container.ID, Service: container.Service})
+	}
+	return result, nil
+}
+
 // CleanupIsolation 校验归属后幂等删除一份隔离恢复的全部资源。
 // @param ctx 控制目标机检查和删除命令的取消。
 // @param runner destination 的本地或 SSH Runner。
@@ -73,29 +141,9 @@ func CleanupIsolation(
 		result.Status = store.StatusOK
 		return result, nil
 	}
-	if err := validateCleanupPath(ctx, runner, root, root); err != nil {
-		return failCleanupResult(result, err)
-	}
-	statePath := path.Join(root, "state.json")
-	if err := validateCleanupPath(ctx, runner, root, statePath); err != nil {
-		return failCleanupResult(result, err)
-	}
-	content, found, err := readFileIfExists(ctx, runner, statePath)
-	if err != nil {
-		return failCleanupResult(result, fmt.Errorf("读取隔离恢复状态失败: %w", err))
-	}
-	if !found {
-		return failCleanupResult(result, fmt.Errorf("隔离恢复目录缺少 state.json，拒绝删除"))
-	}
-	var state isolationState
-	if err := json.Unmarshal([]byte(content), &state); err != nil {
-		return failCleanupResult(result, fmt.Errorf("解析隔离恢复状态失败: %w", err))
-	}
-	if err := validateCleanupState(state, destinationHost, isolationID, root); err != nil {
-		return failCleanupResult(result, err)
-	}
-
-	containers, networks, volumes, err := inspectCleanupResources(ctx, runner, state)
+	_, containers, networks, volumes, err := loadOwnedIsolationResources(
+		ctx, runner, destinationHost, isolationID, root,
+	)
 	if err != nil {
 		return failCleanupResult(result, err)
 	}
@@ -122,12 +170,94 @@ func CleanupIsolation(
 		}
 		result.Removed = append(result.Removed, "volume:"+volumeName)
 	}
+	// 状态目录是失败重试时证明资源归属的最后凭据；确认 Docker 资源已无残留后才能删除。
+	remaining, err := listIsolationLabeledResources(ctx, runner, isolationID)
+	if err != nil {
+		return failCleanupResult(result, err)
+	}
+	if len(remaining) > 0 {
+		return failCleanupResult(result, fmt.Errorf(
+			"清理后仍发现带 isolation 标签的 Docker 资源: %s",
+			strings.Join(remaining, ", "),
+		))
+	}
 	if _, err := runner.Run(ctx, "rm", "-rf", "--", root); err != nil {
 		return failCleanupResult(result, fmt.Errorf("删除隔离恢复目录失败: %w", err))
 	}
 	result.Removed = append(result.Removed, "root:"+root)
 	result.Status = store.StatusOK
 	return result, nil
+}
+
+func loadOwnedIsolationResources(
+	ctx context.Context,
+	runner sshexec.Runner,
+	destinationHost string,
+	isolationID string,
+	root string,
+) (isolationState, []composeState, []string, []string, error) {
+	if err := validateCleanupPath(ctx, runner, root, root); err != nil {
+		return isolationState{}, nil, nil, nil, err
+	}
+	statePath := path.Join(root, "state.json")
+	if err := validateCleanupPath(ctx, runner, root, statePath); err != nil {
+		return isolationState{}, nil, nil, nil, err
+	}
+	content, found, err := readFileIfExists(ctx, runner, statePath)
+	if err != nil {
+		return isolationState{}, nil, nil, nil, fmt.Errorf("读取隔离恢复状态失败: %w", err)
+	}
+	if !found {
+		return isolationState{}, nil, nil, nil, fmt.Errorf("隔离恢复目录缺少 state.json，拒绝处理")
+	}
+	var state isolationState
+	if err := json.Unmarshal([]byte(content), &state); err != nil {
+		return isolationState{}, nil, nil, nil, fmt.Errorf("解析隔离恢复状态失败: %w", err)
+	}
+	if err := validateCleanupState(state, destinationHost, isolationID, root); err != nil {
+		return isolationState{}, nil, nil, nil, err
+	}
+	containers, networks, volumes, err := inspectCleanupResources(ctx, runner, state)
+	if err != nil {
+		return isolationState{}, nil, nil, nil, err
+	}
+	if err := validateIsolationLabeledResourceSet(ctx, runner, state.ID, containers, networks, volumes); err != nil {
+		return isolationState{}, nil, nil, nil, err
+	}
+	return state, containers, networks, volumes, nil
+}
+
+func validateIsolationLabeledResourceSet(
+	ctx context.Context,
+	runner sshexec.Runner,
+	isolationID string,
+	containers []composeState,
+	networks []string,
+	volumes []string,
+) error {
+	expected := make([]string, 0, len(containers)+len(networks)+len(volumes))
+	for _, container := range containers {
+		expected = append(expected, "container:"+container.ID)
+	}
+	for _, network := range networks {
+		expected = append(expected, "network:"+network)
+	}
+	for _, volume := range volumes {
+		expected = append(expected, "volume:"+volume)
+	}
+	expected = uniqueSorted(expected)
+	actual, err := listIsolationLabeledResources(ctx, runner, isolationID)
+	if err != nil {
+		return err
+	}
+	if strings.Join(actual, "\x00") != strings.Join(expected, "\x00") {
+		return fmt.Errorf(
+			"isolation 标签资源与已校验状态不一致: 实际 %s，期望 %s",
+			strings.Join(actual, ", "),
+			strings.Join(expected, ", "),
+		)
+	}
+	return nil
 }
 
 func listIsolationLabeledResources(

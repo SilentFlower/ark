@@ -284,6 +284,29 @@ func TestStore_RecordsDoctorAndVerification(t *testing.T) {
 	}
 }
 
+func TestStore_RecordVerification允许历史Run缺失(t *testing.T) {
+	state := openTestStore(t, filepath.Join(t.TempDir(), "ark.db"))
+	startedAt := time.Date(2026, 8, 13, 4, 17, 0, 0, time.UTC)
+	detail := `{"run_id":"historical-run"}`
+	if err := state.RecordVerification(context.Background(), Verification{
+		ID: "verify-history", Host: "db-01", RunID: "historical-run", SnapshotID: "manifest-1",
+		StartedAt: startedAt, FinishedAt: startedAt.Add(time.Minute), Duration: time.Minute,
+		Status: StatusOK, DetailJSON: []byte(detail),
+	}); err != nil {
+		t.Fatalf("记录历史 verification 失败: %v", err)
+	}
+	var runID sql.NullString
+	var gotDetail string
+	if err := state.db.QueryRow(
+		"SELECT run_id, detail_json FROM verifications WHERE id = 'verify-history'",
+	).Scan(&runID, &gotDetail); err != nil {
+		t.Fatalf("查询历史 verification 失败: %v", err)
+	}
+	if runID.Valid || gotDetail != detail {
+		t.Fatalf("run_id=%#v detail=%q", runID, gotDetail)
+	}
+}
+
 func TestStore_ForeignKeyCascadeAndDatabaseChecks(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "ark.db"))
 	now := time.Date(2026, 8, 11, 4, 17, 0, 0, time.UTC)

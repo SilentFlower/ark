@@ -35,6 +35,11 @@ func LoadManifestSelection(
     repo *restic.Repo,
     selector string,
 ) (Manifest, restic.Snapshot, bool, error)
+func LoadLatestManifestSelections(
+    ctx context.Context,
+    repo *restic.Repo,
+    hosts []string,
+) (LatestManifestSelections, bool, error)
 ```
 
 `LoadLatestManifest` 的 `bool=false, error=nil` 表示仓库里尚无 manifest，是正常首次运行
@@ -43,6 +48,10 @@ func LoadManifestSelection(
 `LoadManifestSelection` 额外返回实际读取的 `restic.Snapshot`，供恢复计划保留精确
 manifest snapshot ID。`selector` 接受 `latest`、完整 ID 或唯一 ID 前缀；显式选择不存在、
 匹配多个或候选损坏时必须返回错误，不能回退到最新或其它 manifest。
+
+`LoadLatestManifestSelections` 用于 per-host backup 产生多份 manifest 的场景：按时间与 ID 从新到旧读取，
+为请求的每台 host 选择最近一次包含它的 manifest，同时返回全局最新 manifest 供缺失 host 和清单漂移
+记录事实。候选损坏仍 fail closed，不能为了找到更旧 host 而跳过损坏 manifest。
 
 ### 3. Contracts
 
@@ -146,6 +155,7 @@ manifest。完整 ID 优先于前缀；前缀必须唯一。选中候选后仍�
 - `SaveManifest` 精确 filename、tag、payload 与空 snapshot ID；失败返回带 ID 时精确撤销，
   覆盖撤销成功、双错误链和无 ID 不调用 forget；
 - 多 snapshot 乱序输入下按时间和 ID 选择最新项；
+- 多份 per-host manifest 下为每台请求 host 选择各自最新项，并保留全局最新项；
 - 显式完整 ID、唯一前缀、无匹配、前缀歧义和选择失败零 Dump；
 - 选择成功返回的 snapshot metadata 与实际 Dump ID 完全一致；
 - 无 snapshot 正常分支，以及 path/tag/run/dump/JSON 各类不一致失败；

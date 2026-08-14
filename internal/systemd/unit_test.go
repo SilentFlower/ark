@@ -35,6 +35,8 @@ func TestBuildUnits_生成全量模板与每HostTimer(t *testing.T) {
 		"ark-backup@.service",
 		"ark-backup@hub-01.timer",
 		"ark-backup@web-01.timer",
+		"ark-verify.service",
+		"ark-verify.timer",
 	}
 	var gotNames []string
 	byName := make(map[string]string)
@@ -55,7 +57,11 @@ func TestBuildUnits_生成全量模板与每HostTimer(t *testing.T) {
 	if !strings.Contains(byName["ark-backup@.service"], "backup --host %i") {
 		t.Errorf("实例 service 未按 host 调用:\n%s", byName["ark-backup@.service"])
 	}
-	for _, name := range []string{"ark-backup.service", "ark-backup@.service"} {
+	if !strings.Contains(byName["ark-verify.service"], `ExecStart="/usr/local/bin/ark" --config "/etc/ark/ark.yaml" verify`) ||
+		strings.Contains(byName["ark-verify.service"], "--host") {
+		t.Errorf("verify service 内容错误:\n%s", byName["ark-verify.service"])
+	}
+	for _, name := range []string{"ark-backup.service", "ark-backup@.service", "ark-verify.service"} {
 		for _, want := range []string{
 			"CacheDirectory=ark",
 			"CacheDirectoryMode=0700",
@@ -64,6 +70,16 @@ func TestBuildUnits_生成全量模板与每HostTimer(t *testing.T) {
 			if !strings.Contains(byName[name], want) {
 				t.Errorf("service %s 缺少 %q:\n%s", name, want, byName[name])
 			}
+		}
+	}
+	for _, want := range []string{
+		"OnCalendar=weekly",
+		"Persistent=true",
+		"RandomizedDelaySec=21600",
+		"Unit=ark-verify.service",
+	} {
+		if !strings.Contains(byName["ark-verify.timer"], want) {
+			t.Errorf("verify timer 缺少 %q:\n%s", want, byName["ark-verify.timer"])
 		}
 	}
 	for name, schedule := range map[string]string{
@@ -108,8 +124,10 @@ func TestBuildUnits_不输出凭证并拒绝非法路径(t *testing.T) {
 func TestInstall_替换Units并仅清理受管旧Timer(t *testing.T) {
 	dir := t.TempDir()
 	managedStale := filepath.Join(dir, "ark-backup@old.timer")
+	managedVerifyStale := filepath.Join(dir, "ark-verify@old.timer")
 	userTimer := filepath.Join(dir, "ark-backup@user.timer")
 	writeTestFile(t, managedStale, ManagedMarker+"\nold\n")
+	writeTestFile(t, managedVerifyStale, ManagedMarker+"\nold\n")
 	writeTestFile(t, userTimer, "# user owned\n")
 
 	var verified []string
@@ -126,12 +144,15 @@ func TestInstall_替换Units并仅清理受管旧Timer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install 失败: %v", err)
 	}
-	if len(verified) != 4 || len(result.Written) != 4 ||
-		!reflect.DeepEqual(result.Removed, []string{"ark-backup@old.timer"}) {
+	if len(verified) != 6 || len(result.Written) != 6 ||
+		!reflect.DeepEqual(result.Removed, []string{"ark-backup@old.timer", "ark-verify@old.timer"}) {
 		t.Fatalf("verified=%#v result=%#v", verified, result)
 	}
 	if _, err := os.Stat(managedStale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("受管旧 timer 未删除: %v", err)
+	}
+	if _, err := os.Stat(managedVerifyStale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("受管旧 verify timer 未删除: %v", err)
 	}
 	if data, err := os.ReadFile(userTimer); err != nil || string(data) != "# user owned\n" {
 		t.Fatalf("用户 timer 被修改: data=%q err=%v", data, err)

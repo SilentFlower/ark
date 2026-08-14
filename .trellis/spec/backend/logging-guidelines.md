@@ -82,6 +82,10 @@ enc.SetIndent("", "  ")
 
 新增命令时，只要输出可能被脚本消费，就照此加 `--json`。
 
+`ark verify --json` 输出一份 all-host summary；任一 host 失败后仍包含后续 host 的结果，
+并通过退出码表达整体失败。verification detail 只保存 target snapshot、隔离资源标识、阶段结果、
+生产基线指纹/差异类别和 cleanup，不保存 canonical Compose、文件内容、env 或底层命令输出。
+
 ### 状态库是主要的可观测面
 
 每次运行结束后把结果写进本地 SQLite 状态库 `/var/lib/ark/ark.db`

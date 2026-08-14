@@ -425,7 +425,7 @@ func (s *Store) RecordDoctorReport(ctx context.Context, report DoctorReport) err
 // RecordVerification 追加一次恢复演练的最终结果。
 // @param ctx 控制数据库写入的取消与超时。
 // @param verification 待记录的演练标识、快照、时间和完整 JSON 详情。
-// @return error 字段校验、外键或数据库写入失败时的错误。
+// @return error 字段校验或数据库写入失败时的错误。
 func (s *Store) RecordVerification(ctx context.Context, verification Verification) error {
 	if err := validateVerification(verification); err != nil {
 		return err
@@ -448,10 +448,10 @@ func (s *Store) RecordVerification(ctx context.Context, verification Verificatio
 			INSERT INTO verifications (
 				id, host, run_id, snapshot_id, started_at, finished_at,
 				duration_ms, status, error, detail_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, (SELECT id FROM runs WHERE id = ?), ?, ?, ?, ?, ?, ?, ?)`,
 			verification.ID,
 			verification.Host,
-			nullableString(verification.RunID),
+			verification.RunID,
 			verification.SnapshotID,
 			startedAt,
 			finishedAt,

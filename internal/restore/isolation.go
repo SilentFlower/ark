@@ -22,7 +22,6 @@ import (
 
 const (
 	isolationSchemaVersion         = 1
-	isolationPortRuntimeAuto       = "runtime_auto"
 	isolationLabel                 = "io.ark.restore.isolation"
 	isolationBase                  = restoreMarkerBase + "/isolations"
 	isolationProjectMaximumLength  = 63
@@ -34,6 +33,10 @@ const (
 	IsolationPurposeRestore = "restore"
 	// IsolationPurposeVerify 是自动恢复演练使用的隔离用途。
 	IsolationPurposeVerify = "verify"
+	// IsolationPortRuntimeAuto 保留原 host IP 语义，并由 Docker 原子分配宿主机端口。
+	IsolationPortRuntimeAuto = "runtime_auto"
+	// IsolationPortDisabled 删除全部 published ports，供不应暴露宿主机端口的自动演练使用。
+	IsolationPortDisabled = "disabled"
 )
 
 var (
@@ -42,12 +45,14 @@ var (
 	isolationInstancePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 )
 
-// IsolationOptions 控制稳定隔离身份的用途与实例键。
+// IsolationOptions 控制稳定隔离身份的用途、实例键与端口策略。
 type IsolationOptions struct {
 	// Purpose 区分 restore、verify 等调用方，并进入资源名和稳定 ID。
 	Purpose string `json:"purpose"`
 	// InstanceKey 允许同一恢复事实按调用方实例继续细分；普通 restore 为空。
 	InstanceKey string `json:"instance_key,omitempty"`
+	// PortAllocation 控制隔离 Compose 的 published ports；为空时保持普通恢复的自动端口行为。
+	PortAllocation string `json:"port_allocation,omitempty"`
 }
 
 // IsolationSpec 描述 dry-run 与真实执行共享的隔离恢复身份和派生路径。
@@ -76,7 +81,7 @@ type IsolationSpec struct {
 	SourceEnvFile string `json:"source_env_file,omitempty"`
 	// GeneratedComposeFile 是结构化改写后的 root-only Compose 文件。
 	GeneratedComposeFile string `json:"generated_compose_file"`
-	// PortAllocation 表示宿主机端口由真实执行阶段原子分配。
+	// PortAllocation 表示宿主机端口的隔离策略。
 	PortAllocation string `json:"port_allocation"`
 	// PathMappings 是原 files 路径到隔离路径的稳定映射。
 	PathMappings []IsolationPathMapping `json:"path_mappings"`
@@ -173,12 +178,15 @@ type isolationState struct {
 // @return Plan project、files 和 volume 已派生到隔离资源的计划副本。
 // @return error Plan 已隔离、字段不完整或 compose/env 未包含在 files target 时返回错误。
 func WithIsolation(plan Plan) (Plan, error) {
-	return WithIsolationOptions(plan, IsolationOptions{Purpose: IsolationPurposeRestore})
+	return WithIsolationOptions(plan, IsolationOptions{
+		Purpose:        IsolationPurposeRestore,
+		PortAllocation: IsolationPortRuntimeAuto,
+	})
 }
 
-// WithIsolationOptions 按用途和实例键把普通恢复 Plan 转换为稳定隔离 Plan。
+// WithIsolationOptions 按用途、实例键和端口策略把普通恢复 Plan 转换为稳定隔离 Plan。
 // @param plan 已由 BuildPlan 构建的普通恢复计划。
-// @param options 非空且合法的 purpose，以及可选稳定 instance key。
+// @param options 非空且合法的 purpose，以及可选稳定 instance key 和 published ports 策略。
 // @return Plan project、files 和 volume 已派生到隔离资源的计划副本。
 // @return error Plan 或 options 无效、compose/env 未进入 files target 时返回错误。
 func WithIsolationOptions(plan Plan, options IsolationOptions) (Plan, error) {
@@ -191,6 +199,12 @@ func WithIsolationOptions(plan Plan, options IsolationOptions) (Plan, error) {
 	if options.InstanceKey != "" && !isolationInstancePattern.MatchString(options.InstanceKey) {
 		return Plan{}, fmt.Errorf("构建隔离恢复计划失败: isolation instance key 无效")
 	}
+	if options.PortAllocation == "" {
+		options.PortAllocation = IsolationPortRuntimeAuto
+	}
+	if options.PortAllocation != IsolationPortRuntimeAuto && options.PortAllocation != IsolationPortDisabled {
+		return Plan{}, fmt.Errorf("构建隔离恢复计划失败: isolation port allocation %q 无效", options.PortAllocation)
+	}
 	if strings.TrimSpace(plan.ManifestSnapshotID) == "" || strings.TrimSpace(plan.SourceHost) == "" ||
 		strings.TrimSpace(plan.DestinationHost) == "" || strings.TrimSpace(plan.Project.Name) == "" ||
 		strings.TrimSpace(plan.Project.ComposeFile) == "" {
@@ -202,7 +216,7 @@ func WithIsolationOptions(plan Plan, options IsolationOptions) (Plan, error) {
 	if plan.Project.EnvFile != "" && !planPathCovered(plan, plan.Project.EnvFile) {
 		return Plan{}, fmt.Errorf("构建隔离恢复计划失败: env_file %q 未包含在 files target 中", plan.Project.EnvFile)
 	}
-	ports, err := isolationPlanPorts(plan)
+	ports, err := isolationPlanPorts(plan, options.PortAllocation)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -227,7 +241,7 @@ func WithIsolationOptions(plan Plan, options IsolationOptions) (Plan, error) {
 		SourceProject:        originalProject,
 		SourceComposeFile:    isolationPath(filesRoot, originalProject.ComposeFile),
 		GeneratedComposeFile: generatedComposeFile,
-		PortAllocation:       isolationPortRuntimeAuto,
+		PortAllocation:       options.PortAllocation,
 		Ports:                ports,
 	}
 	if originalProject.EnvFile != "" {
@@ -273,6 +287,9 @@ func validateIsolationPlan(plan Plan) error {
 		(spec.InstanceKey != "" && !isolationInstancePattern.MatchString(spec.InstanceKey)) {
 		return fmt.Errorf("执行恢复失败: isolation 身份无效")
 	}
+	if spec.PortAllocation != IsolationPortRuntimeAuto && spec.PortAllocation != IsolationPortDisabled {
+		return fmt.Errorf("执行恢复失败: isolation 端口策略无效")
+	}
 	identityPlan := plan
 	identityPlan.Project = spec.SourceProject
 	identityPlan.Isolation = nil
@@ -300,7 +317,7 @@ func validateIsolationPlan(plan Plan) error {
 			return fmt.Errorf("执行恢复失败: isolation files 路径映射无效")
 		}
 	}
-	if err := validateIsolationPorts(spec.Ports); err != nil {
+	if err := validateIsolationPorts(spec.Ports, spec.PortAllocation); err != nil {
 		return err
 	}
 	for _, step := range plan.Steps {
@@ -331,7 +348,7 @@ func validateIsolationPlan(plan Plan) error {
 	return nil
 }
 
-func isolationPlanPorts(plan Plan) ([]IsolationPort, error) {
+func isolationPlanPorts(plan Plan, allocation string) ([]IsolationPort, error) {
 	var metadata *backup.ComposeMetadata
 	for _, step := range plan.Steps {
 		if step.Phase != PhaseImageDigest {
@@ -346,30 +363,38 @@ func isolationPlanPorts(plan Plan) ([]IsolationPort, error) {
 		return nil, fmt.Errorf("构建隔离恢复计划失败: 备份 manifest 缺少 Compose 端口元数据，请先重新执行 backup")
 	}
 	ports := make([]IsolationPort, 0, len(metadata.PublishedPorts))
+	allocated := "auto"
+	if allocation == IsolationPortDisabled {
+		allocated = IsolationPortDisabled
+	}
 	for _, source := range metadata.PublishedPorts {
 		ports = append(ports, IsolationPort{
 			Service:           source.Service,
 			HostIP:            source.HostIP,
 			OriginalPublished: source.Published,
-			AllocatedPort:     "auto",
+			AllocatedPort:     allocated,
 			Target:            source.Target,
 			Protocol:          source.Protocol,
 			AppProtocol:       source.AppProtocol,
 			Mode:              source.Mode,
 		})
 	}
-	if err := validateIsolationPorts(ports); err != nil {
+	if err := validateIsolationPorts(ports, allocation); err != nil {
 		return nil, fmt.Errorf("构建隔离恢复计划失败: %w", err)
 	}
 	sortIsolationPorts(ports)
 	return ports, nil
 }
 
-func validateIsolationPorts(ports []IsolationPort) error {
+func validateIsolationPorts(ports []IsolationPort, allocation string) error {
 	seen := make(map[string]struct{}, len(ports))
+	expectedAllocated := "auto"
+	if allocation == IsolationPortDisabled {
+		expectedAllocated = IsolationPortDisabled
+	}
 	for index, port := range ports {
 		if strings.TrimSpace(port.Service) == "" || port.Target == 0 ||
-			(port.Protocol != "tcp" && port.Protocol != "udp") || port.AllocatedPort != "auto" {
+			(port.Protocol != "tcp" && port.Protocol != "udp") || port.AllocatedPort != expectedAllocated {
 			return fmt.Errorf("isolation ports[%d] 无效", index)
 		}
 		key := fmt.Sprintf("%s\x00%s\x00%d\x00%s", port.Service, port.HostIP, port.Target, port.Protocol)
@@ -1140,6 +1165,9 @@ func transformIsolationCompose(
 				if err != nil {
 					return nil, nil, nil, nil, nil, nil, err
 				}
+				if spec.PortAllocation == IsolationPortDisabled {
+					portMapping.AllocatedPort = IsolationPortDisabled
+				}
 				ports = append(ports, portMapping)
 				portKey := fmt.Sprintf("%s\x00%s\x00%d\x00%s", serviceName, portMapping.HostIP, portMapping.Target, portMapping.Protocol)
 				if _, exists := portKeys[portKey]; exists {
@@ -1149,10 +1177,16 @@ func transformIsolationCompose(
 					)
 				}
 				portKeys[portKey] = struct{}{}
-				if concreteIsolationHostIP(portMapping.HostIP) {
+				if spec.PortAllocation == IsolationPortRuntimeAuto && concreteIsolationHostIP(portMapping.HostIP) {
 					hostIPs = append(hostIPs, portMapping.HostIP)
 				}
-				delete(portObject, "published")
+				if spec.PortAllocation == IsolationPortRuntimeAuto {
+					delete(portObject, "published")
+				}
+			}
+			if spec.PortAllocation == IsolationPortDisabled {
+				// 自动演练只需要容器内部 health/数据库检查。彻底删除端口声明，避免意外扩大网络暴露面。
+				delete(service, "ports")
 			}
 		}
 	}
@@ -1380,6 +1414,9 @@ func concreteIsolationHostIP(value string) bool {
 }
 
 func inspectIsolationPorts(ctx context.Context, plan Plan, runner sshexec.Runner, state isolationState) (isolationState, error) {
+	if plan.Isolation != nil && plan.Isolation.PortAllocation == IsolationPortDisabled {
+		return inspectIsolationContainers(ctx, plan, runner, state)
+	}
 	states, err := composeStates(ctx, runner, plan, true)
 	if err != nil {
 		return state, err
