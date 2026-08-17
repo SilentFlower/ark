@@ -1,10 +1,10 @@
 # Hub Guidelines
 
-> `ark-hub` 的本地鉴权、HTTP 边界、会话、限流、状态库连接与常驻 service 契约。
+> `ark-hub` 的本地鉴权、HTTP API、会话、限流、状态投影、手工操作与常驻 service 契约。
 
 ---
 
-## Scenario: 修改 ark-hub 鉴权或服务骨架
+## Scenario: 修改 ark-hub 鉴权、HTTP API 或服务骨架
 
 ### 1. Scope / Trigger
 
@@ -12,12 +12,14 @@
 
 - 修改 `cmd/ark-hub/`、`internal/hub/` 的 CLI、凭证文件、密码哈希、会话、CSRF 或 HTTP 路由；
 - 修改 `ark-hub` 对 `store.Store` 的打开、关闭或请求期读取方式；
+- 修改 hosts、runs、alerts、operations 投影，或 backup、verify、restore 手工操作；
 - 修改登录限流、Cookie、安全响应头、HTTP server 超时或优雅停止；
 - 修改 `ark-hub install` 或 `ark-hub.service` 的生成、校验和安装行为。
 
 `cmd/ark-hub` 必须保持薄入口。鉴权和 HTTP 逻辑属于 `internal/hub`；SQLite 细节属于
 `internal/store`；通用 unit 原子安装内核属于 `internal/systemd`。`ark-hub` 不承载调度，
-长任务由后续业务 API 启动 `ark` 子进程，不能在 handler 内直接实现备份、演练或恢复。
+长任务只能启动显式路径的 `ark --json` 子进程，不能在 handler 内直接实现备份、演练或恢复，
+也不能导入 `internal/backup`、`internal/verify`、`internal/restore` 等业务包。
 
 ### 2. Signatures
 
@@ -25,11 +27,13 @@ CLI 契约：
 
 ```text
 ark-hub serve [--listen <address>] [--state-db <absolute-path>]
-              [--auth-file <absolute-path>] [--secure-cookie]
+              [--auth-file <absolute-path>] [--config <absolute-path>]
+              [--ark-binary <absolute-path>] [--secure-cookie]
 ark-hub admin init [--username <name>] [--auth-file <absolute-path>]
 ark-hub admin reset-password [--auth-file <absolute-path>]
 ark-hub install [--unit-dir <absolute-path>] [--listen <address>]
                 [--state-db <absolute-path>] [--auth-file <absolute-path>]
+                [--config <absolute-path>] [--ark-binary <absolute-path>]
                 [--secure-cookie]
 ```
 
@@ -40,6 +44,8 @@ type ServeOptions struct {
     ListenAddress string
     StateDBPath   string
     AuthFile      string
+    ConfigPath    string
+    ArkBinaryPath string
     SecureCookie  bool
 }
 
@@ -57,6 +63,15 @@ POST /login        public + login CSRF
 GET  /             authenticated HTML shell
 POST /logout       authenticated + session CSRF
 GET  /api/session  authenticated JSON
+GET  /api/hosts
+GET  /api/hosts/{host}
+GET  /api/runs
+GET  /api/alerts
+GET  /api/operations
+GET  /api/operations/{id}
+POST /api/hosts/{host}/backup
+POST /api/hosts/{host}/verify
+POST /api/hosts/{host}/restore
 ```
 
 凭证 schema v1：
@@ -90,11 +105,26 @@ GET  /api/session  authenticated JSON
   map 最多保存 4096 个 key，每次进入时清理过期窗口；容量耗尽时 fail closed 返回 `429`。
 - 除 `/healthz`、`GET /login`、`POST /login` 外全部路由默认鉴权。未认证 `/api/` 返回稳定
   `401` JSON，页面请求重定向登录；运行期 auth 存储错误返回 `503`，不能降级成未认证或放行。
+- 新业务 POST 必须在 session 鉴权后 constant-time 校验 `X-CSRF-Token`。JSON body 上限
+  16 KiB，严格拒绝未知字段和尾随值；未知 host、非法 filter 和不支持的恢复 mode 不得产生 operation。
 - 所有响应设置 CSP、`nosniff`、`no-referrer`、`DENY` 和 `no-store`。Cookie 固定
   `HttpOnly`、`SameSite=Strict`、`Path=/`；`Secure` 只由显式 flag 控制，不信任 forwarding header。
 - `Run` 只能通过 `store.Open` 获得 `Store` 并调用其公开 API，不持有 `*sql.DB` 或拼 SQL。
-  凭证校验和状态库打开必须发生在 listen 前；context 取消后调用有界 `Shutdown`，必要时调用
-  `Close`，并用 `errors.Join` 聚合 Serve、Shutdown、server Close 和 Store.Close 错误。
+  凭证、清单、Ark 二进制和状态库校验必须发生在 listen 前；清单和 Ark 二进制必须是绝对路径，
+  二进制必须是可执行普通文件。业务 API 每次重新严格加载清单，运行期损坏时 fail closed 为 `503`。
+- hosts 与 alerts 必须复用同一个健康投影。schedule 无法分析时健康为 `unknown`，返回
+  `schedule_unavailable`，只展示状态库中的最后已知 `next_run_at`，不得伪造超时告警。
+- 普通 host DTO 不得返回 compose、env、SSH、repo 或凭证路径。doctor 报告必须先解码为白名单
+  checks DTO，再精确替换清单中的敏感路径；禁止把状态库原始 JSON 直接透传给 API。
+- 手工操作先持久化 `running`，再同步调用 `cmd.Start`；只有进程真正启动后才能返回 `202`。
+  启动失败必须把 operation 完成为 `fail` 并返回 `500 operation_failed`。客户端断开不取消已启动任务。
+- 同一 Hub 进程最多一个活动手工操作。子进程使用 application context、无 shell argv、
+  `Pdeathsig=SIGTERM`、4 MiB stdout 与 64 KiB stderr 上限；非零退出、JSON 损坏或输出超限均持久化 fail，
+  stderr 不入库也不回显。
+- restore 预检 confirmation token 只保存在内存，绑定创建预检的 session、source host、精确 manifest
+  snapshot 和 SHA-256 digest，10 分钟有效且只能展示、消费一次。真实恢复必须使用预检中的精确参数。
+- context 取消后先有界 `Shutdown` HTTP，再取消并等待活动 operation，最后关闭 Store；使用
+  `errors.Join` 聚合 Serve、Shutdown、server Close、operation 和 Store.Close 错误。
 - `ark-hub.service` 只包含二进制路径和非秘密启动 flag，使用 `Type=simple`、`UMask=0077`、
   `Restart=on-failure`。安装只管理 `ark-hub.service`，不创建、扫描、删除、enable 或启动 timer。
 - 密码、hash、session token、CSRF token、完整 Cookie 和请求 body 不得进入日志、错误、普通响应
@@ -117,6 +147,15 @@ GET  /api/session  authenticated JSON
 | CSRF 缺失或不匹配 | 返回 `403`，不执行登录或退出状态变更 |
 | session 伪造、过期或 revision 漂移 | 撤销 Cookie，API 返回 `401` |
 | 已有 session 期间 auth 文件运行期损坏 | API 返回 `503` JSON，不伪装成普通未登录 |
+| 清单或 Ark 二进制在启动前非法 | 不创建 listener，返回带上下文错误 |
+| 运行期清单损坏 | 业务 API 返回 `503`，登录和 `/healthz` 保持可用 |
+| schedule 分析失败 | health=`unknown`、diagnostics 含 `schedule_unavailable`，不生成 `backup_overdue` |
+| POST 缺 CSRF、body 超限、未知字段或非法 host | 返回 `403`/`400`/`404`，不创建 operation |
+| 已有活动手工操作 | 返回 `409 conflict`，不启动第二个 Ark 子进程 |
+| Ark 子进程启动失败 | operation 持久化为 fail，HTTP 返回 `500 operation_failed` |
+| Ark 非零退出、JSON 损坏或输出超限 | operation 持久化为 fail，不回显 stderr |
+| restore token 过期、session/source 不匹配或已消费 | 返回 `409` 或 `422`，不启动恢复 |
+| Hub graceful shutdown 时存在活动 operation | 取消并等待子进程，持久化 interrupted 后关闭 Store |
 | store 打不开 | 不创建 listener，返回带上下文错误 |
 | listener 绑定失败 | 关闭 store，并聚合 listener 与 close 错误 |
 | Shutdown、server Close、Store.Close 同时失败 | 返回可由 `errors.Is` 识别的完整聚合错误链 |
@@ -131,10 +170,18 @@ GET  /api/session  authenticated JSON
 - **Base**：`GET /healthz` 无需鉴权，只返回 `ok` 和安全 header；未认证
   `GET /api/session` 返回 `{"authenticated":false}` 与 `401`。
 - **Base**：`ark-hub.service` 独立运行；停止它不会停止或修改 `ark-backup*` / `ark-verify*`。
+- **Good**：backup POST 在 Ark 成功启动后返回 operation ID；刷新页面可从状态库轮询终态，
+  请求连接提前断开也不影响已启动任务。
+- **Good**：restore preview 只读探测目标资源，同一 session 第一次读取完成结果时获得一次性 token；
+  URL source host 或目标冲突变化后旧 token 不能启动恢复。
+- **Base**：schedule 暂时不可用时继续返回最后已知 next run，但健康明确为 unknown。
 - **Bad**：先检查失败次数、Argon2 完成后才递增计数。并发请求会全部穿过检查，限流形同虚设。
 - **Bad**：用 auth 文件本身做 flock。reset rename 后锁绑定旧 inode，另一个进程可锁住新文件并
   与前一个进程同时提交，导致 revision 丢失。
 - **Bad**：初始化 `fsync` 失败后静默忽略 `Remove` 错误。命令报告失败，但不完整凭证仍留在磁盘。
+- **Bad**：先返回 `202` 再异步调用 `cmd.Start`。二进制缺失时客户端会误以为任务已受理，
+  数据库还可能长期留下状态不明的 running operation。
+- **Bad**：直接把 `doctor_reports.report_json` 或 `config.Host` 编码进响应，会泄露 SSH 和宿主机路径。
 
 ### 6. Tests Required
 
@@ -161,6 +208,9 @@ git diff --check
 - 健康检查、受保护页面、CSRF、body 上限、安全 Cookie/header、运行期 auth 故障 `503`；
 - store/listener/Serve/Shutdown/server Close/Store.Close 故障注入及 `errors.Is` 断言；
 - hub unit 非法参数、非受管文件、symlink、verify/rename 失败、真实 systemd verify 和 timer 隔离。
+- hosts/runs/alerts/operations 的空值、分页、未知筛选、schedule failure、稳定告警 kind 和路径脱敏；
+- POST 的鉴权、CSRF、body 上限、未知字段、argv、进程启动失败、非零退出、JSON/输出上限和客户端断开；
+- confirmation 的 session/source 绑定、过期、单次消费、精确 snapshot/digest，以及 shutdown interrupted。
 
 ### 7. Wrong vs Correct
 
@@ -195,3 +245,17 @@ attempt.success()
 ```
 
 预占、失败和成功都由同一个窗口状态机串行更新；`cancel` 只释放未完成尝试，且完成操作幂等。
+
+```go
+// 错误：HTTP 已经返回 202，实际进程可能根本没有启动。
+go command.Run()
+writeAccepted(operation.ID)
+
+// 正确：running 已持久化且 Start 成功后才向客户端确认受理。
+if err := command.Start(); err != nil {
+    finishOperationAsFailed(operation.ID)
+    return writeOperationFailed()
+}
+writeAccepted(operation.ID)
+go waitAndPersist(command)
+```

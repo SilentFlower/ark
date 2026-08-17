@@ -473,6 +473,7 @@ SSH 参数，避免恢复入口绕过清单校验、主机密钥策略和目标�
 - 每次 doctor 的报告
 - 每次演练的结果
 - 下一次计划运行时间（来自 `systemd-analyze calendar`）
+- 每次 Hub 手工操作的类型、脱敏请求、状态、结果、父预检和退出码
 
 选 SQLite 而不是 MySQL/Postgres：单文件便于整体备份（ADR-012），
 零运维，且这个数据量下性能完全不是问题。`ark`（oneshot）写入，
@@ -487,7 +488,23 @@ SSH 参数，避免恢复入口绕过清单校验、主机密钥策略和目标�
 - **操作**：触发备份、触发演练、发起恢复（起 `ark` 子进程执行）
 - **HTTP API**：供 dnsmgr 之外的系统集成
 
-健康判定：`最近成功备份时间 > 计划周期 × 2` 判为超时告警。
+健康判定：`最近成功备份时间 > 计划周期 × 2` 判为超时告警。稳定告警 kind 固定为
+`backup_overdue`、`backup_consecutive_failures` 和 `verification_failed`。无法解析 schedule 时
+host 健康为 `unknown`，`diagnostics` 返回 `schedule_unavailable`，`next_run_at` 只展示状态库中
+最后一次已知值，不参与本轮超时判定。主机详情中的 doctor 报告按白名单 DTO 返回，并精确脱敏
+清单中的 compose、env、SSH 与 files target 路径，不透传状态库原始 JSON。
+
+P4-2 的长任务接口固定异步返回 operation ID。`ark-hub` 不在 handler 内执行 backup、verify
+或 restore 业务，而是用无 shell argv 启动显式路径的 `ark --json` 子进程；同一进程内只允许
+一个手工任务争用全局 Ark 锁。operation 从 running 到 ok/fail/interrupted 的状态写入
+`manual_operations`，Hub 重启前遗留的 running 记录会在监听前原子改为 interrupted。
+POST 只有在 running 记录已持久化且 Ark 子进程 `Start` 成功后才返回 `202`；启动失败先把记录
+完成为 fail，再返回 `500 operation_failed`。请求连接断开不取消已经启动的任务。
+
+恢复确认不是对静态 Plan 点一次“确定”。首次请求通过 destination 的本地或 SSH Runner 只读检查
+marker、容器、volume 和目标路径，返回具体冲突资源与 SHA-256 digest。确认 token 只保存在内存，
+绑定创建预检的会话、精确 manifest snapshot 和 digest，短时有效且只能消费一次。真实恢复在写入前
+重新预检；force safety backup 后还要再次校验，目标资源变化时要求重新预览。
 
 **`ark-hub` 必须有鉴权。** 它能发起覆盖生产数据的恢复，内网部署也不例外。
 首版固定为单个本地管理员账号 + 密码，不使用二次验证。管理员只能在 hub 本机通过
@@ -496,6 +513,8 @@ CLI 初始化或重置，不提供未鉴权的 Web 安装入口。密码以 Argo
 内存中，密码重置通过递增凭证 revision 让旧会话在下一次请求时失效。
 
 `ark-hub` 默认只监听 `127.0.0.1:8080`，登录和退出具备 CSRF 防护，连续失败有界限流。
+`serve` 和生成的 service 显式携带 `/etc/ark/ark.yaml` 与 `/usr/local/bin/ark`，两者都在监听前验证；
+业务 API 每次重新严格加载清单，运行期清单损坏时 fail closed 返回 `503`。
 `ark-hub.service` 是独立的常驻 unit，不创建或管理 timer；停止它不会改变备份和演练调度。
 
 前端 Vue 3 + Vite + TypeScript + Pinia + Tailwind（与现有项目同栈），

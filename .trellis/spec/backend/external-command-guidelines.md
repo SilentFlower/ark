@@ -819,6 +819,104 @@ if waitErr != nil {
 
 ---
 
+## Scenario: Hub 异步启动 Ark 手工操作
+
+### 1. Scope / Trigger
+
+- 修改 `internal/hub/operation.go`、业务 POST handler、Ark 命令映射或 operation 生命周期时适用。
+- Hub 只负责任务接收、进程生命周期和结果投影；backup、verify、restore 业务仍由 `ark` CLI 所有。
+- 本边界必须同时防止命令注入、错误受理、输出失控、客户端断开误取消和 Hub 异常退出遗留子进程。
+
+### 2. Signatures
+
+```text
+backup:
+  ark --config <path> backup --host <host> --json
+
+verify:
+  ark --config <path> verify --host <host> --snapshot <selector> --json
+
+restore preview:
+  ark --config <path> restore --host <source> --to <destination>
+      --snapshot <selector> --dry-run --inspect [--force|--isolate] --json
+
+restore execute:
+  ark --config <path> restore --host <source> --to <destination>
+      --snapshot <exact-id> [--force|--isolate]
+      --expected-preview-sha256 <digest> --json
+```
+
+```go
+exec.CommandContext(applicationContext, arkBinaryPath, arguments...)
+```
+
+### 3. Contracts
+
+- `arkBinaryPath` 与 config path 在监听前验证为绝对路径；Ark 必须是可执行普通文件。
+- 参数必须由结构化 argv 生成，禁止 `sh -c`、字符串拼接命令或继承请求 body 作为 argv。
+- operation 的 running 记录先持久化，再同步执行 `cmd.Start`；Start 成功后 HTTP 才能返回 `202`。
+- 子进程绑定 application context，不绑定 HTTP request context。客户端断开只结束响应，不取消已受理任务。
+- Linux 下设置 `SysProcAttr.Pdeathsig=SIGTERM`。Hub graceful shutdown 先发 SIGTERM，
+  `WaitDelay` 到期后由 `os/exec` 完成有界收尾；必须等待 `Wait` 后再关闭 Store。
+- stdout 限制为 4 MiB，只接受命令类型对应的白名单 JSON 对象；stderr 限制为 64 KiB，
+  只参与内存中的失败判定，不写状态库、不进入 HTTP 响应。
+- Hub 不为 Ark 子进程新增仓库凭证环境，也不得修改进程全局环境。Ark 按 config 自己加载受控凭证。
+- 同一 Hub 进程最多一个活动手工任务；跨 systemd oneshot 的最终互斥继续由 `/run/ark.lock` 裁决。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+|---|---|
+| running 记录创建失败 | 不启动子进程，HTTP 返回服务失败 |
+| `cmd.Start` 失败 | operation 完成为 fail，HTTP 返回 `500 operation_failed` |
+| HTTP request context 在 Start 后取消 | 子进程继续执行并持久化真实终态 |
+| 第二个手工请求到达 | 返回 `409 conflict`，不创建第二个活动进程 |
+| Ark 非零退出 | operation=fail，记录退出码，不回显 stderr |
+| stdout 为空、超限、损坏或字段不匹配 | operation=fail，不保存不可信 result JSON |
+| stderr 超限且命令原本成功 | operation=fail，避免静默丢失关键诊断 |
+| Hub graceful shutdown | 取消并等待 Ark，operation=interrupted，再关闭 Store |
+| Hub 异常退出 | Pdeathsig 通知 Ark；下次启动把遗留 running 恢复为 interrupted |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**：HTTP 返回 `202` 时，数据库已经存在 running operation，且 `cmd.Start` 已成功。
+- **Good**：浏览器刷新或断开后 Ark 继续运行，operation detail 最终可查询到 ok/fail/interrupted。
+- **Base**：外部 systemd backup 已持有 `/run/ark.lock`，Ark 非零退出，Hub 只记录 fail，不复制锁逻辑。
+- **Bad**：goroutine 内调用 `command.Run` 后立即返回 `202`；启动失败会被伪装成已受理。
+- **Bad**：把 request context 传给长任务；客户端网络抖动会杀死已经确认的恢复操作。
+- **Bad**：使用 `CombinedOutput` 捕获大型 JSON；stderr 可能混入 stdout，且输出没有独立上限。
+
+### 6. Tests Required
+
+```bash
+go test ./internal/hub -run 'TestOperation|TestActionAPI|TestConfirmation' -race -count=10
+make check
+CGO_ENABLED=0 go test ./internal/hub -count=1
+```
+
+测试必须断言：精确 argv、Start 失败的 HTTP 500 与 fail 持久化、并发冲突、request 取消不终止、
+非零退出码、stdout/stderr 上限、损坏/未知 JSON、graceful shutdown interrupted 和确认 token 单次消费。
+
+### 7. Wrong vs Correct
+
+```go
+// 错误：请求生命周期控制已受理的长任务，而且无法证明进程已经启动。
+command := exec.CommandContext(request.Context(), binary, arguments...)
+go command.Run()
+writeAccepted()
+
+// 正确：应用生命周期控制子进程，Start 成功才确认受理。
+command := exec.CommandContext(applicationContext, binary, arguments...)
+if err := command.Start(); err != nil {
+    finishAsFailed()
+    return writeOperationFailed()
+}
+writeAccepted()
+go waitAndPersist(command)
+```
+
+---
+
 ## Timeouts
 
 **每一条外部命令都必须有超时。** 探测类命令用统一常量：

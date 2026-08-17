@@ -30,6 +30,7 @@ type backupTestHarness struct {
 	targetStatuses  map[string]store.Status
 	targetErrors    map[string]error
 	records         []store.RunTarget
+	doctorReports   []store.DoctorReport
 	createdRun      store.Run
 	finishedRun     store.RunResult
 	manifest        backup.Manifest
@@ -151,6 +152,13 @@ func (h *backupTestHarness) dependencies() backupDependencies {
 			h.events = append(h.events, "target:record:"+target.Host+":"+target.TargetID)
 			h.records = append(h.records, target)
 			return nil
+		},
+		recordDoctor: func(_ context.Context, _ *store.Store, report store.DoctorReport) error {
+			h.doctorReports = append(h.doctorReports, report)
+			return nil
+		},
+		analyzeSchedule: func(_ context.Context, _ string, baseTime time.Time) (time.Time, error) {
+			return baseTime.Add(24 * time.Hour), nil
 		},
 		newRepo: func(*config.Repo) (*restic.Repo, error) {
 			h.events = append(h.events, "repo:new")
@@ -304,6 +312,10 @@ func TestRunBackup_成功按Host串行并统一Prune(t *testing.T) {
 	if len(harness.records) != 3 || len(harness.manifest.Hosts) != 2 {
 		t.Fatalf("records=%#v manifest=%#v", harness.records, harness.manifest)
 	}
+	if len(harness.doctorReports) != 3 || harness.doctorReports[0].Scope != store.DoctorScopeLocal ||
+		harness.doctorReports[1].Scope != store.DoctorScopeHost || harness.doctorReports[1].NextRunAt.IsZero() {
+		t.Fatalf("doctor reports=%#v", harness.doctorReports)
+	}
 	if !harness.createdRun.StartedAt.Equal(harness.manifest.StartedAt) ||
 		harness.createdRun.ID != harness.manifest.RunID {
 		t.Fatalf("run 与 manifest 不一致: run=%#v manifest=%#v", harness.createdRun, harness.manifest)
@@ -351,7 +363,7 @@ func TestRunBackup_Partial仍记录Manifest并继续后续Target(t *testing.T) {
 	}
 }
 
-func TestRunBackup_LocalDoctor失败不打开状态库或仓库(t *testing.T) {
+func TestRunBackup_LocalDoctor失败先持久化报告且不打开仓库(t *testing.T) {
 	harness := &backupTestHarness{
 		cfg:             testBackupConfig(),
 		localDoctorFail: true,
@@ -368,9 +380,44 @@ func TestRunBackup_LocalDoctor失败不打开状态库或仓库(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "失败项: local") {
 		t.Fatalf("错误 = %v", err)
 	}
-	want := []string{"lock:" + defaultBackupLockPath, "doctor:local", "unlock"}
+	want := []string{"lock:" + defaultBackupLockPath, "store:open", "doctor:local", "store:close", "unlock"}
 	if !reflect.DeepEqual(harness.events, want) {
 		t.Fatalf("调用 = %#v，期望 %#v", harness.events, want)
+	}
+	if len(harness.doctorReports) != 1 || harness.doctorReports[0].Scope != store.DoctorScopeLocal ||
+		harness.doctorReports[0].Status != store.StatusFail {
+		t.Fatalf("doctor 报告 = %#v", harness.doctorReports)
+	}
+}
+
+func TestRunBackup_调度解析失败仍持久化HostDoctor(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		executeErrors:  map[string]error{},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+	}
+	hosts, err := selectBackupHosts(harness.cfg, "web-01")
+	if err != nil {
+		t.Fatalf("选择 host 失败: %v", err)
+	}
+	dependencies := harness.dependencies()
+	dependencies.analyzeSchedule = func(context.Context, string, time.Time) (time.Time, error) {
+		return time.Time{}, errors.New("systemd-analyze 不可用")
+	}
+	_, err = runBackup(context.Background(), harness.cfg, hosts, backupCommandOptions{}, dependencies)
+	if err == nil || !strings.Contains(err.Error(), "调度解析失败") {
+		t.Fatalf("调度解析错误=%v", err)
+	}
+	if len(harness.doctorReports) != 2 || harness.doctorReports[1].Scope != store.DoctorScopeHost ||
+		harness.doctorReports[1].Host != "web-01" || !harness.doctorReports[1].NextRunAt.IsZero() {
+		t.Fatalf("调度失败后的 doctor 报告=%#v", harness.doctorReports)
+	}
+	for _, event := range harness.events {
+		if strings.HasPrefix(event, "execute:web-01:") {
+			t.Fatalf("调度失败后仍执行 target: %#v", harness.events)
+		}
 	}
 }
 

@@ -308,7 +308,7 @@ func TestBuildHubUnit_生成独立常驻Service(t *testing.T) {
 		"Restart=on-failure",
 		"RestartSec=5",
 		"WantedBy=multi-user.target",
-		`ExecStart="/usr/local/bin/ark-hub" serve --listen "127.0.0.1:8080" --state-db "/var/lib/ark/ark.db" --auth-file "/var/lib/ark-hub/auth.json" --secure-cookie`,
+		`ExecStart="/usr/local/bin/ark-hub" serve --listen "127.0.0.1:8080" --state-db "/var/lib/ark/ark.db" --auth-file "/var/lib/ark-hub/auth.json" --config "/etc/ark/ark.yaml" --ark-binary "/usr/local/bin/ark" --secure-cookie`,
 	} {
 		if !strings.Contains(unit.Content, want) {
 			t.Errorf("hub service 缺少 %q:\n%s", want, unit.Content)
@@ -335,6 +335,8 @@ func TestBuildHubUnit_拒绝非法路径与监听地址(t *testing.T) {
 		{name: "二进制相对路径", mutate: func(options *HubInstallOptions) { options.BinaryPath = "bin/ark-hub" }},
 		{name: "状态库相对路径", mutate: func(options *HubInstallOptions) { options.StateDBPath = "ark.db" }},
 		{name: "凭证文件相对路径", mutate: func(options *HubInstallOptions) { options.AuthFile = "auth.json" }},
+		{name: "清单相对路径", mutate: func(options *HubInstallOptions) { options.ConfigPath = "ark.yaml" }},
+		{name: "Ark二进制相对路径", mutate: func(options *HubInstallOptions) { options.ArkBinaryPath = "bin/ark" }},
 		{name: "监听地址包含换行", mutate: func(options *HubInstallOptions) { options.ListenAddress = "127.0.0.1:8080\nExecStart=/bin/false" }},
 	}
 	for _, test := range tests {

@@ -26,10 +26,12 @@ type restoreCommandOptions struct {
 	destinationHost string
 	snapshot        string
 	dryRun          bool
+	inspect         bool
 	force           bool
 	isolate         bool
 	skipDoctor      bool
 	asJSON          bool
+	expectedPreview string
 }
 
 type restoreDependencies struct {
@@ -41,6 +43,7 @@ type restoreDependencies struct {
 	loadManifest     func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error)
 	newRunner        func(*config.Host) (sshexec.Runner, error)
 	execute          func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error)
+	inspect          func(context.Context, restore.Plan, sshexec.Runner, restore.InspectOptions) (restore.Preview, error)
 	cleanup          func(context.Context, sshexec.Runner, string, string) (restore.CleanupResult, error)
 	backup           backupDependencies
 }
@@ -60,6 +63,7 @@ func defaultRestoreDependencies() restoreDependencies {
 		loadManifest:     backup.LoadManifestSelection,
 		newRunner:        backupRunnerForHost,
 		execute:          restore.Execute,
+		inspect:          restore.Inspect,
 		cleanup:          restore.CleanupIsolation,
 		backup:           defaultBackupDependencies(),
 	}
@@ -78,17 +82,36 @@ func newRestoreCmdWithDependencies(
 			if strings.TrimSpace(options.sourceHost) == "" {
 				return fmt.Errorf("--host 不能为空")
 			}
-			if options.dryRun && (options.force || options.skipDoctor) {
-				return fmt.Errorf("--dry-run 不能与 --force 或 --skip-doctor 同时使用")
+			if options.inspect && !options.dryRun {
+				return fmt.Errorf("--inspect 必须与 --dry-run 同时使用")
+			}
+			if options.dryRun && options.skipDoctor {
+				return fmt.Errorf("--dry-run 不能与 --skip-doctor 同时使用")
+			}
+			if options.dryRun && options.force && !options.inspect {
+				return fmt.Errorf("--dry-run 不能与 --force 单独使用，目标预检必须同时指定 --inspect")
 			}
 			if options.isolate && options.force {
 				return fmt.Errorf("--isolate 不能与 --force 同时使用")
+			}
+			if options.dryRun && strings.TrimSpace(options.expectedPreview) != "" {
+				return fmt.Errorf("--expected-preview-sha256 只能用于真实恢复")
 			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			options.configPath = *configPath
 			if options.dryRun {
+				if options.inspect {
+					preview, err := buildRestoreInspection(cmd.Context(), options, dependencies)
+					if err != nil {
+						return err
+					}
+					if options.asJSON {
+						return encodeRestoreJSON(cmd, preview)
+					}
+					return printRestorePreview(cmd, preview)
+				}
 				plan, err := buildRestoreDryRun(cmd.Context(), options, dependencies)
 				if err != nil {
 					return err
@@ -119,12 +142,90 @@ func newRestoreCmdWithDependencies(
 	cmd.Flags().StringVar(&options.destinationHost, "to", "", "当前清单中的恢复目标 host，默认与来源相同")
 	cmd.Flags().StringVar(&options.snapshot, "snapshot", backup.LatestManifestSelector, "manifest snapshot ID 或 latest")
 	cmd.Flags().BoolVar(&options.dryRun, "dry-run", false, "只读取 manifest 并输出恢复计划")
+	cmd.Flags().BoolVar(&options.inspect, "inspect", false, "只读检查恢复目标并输出冲突与预检摘要")
 	cmd.Flags().BoolVar(&options.force, "force", false, "在成功备份目标机后覆盖当前 Plan 的冲突资源")
 	cmd.Flags().BoolVar(&options.isolate, "isolate", false, "自动派生独立资源和空闲端口执行隔离恢复")
 	cmd.Flags().BoolVar(&options.skipDoctor, "skip-doctor", false, "应急跳过本地和恢复目标环境检查")
 	cmd.Flags().BoolVar(&options.asJSON, "json", false, "以纯 JSON 输出计划或最终结果")
+	cmd.Flags().StringVar(&options.expectedPreview, "expected-preview-sha256", "", "要求真实恢复匹配指定预检摘要")
 	cmd.AddCommand(newRestoreCleanupCmd(configPath, dependencies))
 	return cmd
+}
+
+func buildRestoreInspection(
+	ctx context.Context,
+	options restoreCommandOptions,
+	dependencies restoreDependencies,
+) (preview restore.Preview, runErr error) {
+	if dependencies.loadConfig == nil || dependencies.acquireLock == nil || dependencies.newRepo == nil ||
+		dependencies.loadManifest == nil || dependencies.newRunner == nil || dependencies.inspect == nil {
+		return preview, fmt.Errorf("生成恢复预检失败: 依赖不完整")
+	}
+	cfg, err := dependencies.loadConfig(options.configPath)
+	if err != nil {
+		return preview, err
+	}
+	source := findRestoreHost(cfg, options.sourceHost)
+	if source == nil {
+		return preview, fmt.Errorf("清单中不存在恢复来源 host %q", options.sourceHost)
+	}
+	destinationName := options.destinationHost
+	if strings.TrimSpace(destinationName) == "" {
+		destinationName = options.sourceHost
+	}
+	destination := findRestoreHost(cfg, destinationName)
+	if destination == nil {
+		return preview, fmt.Errorf("清单中不存在恢复目标 host %q", destinationName)
+	}
+
+	lock, err := dependencies.acquireLock(defaultBackupLockPath)
+	if err != nil {
+		return preview, err
+	}
+	defer func() {
+		if closeErr := lock.Close(); closeErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("释放 ark 全局锁失败: %w", closeErr))
+		}
+	}()
+
+	repo, err := dependencies.newRepo(&cfg.Repo)
+	if err != nil {
+		return preview, fmt.Errorf("打开 restic 仓库失败: %w", err)
+	}
+	manifest, snapshot, found, err := dependencies.loadManifest(ctx, repo, options.snapshot)
+	if err != nil {
+		return preview, err
+	}
+	if !found {
+		return preview, fmt.Errorf("restic 仓库中不存在 manifest 快照")
+	}
+	plan, err := restore.BuildPlan(cfg, manifest, snapshot.ID, options.sourceHost, destinationName)
+	if err != nil {
+		return preview, err
+	}
+	if options.isolate {
+		plan, err = restore.WithIsolation(plan)
+		if err != nil {
+			return preview, err
+		}
+	}
+	runner, err := dependencies.newRunner(destination)
+	if err != nil {
+		return preview, err
+	}
+	rawFileTargets := restoreRawFileTargets(*source, *destination, dependencies.backup.statePath)
+	if plan.Isolation != nil {
+		for targetID, targetPath := range rawFileTargets {
+			mapped, mapErr := restore.IsolationPath(plan, targetPath)
+			if mapErr != nil {
+				return preview, mapErr
+			}
+			rawFileTargets[targetID] = mapped
+		}
+	}
+	return dependencies.inspect(ctx, plan, runner, restore.InspectOptions{
+		Force: options.force, RawFileTargets: rawFileTargets,
+	})
 }
 
 func buildRestoreDryRun(
@@ -242,8 +343,9 @@ func runRestore(
 	}
 
 	executeOptions := restore.ExecuteOptions{
-		Force:          options.force,
-		RawFileTargets: restoreRawFileTargets(*source, *destination, dependencies.backup.statePath),
+		Force:                 options.force,
+		RawFileTargets:        restoreRawFileTargets(*source, *destination, dependencies.backup.statePath),
+		ExpectedPreviewSHA256: options.expectedPreview,
 	}
 	if plan.Isolation != nil {
 		for targetID, targetPath := range executeOptions.RawFileTargets {
@@ -473,6 +575,25 @@ func printRestoreResult(cmd *cobra.Command, result restore.Result) error {
 	}
 	_, err := io.WriteString(cmd.OutOrStdout(), output.String())
 	return err
+}
+
+func printRestorePreview(cmd *cobra.Command, preview restore.Preview) error {
+	if err := printRestorePlan(cmd, preview.Plan); err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "\n恢复预检摘要: %s\n", preview.Digest)
+	fmt.Fprintf(out, "  force: %t\n", preview.Force)
+	fmt.Fprintf(out, "  resume: %t\n", preview.Resume)
+	if len(preview.Conflicts) == 0 {
+		fmt.Fprintln(out, "  冲突: 无")
+		return nil
+	}
+	fmt.Fprintln(out, "  冲突:")
+	for _, conflict := range preview.Conflicts {
+		fmt.Fprintf(out, "    - %s: %s（force 授权: %t）\n", conflict.Resource, conflict.Detail, conflict.ForceAllowed)
+	}
+	return nil
 }
 
 func restoreIsolationAddress(port restore.IsolationPort) string {

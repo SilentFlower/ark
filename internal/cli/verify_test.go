@@ -61,6 +61,7 @@ func TestVerifyCommand_全Host失败后继续且JSON纯净(t *testing.T) {
 	web02Snapshot.ID = "manifest-web-02"
 	configPath := "/etc/ark/test.yaml"
 	var events []string
+	var doctorReports []store.DoctorReport
 	dependencies := verifyDependencies{
 		loadConfig: func(string) (*config.Config, error) {
 			events = append(events, "load")
@@ -133,6 +134,14 @@ func TestVerifyCommand_全Host失败后继续且JSON纯净(t *testing.T) {
 			t.Fatal("测试不应记录前置失败")
 			return verify.Result{}, nil
 		},
+		recordDoctor: func(_ context.Context, _ *store.Store, report store.DoctorReport) error {
+			doctorReports = append(doctorReports, report)
+			return nil
+		},
+		analyzeSchedule: func(_ context.Context, _ string, baseTime time.Time) (time.Time, error) {
+			return baseTime.Add(24 * time.Hour), nil
+		},
+		now:       func() time.Time { return time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC) },
 		statePath: "/var/lib/ark/ark.db",
 	}
 	cmd := newVerifyCmdWithDependencies(&configPath, dependencies)
@@ -162,6 +171,10 @@ func TestVerifyCommand_全Host失败后继续且JSON纯净(t *testing.T) {
 	}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events=%#v\nwant=%#v", events, wantEvents)
+	}
+	if len(doctorReports) != 3 || doctorReports[0].Scope != store.DoctorScopeLocal ||
+		doctorReports[1].Scope != store.DoctorScopeHost || doctorReports[1].NextRunAt.IsZero() {
+		t.Fatalf("doctor reports=%#v", doctorReports)
 	}
 	for _, secret := range []string{"secret-bucket", "restic-password", "source.invalid", "destination.invalid"} {
 		if strings.Contains(output.String(), secret) {

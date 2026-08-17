@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/silentflower/ark/internal/doctor"
 	"github.com/silentflower/ark/internal/restic"
 	"github.com/silentflower/ark/internal/restore"
+	"github.com/silentflower/ark/internal/schedule"
 	"github.com/silentflower/ark/internal/sshexec"
 	"github.com/silentflower/ark/internal/store"
 	"github.com/silentflower/ark/internal/verify"
@@ -30,19 +32,22 @@ type verifyCommandOptions struct {
 }
 
 type verifyDependencies struct {
-	loadConfig     func(string) (*config.Config, error)
-	acquireLock    func(string) (io.Closer, error)
-	runLocalDoctor runLocalFunc
-	runHostDoctor  runHostFunc
-	newRepo        func(*config.Repo) (*restic.Repo, error)
-	loadManifest   func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error)
-	loadLatest     func(context.Context, *restic.Repo, []string) (backup.LatestManifestSelections, bool, error)
-	newRunner      func(*config.Host) (sshexec.Runner, error)
-	openStore      func(context.Context, string) (*store.Store, error)
-	closeStore     func(*store.Store) error
-	execute        func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, *store.Store, verify.Options) (verify.Result, error)
-	recordFailure  func(context.Context, *store.Store, verify.Failure) (verify.Result, error)
-	statePath      string
+	loadConfig      func(string) (*config.Config, error)
+	acquireLock     func(string) (io.Closer, error)
+	runLocalDoctor  runLocalFunc
+	runHostDoctor   runHostFunc
+	newRepo         func(*config.Repo) (*restic.Repo, error)
+	loadManifest    func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error)
+	loadLatest      func(context.Context, *restic.Repo, []string) (backup.LatestManifestSelections, bool, error)
+	newRunner       func(*config.Host) (sshexec.Runner, error)
+	openStore       func(context.Context, string) (*store.Store, error)
+	closeStore      func(*store.Store) error
+	execute         func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, *store.Store, verify.Options) (verify.Result, error)
+	recordFailure   func(context.Context, *store.Store, verify.Failure) (verify.Result, error)
+	recordDoctor    recordDoctorReportFunc
+	analyzeSchedule analyzeScheduleFunc
+	now             func() time.Time
+	statePath       string
 }
 
 type verifyCommandSummary struct {
@@ -85,7 +90,15 @@ func defaultVerifyDependencies() verifyDependencies {
 		},
 		execute:       verify.Execute,
 		recordFailure: verify.RecordFailure,
-		statePath:     store.DefaultPath,
+		recordDoctor: func(ctx context.Context, state *store.Store, report store.DoctorReport) error {
+			return state.RecordDoctorReport(ctx, report)
+		},
+		analyzeSchedule: func(ctx context.Context, expression string, baseTime time.Time) (time.Time, error) {
+			window, err := schedule.Analyze(ctx, expression, baseTime)
+			return window.NextRunAt, err
+		},
+		now:       time.Now,
+		statePath: store.DefaultPath,
 	}
 }
 
@@ -179,7 +192,14 @@ func runVerify(
 		return summary, errors.Join(causes...)
 	}
 
-	localDoctorErr := requireDoctor("本地", dependencies.runLocalDoctor(ctx, cfg))
+	localReport := dependencies.runLocalDoctor(ctx, cfg)
+	localCreatedAt := dependencyNow(dependencies.now)
+	localDoctorErr := errors.Join(
+		requireDoctor("本地", localReport),
+		persistDoctorReport(
+			ctx, state, store.DoctorScopeLocal, "", localReport, localCreatedAt, time.Time{}, dependencies.recordDoctor,
+		),
+	)
 	for _, selected := range selection.hosts {
 		host := selected.host
 		manifest := selected.manifest
@@ -209,7 +229,20 @@ func runVerify(
 			causes = append(causes, planErr, recordErr)
 			continue
 		}
-		if doctorErr := requireDoctor("验证 host", dependencies.runHostDoctor(ctx, cfg, host)); doctorErr != nil {
+		hostReport := dependencies.runHostDoctor(ctx, cfg, host)
+		hostCreatedAt := dependencyNow(dependencies.now)
+		nextRunAt, scheduleErr := analyzeHostSchedule(
+			ctx, cfg, host, hostCreatedAt, dependencies.analyzeSchedule,
+		)
+		doctorErr := errors.Join(
+			requireDoctor("验证 host", hostReport),
+			scheduleErr,
+			persistDoctorReport(
+				ctx, state, store.DoctorScopeHost, host.Host, hostReport,
+				hostCreatedAt, nextRunAt, dependencies.recordDoctor,
+			),
+		)
+		if doctorErr != nil {
 			result, recordErr := dependencies.recordFailure(ctx, state, verify.Failure{
 				Host: host.Host, RunID: manifest.RunID, ManifestSnapshotID: snapshot.ID,
 				Targets: targets, Error: "host 环境检查未通过",
@@ -252,7 +285,17 @@ func validateVerifyDependencies(dependencies verifyDependencies) error {
 		dependencies.execute == nil || dependencies.recordFailure == nil || strings.TrimSpace(dependencies.statePath) == "" {
 		return fmt.Errorf("执行 verify 失败: 内部依赖不完整")
 	}
+	if (dependencies.recordDoctor == nil) != (dependencies.analyzeSchedule == nil) {
+		return fmt.Errorf("执行 verify 失败: doctor 持久化依赖不完整")
+	}
 	return nil
+}
+
+func dependencyNow(now func() time.Time) time.Time {
+	if now == nil {
+		return time.Now().UTC()
+	}
+	return now().UTC()
 }
 
 func resolveVerifySelections(

@@ -27,7 +27,7 @@ const (
 	// DefaultPath 是 ark 状态库的默认路径。
 	DefaultPath = "/var/lib/ark/ark.db"
 	// currentSchemaVersion 是当前程序支持的 schema 版本。
-	currentSchemaVersion = 1
+	currentSchemaVersion = 2
 	// busyTimeoutMilliseconds 是 SQLite 等待短暂写锁竞争的最长时间。
 	busyTimeoutMilliseconds = 5000
 	// busyRetryIntervalMilliseconds 把长 busy handler 拆成短等待，确保 context
@@ -40,7 +40,10 @@ const (
 //go:embed schema.sql
 var schemaV1 string
 
-var migrations = []string{schemaV1}
+//go:embed schema_v2.sql
+var schemaV2 string
+
+var migrations = []string{schemaV1, schemaV2}
 
 // Status 是状态库中记录的运行结果状态。
 type Status string

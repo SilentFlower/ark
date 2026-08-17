@@ -49,17 +49,17 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 
 ## 当前状态
 
-**早期开发中。** 目前可用的是清单模型和两个校验命令，备份和恢复尚未实现。
-进度见 [路线图](docs/roadmap.md)。
+**P4 后端阶段。** 备份、恢复、恢复演练和 `ark-hub` 鉴权已实现；P4-2 HTTP API 正在验收，
+Vue 控制台、内嵌前端产物和外部告警仍按 P4-3 至 P4-5 推进。进度见 [路线图](docs/roadmap.md)。
 
 | 命令 | 状态 | 说明 |
 |---|---|---|
 | `ark validate` | ✅ | 校验多机清单的语法语义，不碰 docker 和网络 |
 | `ark doctor` | ✅ | 检查 hub、指定 host 或清单中的全部运行环境 |
-| `ark backup` | 🚧 P2 | 执行备份 |
-| `ark restore` | 🚧 P3 | 恢复 / 跨机重建 |
-| `ark verify` | 🚧 P3 | 自动恢复演练 |
-| `ark-hub` | 🚧 P4 | Web 界面与 API |
+| `ark backup` | ✅ | 执行多 host 备份并持久化运行、target 与 doctor 结果 |
+| `ark restore` | ✅ | 恢复 / 跨机重建 / 隔离恢复 / 只读目标预检 |
+| `ark verify` | ✅ | 自动隔离恢复演练 |
+| `ark-hub` | 🚧 P4 | P4-1 鉴权已完成；P4-2 HTTP API 验收中，Web 界面待 P4-3/P4-4 |
 
 > ⚠️ 清单格式已是 `version: 2`——**一份清单描述全部机器**，只放在 hub 上。
 > P0 时期按单机写的 v1 清单需要迁移，`ark validate` 会直接给出迁移提示。

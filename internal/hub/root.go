@@ -17,6 +17,8 @@ import (
 const (
 	defaultListenAddress = "127.0.0.1:8080"
 	defaultAuthFile      = "/var/lib/ark-hub/auth.json"
+	defaultConfigPath    = "/etc/ark/ark.yaml"
+	defaultArkBinaryPath = "/usr/local/bin/ark"
 )
 
 type commandDependencies struct {

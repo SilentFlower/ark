@@ -364,6 +364,109 @@ func TestExecute_默认冲突在写入前失败(t *testing.T) {
 	}
 }
 
+func TestPreview_冲突排序稳定且资源变化改变Digest(t *testing.T) {
+	plan := Plan{
+		ManifestSnapshotID: "manifest-1", RunID: "run-1", SourceHost: "source-01", DestinationHost: "destination-01",
+		Project: Project{Name: "app", ComposeFile: "/srv/app/compose.yaml", ProjectName: "app-prod"},
+		Steps:   applicationTestSteps(),
+	}
+	left, err := newPreview(plan, true, preflight{conflicts: []Conflict{
+		{Resource: "volume-b", Detail: "已存在", ForceAllowed: true},
+		{Resource: "container-a", Detail: "已存在", ForceAllowed: true},
+	}})
+	if err != nil {
+		t.Fatalf("生成左侧 preview 失败: %v", err)
+	}
+	right, err := newPreview(plan, true, preflight{conflicts: []Conflict{
+		{Resource: "container-a", Detail: "已存在", ForceAllowed: true},
+		{Resource: "volume-b", Detail: "已存在", ForceAllowed: true},
+	}})
+	if err != nil {
+		t.Fatalf("生成右侧 preview 失败: %v", err)
+	}
+	changed, err := newPreview(plan, true, preflight{conflicts: []Conflict{
+		{Resource: "container-c", Detail: "已存在", ForceAllowed: true},
+		{Resource: "volume-b", Detail: "已存在", ForceAllowed: true},
+	}})
+	if err != nil {
+		t.Fatalf("生成变化 preview 失败: %v", err)
+	}
+	if left.Digest != right.Digest || left.Digest == changed.Digest || !left.Destructive {
+		t.Fatalf("preview digest 不符合稳定性要求: left=%#v right=%#v changed=%#v", left, right, changed)
+	}
+}
+
+func TestExecute_ExpectedPreview不匹配时零备份零写入(t *testing.T) {
+	plan := Plan{
+		ManifestSnapshotID: "manifest-1", RunID: "run-1", SourceHost: "source-01", DestinationHost: "destination-01",
+		Project: Project{Name: "app", ComposeFile: "/srv/app/compose.yaml", ProjectName: "app-prod"},
+		Steps:   applicationTestSteps(),
+	}
+	runner := &executeFakeRunner{
+		t: t, pathExists: map[string]bool{},
+		projectOutput: `{"ID":"cid-existing","Service":"api","State":"running"}`,
+	}
+	backupCalled := false
+	result, err := execute(context.Background(), plan, runner, ExecuteOptions{
+		Force: true, ExpectedPreviewSHA256: strings.Repeat("b", 64),
+		SafetyBackup: func(context.Context) error { backupCalled = true; return nil },
+	}, executeDependencies{
+		dump: func(context.Context, string, string) (io.ReadCloser, error) {
+			return nil, errors.New("不应读取备份数据")
+		},
+		pollInterval: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "已确认预检不一致") ||
+		result.Status != store.StatusFail || backupCalled {
+		t.Fatalf("result=%#v err=%v backupCalled=%t", result, err, backupCalled)
+	}
+	assertNoRestoreWrites(t, runner.calls)
+}
+
+func TestExecute_SafetyBackup后资源变化拒绝写入(t *testing.T) {
+	plan := Plan{
+		ManifestSnapshotID: "manifest-1", RunID: "run-1", SourceHost: "source-01", DestinationHost: "destination-01",
+		Project: Project{Name: "app", ComposeFile: "/srv/app/compose.yaml", ProjectName: "app-prod"},
+		Steps:   applicationTestSteps(),
+	}
+	runner := &executeFakeRunner{
+		t: t, pathExists: map[string]bool{},
+		projectOutput: `{"ID":"cid-before","Service":"api","State":"running"}`,
+	}
+	preview, err := Inspect(context.Background(), plan, runner, InspectOptions{Force: true})
+	if err != nil {
+		t.Fatalf("Inspect 失败: %v", err)
+	}
+	runner.calls = nil
+	result, err := execute(context.Background(), plan, runner, ExecuteOptions{
+		Force: true, ExpectedPreviewSHA256: preview.Digest,
+		SafetyBackup: func(context.Context) error {
+			runner.projectOutput = `{"ID":"cid-after","Service":"api","State":"running"}`
+			return nil
+		},
+	}, executeDependencies{
+		dump: func(context.Context, string, string) (io.ReadCloser, error) {
+			return nil, errors.New("不应读取备份数据")
+		},
+		pollInterval: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "safety backup 后恢复目标已变化") ||
+		result.Status != store.StatusFail {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	assertNoRestoreWrites(t, runner.calls)
+}
+
+func assertNoRestoreWrites(t *testing.T, calls []executeCall) {
+	t.Helper()
+	for _, call := range calls {
+		if call.kind == "feed" || (len(call.argv) > 1 && call.argv[0] == "docker" && call.argv[1] == "stop") ||
+			(len(call.argv) > 0 && (call.argv[0] == "mkdir" || call.argv[0] == "mv")) {
+			t.Fatalf("预检失败后发生目标写入: %#v", call)
+		}
+	}
+}
+
 func TestExecute_Force先备份和展示Plan再停容器(t *testing.T) {
 	plan := Plan{
 		ManifestSnapshotID: "manifest-1", RunID: "run-1", SourceHost: "source-01", DestinationHost: "destination-01",

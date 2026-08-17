@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/schedule"
 )
 
 const (
@@ -62,15 +66,40 @@ const shellPageTemplate = `<!doctype html>
 </html>`
 
 type application struct {
-	authFile      string
-	secureCookie  bool
-	sessions      *sessionManager
-	limiter       *loginLimiter
-	random        io.Reader
-	now           func() time.Time
-	dummyHash     string
-	loginTemplate *template.Template
-	shellTemplate *template.Template
+	authFile        string
+	secureCookie    bool
+	sessions        *sessionManager
+	limiter         *loginLimiter
+	random          io.Reader
+	now             func() time.Time
+	dummyHash       string
+	loginTemplate   *template.Template
+	shellTemplate   *template.Template
+	state           apiStore
+	configPath      string
+	arkBinaryPath   string
+	loadConfig      func(string) (*config.Config, error)
+	analyzeSchedule func(context.Context, string, time.Time) (schedule.Window, error)
+	operations      *operationManager
+}
+
+func (application *application) configureRuntime(
+	state stateStore,
+	configPath string,
+	arkBinaryPath string,
+	loadConfig func(string) (*config.Config, error),
+	operations *operationManager,
+) {
+	apiState, ok := state.(apiStore)
+	if !ok {
+		return
+	}
+	application.state = apiState
+	application.configPath = configPath
+	application.arkBinaryPath = arkBinaryPath
+	application.loadConfig = loadConfig
+	application.analyzeSchedule = schedule.Analyze
+	application.operations = operations
 }
 
 type loginPageData struct {
@@ -121,6 +150,15 @@ func (application *application) handler() http.Handler {
 	mux.HandleFunc("GET /{$}", application.handleShell)
 	mux.HandleFunc("POST /logout", application.handleLogout)
 	mux.HandleFunc("GET /api/session", application.handleSessionAPI)
+	mux.HandleFunc("GET /api/hosts", application.handleHostsAPI)
+	mux.HandleFunc("GET /api/hosts/{host}", application.handleHostAPI)
+	mux.HandleFunc("GET /api/runs", application.handleRunsAPI)
+	mux.HandleFunc("GET /api/alerts", application.handleAlertsAPI)
+	mux.HandleFunc("GET /api/operations", application.handleOperationsAPI)
+	mux.HandleFunc("GET /api/operations/{id}", application.handleOperationAPI)
+	mux.HandleFunc("POST /api/hosts/{host}/backup", application.handleBackupAction)
+	mux.HandleFunc("POST /api/hosts/{host}/verify", application.handleVerifyAction)
+	mux.HandleFunc("POST /api/hosts/{host}/restore", application.handleRestoreAction)
 	mux.HandleFunc("/", application.handleProtectedNotFound)
 	return securityHeaders(mux)
 }
@@ -254,7 +292,8 @@ func (application *application) handleSessionAPI(writer http.ResponseWriter, req
 	response, err := json.Marshal(struct {
 		Authenticated bool   `json:"authenticated"`
 		Username      string `json:"username"`
-	}{Authenticated: true, Username: value.username})
+		CSRFToken     string `json:"csrf_token"`
+	}{Authenticated: true, Username: value.username, CSRFToken: value.csrfToken})
 	if err != nil {
 		application.serviceUnavailable(writer, request)
 		return

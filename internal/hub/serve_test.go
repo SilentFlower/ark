@@ -181,6 +181,8 @@ func TestServeCommand_传递全部运行参数(t *testing.T) {
 		"--listen", "127.0.0.1:9090",
 		"--state-db", "/srv/ark.db",
 		"--auth-file", "/srv/auth.json",
+		"--config", "/srv/ark.yaml",
+		"--ark-binary", "/srv/bin/ark",
 		"--secure-cookie",
 	})
 	if err := command.Execute(); err != nil {
@@ -190,6 +192,8 @@ func TestServeCommand_传递全部运行参数(t *testing.T) {
 		ListenAddress: "127.0.0.1:9090",
 		StateDBPath:   "/srv/ark.db",
 		AuthFile:      "/srv/auth.json",
+		ConfigPath:    "/srv/ark.yaml",
+		ArkBinaryPath: "/srv/bin/ark",
 		SecureCookie:  true,
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -211,6 +215,8 @@ func TestInstallCommand_只传递HubService参数(t *testing.T) {
 		"--listen", "127.0.0.1:9090",
 		"--state-db", "/srv/ark.db",
 		"--auth-file", "/srv/auth.json",
+		"--config", "/srv/ark.yaml",
+		"--ark-binary", "/srv/bin/ark",
 		"--secure-cookie",
 	})
 	if err := command.Execute(); err != nil {
@@ -222,6 +228,8 @@ func TestInstallCommand_只传递HubService参数(t *testing.T) {
 		ListenAddress: "127.0.0.1:9090",
 		StateDBPath:   "/srv/ark.db",
 		AuthFile:      "/srv/auth.json",
+		ConfigPath:    "/srv/ark.yaml",
+		ArkBinaryPath: "/srv/bin/ark",
 		SecureCookie:  true,
 	}
 	if !reflect.DeepEqual(got, want) {

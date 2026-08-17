@@ -36,8 +36,8 @@ ark 有两条必须隔离的数据库路径：
 
 ### 2. Signatures
 
-当前 schema 版本是 `1`，包含 `runs`、`run_targets`、`doctor_reports`、
-`verifications` 四张表。公开入口必须保持为：
+当前 schema 版本是 `2`，包含 `runs`、`run_targets`、`doctor_reports`、
+`verifications`、`manual_operations` 五张表。公开入口必须保持为：
 
 ```go
 const DefaultPath = "/var/lib/ark/ark.db"
@@ -46,6 +46,8 @@ func Open(ctx context.Context, path string) (*Store, error)
 func (s *Store) Close() error
 func (s *Store) CreateRun(ctx context.Context, run Run) error
 func (s *Store) GetRun(ctx context.Context, id string) (Run, error)
+func (s *Store) ListRuns(ctx context.Context, options RunListOptions) ([]Run, bool, error)
+func (s *Store) ListHostRuns(ctx context.Context, host string, limit int) ([]HostRun, error)
 func (s *Store) FinishRun(ctx context.Context, id string, result RunResult) error
 func (s *Store) RecordRunTarget(ctx context.Context, target RunTarget) error
 func (s *Store) LastSuccessfulTargetBytes(
@@ -54,7 +56,25 @@ func (s *Store) LastSuccessfulTargetBytes(
     targetID string,
 ) (bytes int64, found bool, err error)
 func (s *Store) RecordDoctorReport(ctx context.Context, report DoctorReport) error
+func (s *Store) LatestDoctorReport(
+    ctx context.Context,
+    scope DoctorScope,
+    host string,
+) (DoctorReport, bool, error)
 func (s *Store) RecordVerification(ctx context.Context, verification Verification) error
+func (s *Store) ListVerifications(ctx context.Context, host string, limit int) ([]Verification, error)
+func (s *Store) CreateManualOperation(ctx context.Context, operation ManualOperation) error
+func (s *Store) FinishManualOperation(
+    ctx context.Context,
+    id string,
+    result ManualOperationResult,
+) error
+func (s *Store) InterruptRunningOperations(ctx context.Context, finishedAt time.Time) (int64, error)
+func (s *Store) GetManualOperation(ctx context.Context, id string) (ManualOperation, error)
+func (s *Store) ListManualOperations(
+    ctx context.Context,
+    options OperationListOptions,
+) ([]ManualOperation, bool, error)
 func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
 ```
 
@@ -79,6 +99,15 @@ func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
   不要用分号拆分迁移 SQL，交给 SQLite 按完整脚本执行。
 - 时间统一以 UTC Unix 毫秒持久化，耗时统一为非负毫秒。状态值固定为
   `running`、`ok`、`warn`、`fail`；schema CHECK 与 Go 校验必须一致。
+- `manual_operations` 使用独立 `OperationStatus`：`running`、`ok`、`fail`、`interrupted`。
+  `CreateManualOperation` 只创建 running；`FinishManualOperation` 只允许一次终态转换。
+  `request_json` / `result_json` 必须是调用方已经白名单化和脱敏的合法 JSON，不保存 token、Cookie、环境或 stderr。
+- Hub 启动前调用 `InterruptRunningOperations`，用一条 UPDATE 原子完成全部遗留 running 记录。
+  当系统时钟早于 `started_at` 时，`finished_at` 必须钳制到开始时间，`duration_ms` 必须钳制为 0。
+- `ListRuns` 与 `ListManualOperations` 使用 `(started_at, id)` 倒序 keyset pagination；limit 默认 50、
+  最大 100。cursor 编解码属于 Hub，Store 只接受结构化 BeforeAt/BeforeID。
+- `LatestDoctorReport` 返回最新报告正文；若最新报告没有 `next_run_at`，回退到同 scope/host 最近一次
+  非 NULL 值作为最后已知时间。回退值只供展示，不得让调用方误认为本轮 schedule 分析成功。
 - `runs` 表示一次整体运行；host 维度放在 `run_targets`，唯一键是
   `(run_id, host, target_id)`，不能为每台 host 伪造一条 run。
 - 调用方写入 `error`、`report_json`、`detail_json` 前必须完成脱敏；
@@ -101,7 +130,12 @@ func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
 | 数据库 schema 版本高于程序版本 | 拒绝启动，并同时报告两个版本号 |
 | 多进程并发首次打开 | 迁移串行化，等待者在锁内重读版本，不重复建表 |
 | 迁移中任一 SQL 失败 | 回滚全部本次变更，`user_version` 不前移 |
+| v1 -> v2 迁移失败 | 保留全部 v1 表和数据，`user_version=1`，Hub 拒绝启动 |
 | 状态、必填字段、时间、耗时或 JSON 非法 | API 在写入前返回字段级错误；DB CHECK 继续兜底 |
+| 重复完成或完成不存在的 manual operation | UPDATE 影响行数不是 1，返回明确错误 |
+| 启动恢复时系统时钟回拨 | operation 仍变为 interrupted，完成时间不早于开始时间，耗时为 0 |
+| 最新 doctor 缺少 next run | 返回最新报告，并回退同 identity 的最后已知非 NULL 时间 |
+| keyset cursor 只提供时间或 ID 一侧 | Store 拒绝查询，不猜测分页边界 |
 | target 没有成功历史 | 返回 `bytes=0, found=false, err=nil` |
 | 写锁竞争未超过 5 秒 | 按短间隔重试，不立即把瞬时锁竞争当成失败 |
 | 写锁竞争超过 5 秒 | 返回保留 SQLite 错误链的失败 |
@@ -122,6 +156,10 @@ func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
   且不依赖 `-wal` / `-shm`。
 - **Base**：没有历史 target 记录时，调用方通过 `found=false` 展示“暂无基线”，
   而不是把它当作数据库错误。
+- **Good**：从真实 v1 数据库迁移到 v2 后，既有 run/doctor/verification 数据保持可查，
+  新建 manual operation 可从 running 原子完成为终态。
+- **Base**：最新 doctor 写入因 schedule 失败而没有 next run，查询仍展示此前最后已知时间，
+  但 API 健康投影把 schedule 状态标为 unknown。
 - **Bad**：向业务层暴露 `*sql.DB`、引入 ORM、把连接池限制为单连接、
   运行中只复制 `ark.db`、把 WAL/SHM 拼成恢复材料，或因为已有 SQLite 就用 Go 驱动
   直连被备份的 PostgreSQL。
@@ -139,10 +177,13 @@ CGO_ENABLED=0 go build -o bin/ark-nocgo ./cmd/ark
 go mod verify
 ```
 
-测试必须覆盖目录/文件权限、四张表与索引、每条物理连接的 PRAGMA、重复打开、
+测试必须覆盖目录/文件权限、五张表与索引、每条物理连接的 PRAGMA、重复打开、
 高版本拒绝、迁移回滚、并发首次迁移、CRUD 与历史查询、外键及级联、非法输入、
 WAL 写期间读取、锁等待中的 context 取消、操作后连接配置恢复，以及 Online Backup 的
 并发 writer、一致性/外键校验、0700/0600 权限、取消/失败清理、独立单文件恢复。
+
+schema v2 还必须覆盖真实 v1 数据保留、manual operation 生命周期和分页、重复完成、
+遗留 running 恢复、时钟回拨、doctor 最后已知 next run 回退，以及无 CGO 下 Store/Hub 查询。
 
 ### 7. Wrong vs Correct
 

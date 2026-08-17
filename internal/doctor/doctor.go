@@ -21,6 +21,7 @@ import (
 
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/envfile"
+	"github.com/silentflower/ark/internal/schedule"
 	"golang.org/x/sys/unix"
 )
 
@@ -205,20 +206,12 @@ func checkBinary(ctx context.Context, r *Report, name string, argv ...string) bo
 
 // checkOnCalendar 用 systemd 自己来校验 OnCalendar 表达式。
 func checkOnCalendar(ctx context.Context, r *Report, name, expr string) {
-	out, err := runCommand(ctx, "systemd-analyze", "calendar", expr)
+	window, err := schedule.Analyze(ctx, expr, time.Now().UTC())
 	if err != nil {
 		r.add(name, StatusFail, "%q 不是合法的 OnCalendar 表达式", expr)
 		return
 	}
-	// systemd 的下一次触发时间比简单复述表达式更有排障价值。
-	detail := expr
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "Next elapse:") {
-			detail = fmt.Sprintf("%s（%s）", expr, strings.TrimSpace(line))
-			break
-		}
-	}
-	r.add(name, StatusOK, "%s", detail)
+	r.add(name, StatusOK, "%s（下次触发: %s）", expr, window.NextRunAt.Format(time.RFC3339))
 }
 
 type pathKind uint8

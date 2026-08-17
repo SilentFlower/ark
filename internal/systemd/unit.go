@@ -74,6 +74,10 @@ type HubInstallOptions struct {
 	StateDBPath string
 	// AuthFile 是 ark-hub 管理员凭证文件绝对路径。
 	AuthFile string
+	// ConfigPath 是 ark-hub 读取的 ark v2 清单绝对路径。
+	ConfigPath string
+	// ArkBinaryPath 是 ark-hub 启动手工任务时使用的 ark 绝对路径。
+	ArkBinaryPath string
 	// SecureCookie 控制是否向 ark-hub serve 传递 --secure-cookie。
 	SecureCookie bool
 }
@@ -159,6 +163,12 @@ func BuildUnits(cfg *config.Config, binaryPath, configPath string) ([]Unit, erro
 // @return Unit 名为 ark-hub.service 的完整 unit。
 // @return error 路径或监听参数非法时的错误。
 func BuildHubUnit(options HubInstallOptions) (Unit, error) {
+	if options.ConfigPath == "" {
+		options.ConfigPath = "/etc/ark/ark.yaml"
+	}
+	if options.ArkBinaryPath == "" {
+		options.ArkBinaryPath = "/usr/local/bin/ark"
+	}
 	if err := validateUnitPath("binary path", options.BinaryPath); err != nil {
 		return Unit{}, err
 	}
@@ -166,6 +176,12 @@ func BuildHubUnit(options HubInstallOptions) (Unit, error) {
 		return Unit{}, err
 	}
 	if err := validateUnitPath("auth file", options.AuthFile); err != nil {
+		return Unit{}, err
+	}
+	if err := validateUnitPath("config path", options.ConfigPath); err != nil {
+		return Unit{}, err
+	}
+	if err := validateUnitPath("ark binary path", options.ArkBinaryPath); err != nil {
 		return Unit{}, err
 	}
 	if strings.TrimSpace(options.ListenAddress) == "" || strings.ContainsAny(options.ListenAddress, "\n\r\x00") {
@@ -177,6 +193,8 @@ func BuildHubUnit(options HubInstallOptions) (Unit, error) {
 		"--listen", quoteExecArgument(options.ListenAddress),
 		"--state-db", quoteExecArgument(options.StateDBPath),
 		"--auth-file", quoteExecArgument(options.AuthFile),
+		"--config", quoteExecArgument(options.ConfigPath),
+		"--ark-binary", quoteExecArgument(options.ArkBinaryPath),
 	}, " ")
 	if options.SecureCookie {
 		execStart += " --secure-cookie"

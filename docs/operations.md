@@ -34,6 +34,24 @@ ark-hub admin init --auth-file /var/lib/ark-hub/auth.json
 密码只从终端无回显读取，不通过命令行参数或环境变量传递。初始化后再运行
 `ark-hub install` 并由管理员显式执行 daemon-reload、enable 和 start。
 
+安装和直接启动都应显式核对清单与 Ark 二进制路径：
+
+```bash
+ark-hub install \
+  --listen 127.0.0.1:8080 \
+  --state-db /var/lib/ark/ark.db \
+  --auth-file /var/lib/ark-hub/auth.json \
+  --config /etc/ark/ark.yaml \
+  --ark-binary /usr/local/bin/ark
+```
+
+生成的 `ark-hub.service` 会携带相同参数。清单或 Ark 二进制不是绝对路径、清单严格校验失败、
+二进制不是可执行普通文件时，Hub 必须在监听前失败；不要依赖 service 的工作目录或 PATH。
+
+P4-2 会把状态库迁移到 schema v2，并新增 `manual_operations`。Hub 正常停止时会取消当前手工
+Ark 子进程并写入 `interrupted`；若进程被强制终止，下次启动也会在监听前把遗留 running 记录
+原子改为 interrupted。该状态表示操作未证明完成，恢复类操作必须重新预检，不能直接重放旧确认。
+
 ## 2. 离线恢复材料
 
 至少在 hub 之外保存两份恢复材料，并定期确认仍能读取：

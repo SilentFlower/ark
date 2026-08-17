@@ -39,6 +39,42 @@ type ExecuteOptions struct {
 	SafetyBackup func(context.Context) error
 	// OnPlanReady 在全部预检与可选 safety backup 成功后、首次目标写入前调用。
 	OnPlanReady func(Plan) error
+	// ExpectedPreviewSHA256 要求执行时目标状态与先前预检摘要完全一致。
+	ExpectedPreviewSHA256 string
+}
+
+// InspectOptions 控制只读恢复预检的模式和原始文件目标映射。
+type InspectOptions struct {
+	// Force 表示预检按覆盖模式计算摘要，但不会执行 safety backup 或任何写操作。
+	Force bool
+	// RawFileTargets 把源端以原始单文件保存的 files target ID 映射到目标绝对路径。
+	RawFileTargets map[string]string
+}
+
+// Conflict 是恢复目标上发现的一项既有资源冲突。
+type Conflict struct {
+	// Resource 是冲突资源的稳定名称或路径。
+	Resource string `json:"resource"`
+	// Detail 是不含命令输出和业务数据的冲突摘要。
+	Detail string `json:"detail"`
+	// ForceAllowed 表示 force 模式是否允许在 safety backup 后处理该资源。
+	ForceAllowed bool `json:"force_allowed"`
+}
+
+// Preview 是一次只读恢复预检的稳定结果。
+type Preview struct {
+	// Plan 是绑定精确 manifest snapshot 的恢复计划。
+	Plan Plan `json:"plan"`
+	// Force 表示摘要是否按覆盖模式生成。
+	Force bool `json:"force"`
+	// Resume 表示目标机是否存在同一恢复计划的可恢复状态。
+	Resume bool `json:"resume"`
+	// Destructive 表示执行该计划会写入非隔离目标资源。
+	Destructive bool `json:"destructive"`
+	// Conflicts 是按资源和详情稳定排序的目标冲突。
+	Conflicts []Conflict `json:"conflicts"`
+	// Digest 是 Plan、模式、恢复状态和冲突列表的 SHA-256 规范摘要。
+	Digest string `json:"digest"`
 }
 
 // StepResult 是一个恢复步骤的脱敏执行结果。
@@ -104,15 +140,9 @@ type executeDependencies struct {
 	pollInterval time.Duration
 }
 
-type conflict struct {
-	resource   string
-	detail     string
-	authorized bool
-}
-
 type preflight struct {
 	resume            bool
-	conflicts         []conflict
+	conflicts         []Conflict
 	projectContainers []composeState
 }
 
@@ -139,6 +169,36 @@ type composeVolume struct {
 	Name string `json:"name"`
 }
 
+// Inspect 只读检查恢复目标的 marker、Compose 资源、volume 和文件冲突。
+// @param ctx 控制目标机探测命令的取消与超时。
+// @param plan 已由 BuildPlan 生成并绑定精确 manifest snapshot 的恢复计划。
+// @param runner destination 的本地或 SSH Runner。
+// @param options 预检模式和原始文件目标映射。
+// @return Preview 稳定排序且带摘要的预检结果。
+// @return error 参数、计划校验或目标探测失败时的错误。
+func Inspect(
+	ctx context.Context,
+	plan Plan,
+	runner sshexec.Runner,
+	options InspectOptions,
+) (Preview, error) {
+	if ctx == nil {
+		return Preview{}, fmt.Errorf("恢复预检失败: context 不能为空")
+	}
+	if runner == nil {
+		return Preview{}, fmt.Errorf("恢复预检失败: runner 不能为空")
+	}
+	if err := validateInspectionPlan(plan, options.RawFileTargets, options.Force); err != nil {
+		return Preview{}, err
+	}
+	executionID := executionIdentity(plan, options.RawFileTargets)
+	inspection, err := inspectDestination(ctx, plan, executionID, runner)
+	if err != nil {
+		return Preview{}, err
+	}
+	return newPreview(plan, options.Force, inspection)
+}
+
 func execute(
 	ctx context.Context,
 	plan Plan,
@@ -153,20 +213,7 @@ func execute(
 	if runner == nil || dependencies.dump == nil || dependencies.pollInterval <= 0 {
 		return failResult(result, fmt.Errorf("执行恢复失败: 内部依赖不完整"))
 	}
-	if strings.TrimSpace(plan.ManifestSnapshotID) == "" || strings.TrimSpace(plan.SourceHost) == "" ||
-		strings.TrimSpace(plan.DestinationHost) == "" || len(plan.Steps) == 0 {
-		return failResult(result, fmt.Errorf("执行恢复失败: Plan 不完整"))
-	}
-	if strings.TrimSpace(plan.Project.ProjectName) == "" {
-		return failResult(result, fmt.Errorf("执行恢复失败: project_name 不能为空，真实恢复不能猜测 Compose project 标签"))
-	}
-	if plan.Isolation != nil && options.Force {
-		return failResult(result, fmt.Errorf("执行恢复失败: isolation Plan 不允许 force"))
-	}
-	if err := validateExecutePlan(plan); err != nil {
-		return failResult(result, err)
-	}
-	if err := validateIsolationPlan(plan); err != nil {
+	if err := validateInspectionPlan(plan, options.RawFileTargets, options.Force); err != nil {
 		return failResult(result, err)
 	}
 	isolationRootExists := false
@@ -176,9 +223,6 @@ func execute(
 		if err != nil {
 			return failResult(result, err)
 		}
-	}
-	if err := validateRawFileTargets(plan, options.RawFileTargets); err != nil {
-		return failResult(result, err)
 	}
 	executionID := executionIdentity(plan, options.RawFileTargets)
 	var isolationRuntime isolationState
@@ -202,8 +246,31 @@ func execute(
 	if err != nil {
 		return failResult(result, err)
 	}
+	preview, err := newPreview(plan, options.Force, inspection)
+	if err != nil {
+		return failResult(result, err)
+	}
+	if err := requireExpectedPreview(preview, options.ExpectedPreviewSHA256); err != nil {
+		return failResult(result, err)
+	}
 	if err := authorizeConflicts(ctx, inspection, options); err != nil {
 		return failResult(result, err)
+	}
+	if options.Force && len(inspection.conflicts) > 0 {
+		inspection, err = inspectDestination(ctx, plan, executionID, runner)
+		if err != nil {
+			return failResult(result, fmt.Errorf("safety backup 后重新检查恢复目标失败: %w", err))
+		}
+		preview, err = newPreview(plan, options.Force, inspection)
+		if err != nil {
+			return failResult(result, err)
+		}
+		if err := requireExpectedPreview(preview, options.ExpectedPreviewSHA256); err != nil {
+			return failResult(result, fmt.Errorf("safety backup 后恢复目标已变化: %w", err))
+		}
+		if err := validateAuthorizedConflicts(inspection, true); err != nil {
+			return failResult(result, fmt.Errorf("safety backup 后恢复目标冲突不可授权: %w", err))
+		}
 	}
 	if options.OnPlanReady != nil {
 		if err := options.OnPlanReady(plan); err != nil {
@@ -323,8 +390,8 @@ func inspectDestination(ctx context.Context, plan Plan, executionID string, runn
 			}
 			// 已完整结束的旧 Plan 只是历史状态；只有无法证明完成的陌生 Plan 才禁止接管。
 			if !completeFound || complete != state {
-				inspection.conflicts = append(inspection.conflicts, conflict{
-					resource: "restore_state", detail: "目标机存在另一份未完成恢复计划", authorized: false,
+				inspection.conflicts = append(inspection.conflicts, Conflict{
+					Resource: "restore_state", Detail: "目标机存在另一份未完成恢复计划", ForceAllowed: false,
 				})
 			}
 		}
@@ -342,32 +409,44 @@ func inspectDestination(ctx context.Context, plan Plan, executionID string, runn
 		for _, container := range containers {
 			labels, labelErr := inspectResourceLabels(ctx, runner, "container", container.ID)
 			if labelErr != nil || !isolationLabelsMatch(plan, labels) {
-				inspection.conflicts = append(inspection.conflicts, conflict{
-					resource: container.ID, detail: "容器 isolation 标签不匹配", authorized: false,
+				inspection.conflicts = append(inspection.conflicts, Conflict{
+					Resource: container.ID, Detail: "容器 isolation 标签不匹配", ForceAllowed: false,
 				})
 			}
 		}
 	}
 	if len(containers) > 0 && !inspection.resume {
-		inspection.conflicts = append(inspection.conflicts, conflict{
-			resource: "compose_project", detail: fmt.Sprintf("项目 %q 已有 %d 个容器", projectName, len(containers)), authorized: true,
+		inspection.conflicts = append(inspection.conflicts, Conflict{
+			Resource: "compose_project", Detail: fmt.Sprintf("项目 %q 已有 %d 个容器", projectName, len(containers)), ForceAllowed: true,
 		})
+		for _, container := range containers {
+			inspection.conflicts = append(inspection.conflicts, Conflict{
+				Resource:     container.ID,
+				Detail:       fmt.Sprintf("Compose service %q 的容器已存在", container.Service),
+				ForceAllowed: true,
+			})
+		}
 	}
 	volumes, err := listProjectVolumes(ctx, runner, projectName)
 	if err != nil {
 		return inspection, err
 	}
 	if len(volumes) > 0 && !inspection.resume {
-		inspection.conflicts = append(inspection.conflicts, conflict{
-			resource: "compose_volumes", detail: fmt.Sprintf("项目 %q 已有 %d 个 volume", projectName, len(volumes)), authorized: true,
+		inspection.conflicts = append(inspection.conflicts, Conflict{
+			Resource: "compose_volumes", Detail: fmt.Sprintf("项目 %q 已有 %d 个 volume", projectName, len(volumes)), ForceAllowed: true,
 		})
+		for _, volumeName := range volumes {
+			inspection.conflicts = append(inspection.conflicts, Conflict{
+				Resource: volumeName, Detail: "Compose Project volume 已存在", ForceAllowed: true,
+			})
+		}
 	}
 	if plan.Isolation != nil {
 		for _, volumeName := range volumes {
 			_, labels, labelErr := inspectVolume(ctx, runner, volumeName)
 			if labelErr != nil || !isolationLabelsMatch(plan, labels) {
-				inspection.conflicts = append(inspection.conflicts, conflict{
-					resource: volumeName, detail: "volume isolation 标签不匹配", authorized: false,
+				inspection.conflicts = append(inspection.conflicts, Conflict{
+					Resource: volumeName, Detail: "volume isolation 标签不匹配", ForceAllowed: false,
 				})
 			}
 		}
@@ -388,8 +467,8 @@ func inspectDestination(ctx context.Context, plan Plan, executionID string, runn
 					return inspection, err
 				}
 				if exists {
-					inspection.conflicts = append(inspection.conflicts, conflict{
-						resource: targetPath, detail: "目标文件或目录已存在", authorized: true,
+					inspection.conflicts = append(inspection.conflicts, Conflict{
+						Resource: targetPath, Detail: "目标文件或目录已存在", ForceAllowed: true,
 					})
 				}
 			}
@@ -407,8 +486,8 @@ func inspectDestination(ctx context.Context, plan Plan, executionID string, runn
 				if !authorized {
 					detail = "volume 标签不属于目标 Compose Project"
 				}
-				inspection.conflicts = append(inspection.conflicts, conflict{
-					resource: step.Target.Name, detail: detail, authorized: authorized,
+				inspection.conflicts = append(inspection.conflicts, Conflict{
+					Resource: step.Target.Name, Detail: detail, ForceAllowed: authorized,
 				})
 			}
 		}
@@ -454,6 +533,29 @@ func validateExecutePlan(plan Plan) error {
 	}
 	if projectLifecycleSteps > 0 && imageDigestSteps != 1 {
 		return fmt.Errorf("执行恢复失败: Plan 的 image digest 步骤数量为 %d，期望 1", imageDigestSteps)
+	}
+	return nil
+}
+
+func validateInspectionPlan(plan Plan, rawFileTargets map[string]string, force bool) error {
+	if strings.TrimSpace(plan.ManifestSnapshotID) == "" || strings.TrimSpace(plan.SourceHost) == "" ||
+		strings.TrimSpace(plan.DestinationHost) == "" || len(plan.Steps) == 0 {
+		return fmt.Errorf("执行恢复失败: Plan 不完整")
+	}
+	if strings.TrimSpace(plan.Project.ProjectName) == "" {
+		return fmt.Errorf("执行恢复失败: project_name 不能为空，真实恢复不能猜测 Compose project 标签")
+	}
+	if plan.Isolation != nil && force {
+		return fmt.Errorf("执行恢复失败: isolation Plan 不允许 force")
+	}
+	if err := validateExecutePlan(plan); err != nil {
+		return err
+	}
+	if err := validateIsolationPlan(plan); err != nil {
+		return err
+	}
+	if err := validateRawFileTargets(plan, rawFileTargets); err != nil {
+		return err
 	}
 	return nil
 }
@@ -529,22 +631,11 @@ func pathsOverlap(left string, right string) bool {
 }
 
 func authorizeConflicts(ctx context.Context, inspection preflight, options ExecuteOptions) error {
-	if len(inspection.conflicts) == 0 {
+	if err := validateAuthorizedConflicts(inspection, options.Force); err != nil {
+		return err
+	}
+	if len(inspection.conflicts) == 0 || !options.Force {
 		return nil
-	}
-	var unauthorized []string
-	var summaries []string
-	for _, item := range inspection.conflicts {
-		summaries = append(summaries, fmt.Sprintf("%s: %s", item.resource, item.detail))
-		if !item.authorized {
-			unauthorized = append(unauthorized, item.resource)
-		}
-	}
-	if len(unauthorized) > 0 {
-		return fmt.Errorf("恢复冲突包含未获授权资源 %s", strings.Join(unauthorized, ", "))
-	}
-	if !options.Force {
-		return fmt.Errorf("目标存在恢复冲突，默认拒绝覆盖: %s", strings.Join(summaries, "；"))
 	}
 	if options.SafetyBackup == nil {
 		return fmt.Errorf("--force 恢复前的 safety backup 依赖为空")
@@ -553,6 +644,92 @@ func authorizeConflicts(ctx context.Context, inspection preflight, options Execu
 		return fmt.Errorf("破坏前 safety backup 失败，恢复已中止: %w", err)
 	}
 	return nil
+}
+
+func validateAuthorizedConflicts(inspection preflight, force bool) error {
+	if len(inspection.conflicts) == 0 {
+		return nil
+	}
+	var unauthorized []string
+	var summaries []string
+	for _, item := range inspection.conflicts {
+		summaries = append(summaries, fmt.Sprintf("%s: %s", item.Resource, item.Detail))
+		if !item.ForceAllowed {
+			unauthorized = append(unauthorized, item.Resource)
+		}
+	}
+	if len(unauthorized) > 0 {
+		return fmt.Errorf("恢复冲突包含未获授权资源 %s", strings.Join(unauthorized, ", "))
+	}
+	if !force {
+		return fmt.Errorf("目标存在恢复冲突，默认拒绝覆盖: %s", strings.Join(summaries, "；"))
+	}
+	return nil
+}
+
+func newPreview(plan Plan, force bool, inspection preflight) (Preview, error) {
+	conflicts := make([]Conflict, len(inspection.conflicts))
+	copy(conflicts, inspection.conflicts)
+	sort.Slice(conflicts, func(left int, right int) bool {
+		if conflicts[left].Resource != conflicts[right].Resource {
+			return conflicts[left].Resource < conflicts[right].Resource
+		}
+		if conflicts[left].Detail != conflicts[right].Detail {
+			return conflicts[left].Detail < conflicts[right].Detail
+		}
+		return !conflicts[left].ForceAllowed && conflicts[right].ForceAllowed
+	})
+	preview := Preview{
+		Plan: plan, Force: force, Resume: inspection.resume,
+		Destructive: plan.Isolation == nil, Conflicts: conflicts,
+	}
+	encoded, err := json.Marshal(struct {
+		Plan      Plan       `json:"plan"`
+		Force     bool       `json:"force"`
+		Resume    bool       `json:"resume"`
+		Conflicts []Conflict `json:"conflicts"`
+	}{
+		Plan: preview.Plan, Force: preview.Force, Resume: preview.Resume, Conflicts: preview.Conflicts,
+	})
+	if err != nil {
+		return Preview{}, fmt.Errorf("生成恢复预检摘要失败: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	preview.Digest = hex.EncodeToString(digest[:])
+	return preview, nil
+}
+
+func requireExpectedPreview(preview Preview, expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return nil
+	}
+	if len(expected) != sha256.Size*2 {
+		return fmt.Errorf("恢复预检摘要格式无效")
+	}
+	decoded, err := hex.DecodeString(expected)
+	if err != nil {
+		return fmt.Errorf("恢复预检摘要格式无效")
+	}
+	actual, err := hex.DecodeString(preview.Digest)
+	if err != nil {
+		return fmt.Errorf("恢复预检摘要生成失败: %w", err)
+	}
+	if !bytesEqual(decoded, actual) {
+		return fmt.Errorf("恢复目标与已确认预检不一致")
+	}
+	return nil
+}
+
+func bytesEqual(left []byte, right []byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	var difference byte
+	for index := range left {
+		difference |= left[index] ^ right[index]
+	}
+	return difference == 0
 }
 
 func executeStep(

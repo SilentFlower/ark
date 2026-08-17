@@ -553,7 +553,7 @@ volume、network、files root 和 Docker 自动端口，并通过 isolation labe
 
 粗估 5–7 天。
 
-### P4-1 `cmd/ark-hub/` 骨架与鉴权
+### P4-1 `cmd/ark-hub/` 骨架与鉴权 ✅ 已完成
 
 - 常驻 HTTP 服务通过 `store.Store` 打开 `/var/lib/ark/ark.db`，提供存活检查、登录、
   最小受保护页面和会话 API；P4-2 的业务接口仍未提前实现。
@@ -566,12 +566,17 @@ volume、network、files root 和 Docker 自动端口，并通过 isolation labe
 - `ark-hub install` 只安装独立的 `ark-hub.service`，不创建、扫描或修改任何 timer。
 - **不承载调度**（ADR-005），**不执行长任务**：需要执行时由 P4-2 起一个 `ark` 子进程。
 
-### P4-2 HTTP API
+### P4-2 HTTP API 🚧 验收中
 
-- `GET /api/hosts`、`GET /api/hosts/:host`、`GET /api/runs`、`GET /api/alerts`
-- `POST /api/hosts/:host/backup`、`/verify`、`/restore`
-- 恢复类接口要求二次确认参数，且把「将要覆盖什么」在响应里明确列出
-- 健康判定：`最近成功备份时间 > 计划周期 × 2` 判为超时告警
+- 已提供 hosts、runs、alerts、operations 查询；列表使用有上限的 keyset 分页，
+  清单中的 SSH、repo 和凭证路径不会进入 API DTO。
+- backup、verify 和 restore 都通过独立 `ark --json` 子进程异步执行，状态持久化到
+  schema v2 的 `manual_operations`；Hub 重启会把遗留 running 记录改为 interrupted。
+- 恢复先异步执行 SSH 只读目标预检，返回完整 Plan、具体冲突资源和稳定 digest；确认 token
+  绑定同一会话、精确 manifest snapshot 和预检摘要，10 分钟有效且只展示、消费一次。
+- 真实恢复在首次写入前校验 digest；force safety backup 后再次预检，目标状态漂移时拒绝执行。
+- 健康与告警共用同一投影：无成功备份或超过有效计划周期两倍、连续两次失败、最近演练失败。
+- `ark-hub serve/install` 显式携带 `--config` 与 `--ark-binary`，停止 Hub 仍不影响 systemd timer。
 
 ### P4-3 前端 `web/`
 

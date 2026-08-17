@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/store"
 )
 
@@ -25,6 +28,10 @@ type ServeOptions struct {
 	StateDBPath string
 	// AuthFile 是独立于状态库的 root-only 管理员凭证文件。
 	AuthFile string
+	// ConfigPath 是每次业务 API 请求重新严格加载的 v2 清单绝对路径。
+	ConfigPath string
+	// ArkBinaryPath 是手工操作使用的 ark 普通可执行文件绝对路径。
+	ArkBinaryPath string
 	// SecureCookie 控制浏览器 Cookie 的 Secure 属性。
 	SecureCookie bool
 }
@@ -34,10 +41,17 @@ type serveDependencies struct {
 	listen         func(string, string) (net.Listener, error)
 	newApplication func(string, bool) (*application, error)
 	newServer      func(http.Handler) httpServerLifecycle
+	loadConfig     func(string) (*config.Config, error)
+	stat           func(string) (os.FileInfo, error)
+	now            func() time.Time
 }
 
 type stateStore interface {
 	Close() error
+}
+
+type operationRecoveryStore interface {
+	InterruptRunningOperations(context.Context, time.Time) (int64, error)
 }
 
 type httpServerLifecycle interface {
@@ -51,6 +65,12 @@ type httpServerLifecycle interface {
 // @param options 监听地址、状态库、凭证文件与 Cookie 策略。
 // @return error 初始化、监听、HTTP 运行、停止或状态库关闭失败时的聚合错误。
 func Run(ctx context.Context, options ServeOptions) error {
+	if strings.TrimSpace(options.ConfigPath) == "" {
+		options.ConfigPath = defaultConfigPath
+	}
+	if strings.TrimSpace(options.ArkBinaryPath) == "" {
+		options.ArkBinaryPath = defaultArkBinaryPath
+	}
 	return run(ctx, options, serveDependencies{
 		openStore: func(ctx context.Context, path string) (stateStore, error) {
 			return store.Open(ctx, path)
@@ -59,7 +79,10 @@ func Run(ctx context.Context, options ServeOptions) error {
 		newApplication: func(authFile string, secureCookie bool) (*application, error) {
 			return newApplication(authFile, secureCookie, rand.Reader, time.Now)
 		},
-		newServer: newHTTPServer,
+		newServer:  newHTTPServer,
+		loadConfig: config.LoadAndValidate,
+		stat:       os.Stat,
+		now:        time.Now,
 	})
 }
 
@@ -78,21 +101,57 @@ func run(ctx context.Context, options ServeOptions, dependencies serveDependenci
 	if err != nil {
 		return fmt.Errorf("启动 ark-hub 失败: %w", err)
 	}
+	if strings.TrimSpace(options.ConfigPath) != "" || strings.TrimSpace(options.ArkBinaryPath) != "" {
+		if dependencies.loadConfig == nil || dependencies.stat == nil || dependencies.now == nil {
+			return fmt.Errorf("启动 ark-hub 失败: 配置校验依赖不完整")
+		}
+		if err := validateRuntimePaths(options, dependencies); err != nil {
+			return err
+		}
+	}
 	state, err := dependencies.openStore(ctx, options.StateDBPath)
 	if err != nil {
 		return fmt.Errorf("启动 ark-hub 失败: %w", err)
 	}
+	if options.ConfigPath != "" {
+		recovery, ok := state.(operationRecoveryStore)
+		if !ok {
+			return errors.Join(fmt.Errorf("启动 ark-hub 失败: 状态库不支持恢复手工任务"), state.Close())
+		}
+		if _, err := recovery.InterruptRunningOperations(ctx, dependencies.now().UTC()); err != nil {
+			return errors.Join(fmt.Errorf("启动 ark-hub 失败: %w", err), state.Close())
+		}
+		apiState, ok := state.(apiStore)
+		if !ok {
+			return errors.Join(fmt.Errorf("启动 ark-hub 失败: 状态库不支持 Hub API"), state.Close())
+		}
+		manager, managerErr := newOperationManager(
+			apiState, options.ArkBinaryPath, options.ConfigPath, application.random, application.now,
+		)
+		if managerErr != nil {
+			return errors.Join(fmt.Errorf("启动 ark-hub 失败: %w", managerErr), state.Close())
+		}
+		application.configureRuntime(
+			state, options.ConfigPath, options.ArkBinaryPath, dependencies.loadConfig, manager,
+		)
+	}
 	if err := ctx.Err(); err != nil {
-		return errors.Join(err, state.Close())
+		return errors.Join(err, closeOperations(application), state.Close())
 	}
 	listener, err := dependencies.listen("tcp", options.ListenAddress)
 	if err != nil {
-		return errors.Join(fmt.Errorf("监听 %q 失败: %w", options.ListenAddress, err), state.Close())
+		return errors.Join(
+			fmt.Errorf("监听 %q 失败: %w", options.ListenAddress, err),
+			closeOperations(application), state.Close(),
+		)
 	}
 
 	server := dependencies.newServer(application.handler())
 	if server == nil {
-		return errors.Join(fmt.Errorf("启动 ark-hub 失败: HTTP server 不能为空"), listener.Close(), state.Close())
+		return errors.Join(
+			fmt.Errorf("启动 ark-hub 失败: HTTP server 不能为空"), listener.Close(),
+			closeOperations(application), state.Close(),
+		)
 	}
 	serveErrors := make(chan error, 1)
 	go func() {
@@ -121,7 +180,34 @@ func run(ctx context.Context, options ServeOptions, dependencies serveDependenci
 		}
 		runErr = errors.Join(shutdownErr, closeErr, serveErr)
 	}
-	return errors.Join(runErr, state.Close())
+	return errors.Join(runErr, closeOperations(application), state.Close())
+}
+
+func closeOperations(application *application) error {
+	if application == nil || application.operations == nil {
+		return nil
+	}
+	return application.operations.close()
+}
+
+func validateRuntimePaths(options ServeOptions, dependencies serveDependencies) error {
+	if !filepath.IsAbs(options.ConfigPath) {
+		return fmt.Errorf("启动 ark-hub 失败: config 路径必须是绝对路径")
+	}
+	if _, err := dependencies.loadConfig(options.ConfigPath); err != nil {
+		return fmt.Errorf("启动 ark-hub 失败: 清单校验失败: %w", err)
+	}
+	if !filepath.IsAbs(options.ArkBinaryPath) {
+		return fmt.Errorf("启动 ark-hub 失败: ark binary 路径必须是绝对路径")
+	}
+	info, err := dependencies.stat(options.ArkBinaryPath)
+	if err != nil {
+		return fmt.Errorf("启动 ark-hub 失败: 访问 ark binary 失败: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("启动 ark-hub 失败: ark binary 必须是可执行普通文件")
+	}
+	return nil
 }
 
 func newHTTPServer(handler http.Handler) httpServerLifecycle {
@@ -140,6 +226,8 @@ func newServeCmd(dependencies commandDependencies) *cobra.Command {
 		ListenAddress: defaultListenAddress,
 		StateDBPath:   store.DefaultPath,
 		AuthFile:      defaultAuthFile,
+		ConfigPath:    defaultConfigPath,
+		ArkBinaryPath: defaultArkBinaryPath,
 	}
 	command := &cobra.Command{
 		Use:   "serve",
@@ -155,6 +243,8 @@ func newServeCmd(dependencies commandDependencies) *cobra.Command {
 	command.Flags().StringVar(&options.ListenAddress, "listen", defaultListenAddress, "HTTP 监听地址")
 	command.Flags().StringVar(&options.StateDBPath, "state-db", store.DefaultPath, "ark 状态库路径")
 	command.Flags().StringVar(&options.AuthFile, "auth-file", defaultAuthFile, "管理员凭证文件路径")
+	command.Flags().StringVar(&options.ConfigPath, "config", defaultConfigPath, "ark v2 清单绝对路径")
+	command.Flags().StringVar(&options.ArkBinaryPath, "ark-binary", defaultArkBinaryPath, "ark 可执行文件绝对路径")
 	command.Flags().BoolVar(&options.SecureCookie, "secure-cookie", false, "为浏览器 Cookie 设置 Secure")
 	return command
 }

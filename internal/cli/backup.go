@@ -20,6 +20,7 @@ import (
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/doctor"
 	"github.com/silentflower/ark/internal/restic"
+	"github.com/silentflower/ark/internal/schedule"
 	"github.com/silentflower/ark/internal/sshexec"
 	"github.com/silentflower/ark/internal/store"
 )
@@ -47,6 +48,8 @@ type backupDependencies struct {
 	createRun       func(context.Context, *store.Store, store.Run) error
 	finishRun       func(context.Context, *store.Store, string, store.RunResult) error
 	recordRunTarget func(context.Context, *store.Store, store.RunTarget) error
+	recordDoctor    recordDoctorReportFunc
+	analyzeSchedule analyzeScheduleFunc
 	newRepo         func(*config.Repo) (*restic.Repo, error)
 	ensureRepo      func(context.Context, *restic.Repo) error
 	newRunner       func(*config.Host) (sshexec.Runner, error)
@@ -170,6 +173,13 @@ func defaultBackupDependencies() backupDependencies {
 		recordRunTarget: func(ctx context.Context, state *store.Store, target store.RunTarget) error {
 			return state.RecordRunTarget(ctx, target)
 		},
+		recordDoctor: func(ctx context.Context, state *store.Store, report store.DoctorReport) error {
+			return state.RecordDoctorReport(ctx, report)
+		},
+		analyzeSchedule: func(ctx context.Context, expression string, baseTime time.Time) (time.Time, error) {
+			window, err := schedule.Analyze(ctx, expression, baseTime)
+			return window.NextRunAt, err
+		},
 		newRepo:    restic.New,
 		ensureRepo: func(ctx context.Context, repo *restic.Repo) error { return repo.EnsureInit(ctx) },
 		newRunner:  backupRunnerForHost,
@@ -265,19 +275,6 @@ func runBackupLocked(
 		return summary, err
 	}
 	failures := &backupFailureSet{}
-	if !options.skipDoctor {
-		report := dependencies.runLocalDoctor(ctx, cfg)
-		if failureNames := doctorFailureNames(report); len(failureNames) > 0 {
-			return summary, fmt.Errorf(
-				"本地 doctor 未通过（失败项: %s），备份已在创建快照前中止",
-				strings.Join(failureNames, ", "),
-			)
-		}
-		if reportHasWarnings(report) {
-			failures.warnings = true
-		}
-	}
-
 	startedAt := dependencies.now().UTC()
 	runID, err := dependencies.newRunID(startedAt)
 	if err != nil {
@@ -296,6 +293,23 @@ func runBackupLocked(
 			runErr = errors.Join(runErr, closeErr)
 		}
 	}()
+	if !options.skipDoctor {
+		report := dependencies.runLocalDoctor(ctx, cfg)
+		if err := persistDoctorReport(
+			ctx, state, store.DoctorScopeLocal, "", report, startedAt, time.Time{}, dependencies.recordDoctor,
+		); err != nil {
+			return summary, fmt.Errorf("持久化本地 doctor 报告失败，备份已在创建快照前中止: %w", err)
+		}
+		if failureNames := doctorFailureNames(report); len(failureNames) > 0 {
+			return summary, fmt.Errorf(
+				"本地 doctor 未通过（失败项: %s），备份已在创建快照前中止",
+				strings.Join(failureNames, ", "),
+			)
+		}
+		if reportHasWarnings(report) {
+			failures.warnings = true
+		}
+	}
 	if err := dependencies.createRun(ctx, state, store.Run{
 		ID:         runID,
 		Status:     store.StatusRunning,
@@ -399,6 +413,28 @@ func runBackupHost(
 	manifestHost := backup.ManifestHost{Host: host.Host, Targets: make([]backup.TargetResult, 0, len(host.Targets))}
 	if !skipDoctor {
 		report := dependencies.runHostDoctor(ctx, cfg, host)
+		createdAt := dependencies.now().UTC()
+		nextRunAt, scheduleErr := analyzeHostSchedule(ctx, cfg, host, createdAt, dependencies.analyzeSchedule)
+		persistErr := persistDoctorReport(
+			ctx, state, store.DoctorScopeHost, host.Host, report, createdAt, nextRunAt, dependencies.recordDoctor,
+		)
+		if scheduleErr != nil {
+			cause := fmt.Errorf("host %q 调度解析失败: %w", host.Host, scheduleErr)
+			failures.add(cause, fmt.Sprintf("host %q 调度解析失败", host.Host))
+		}
+		if persistErr != nil {
+			cause := fmt.Errorf("host %q doctor 报告持久化失败: %w", host.Host, persistErr)
+			failures.add(cause, fmt.Sprintf("host %q doctor 报告持久化失败", host.Host))
+		}
+		if scheduleErr != nil || persistErr != nil {
+			reason := "host 调度解析失败，未执行"
+			if persistErr != nil {
+				reason = "host doctor 报告持久化失败，未执行"
+			}
+			return recordSkippedTargets(
+				ctx, runID, host, reason, state, manifestHost, failures, dependencies,
+			), false
+		}
 		if failureNames := doctorFailureNames(report); len(failureNames) > 0 {
 			cause := fmt.Errorf(
 				"host %q doctor 未通过（失败项: %s）",
@@ -590,7 +626,23 @@ func validateBackupDependencies(dependencies backupDependencies) error {
 		strings.TrimSpace(dependencies.statePath) == "" {
 		return fmt.Errorf("执行 backup 失败: 内部依赖不完整")
 	}
+	if (dependencies.recordDoctor == nil) != (dependencies.analyzeSchedule == nil) {
+		return fmt.Errorf("执行 backup 失败: doctor 持久化依赖不完整")
+	}
 	return nil
+}
+
+func analyzeHostSchedule(
+	ctx context.Context,
+	cfg *config.Config,
+	host *config.Host,
+	baseTime time.Time,
+	analyze analyzeScheduleFunc,
+) (time.Time, error) {
+	if analyze == nil {
+		return time.Time{}, nil
+	}
+	return analyze(ctx, cfg.ScheduleFor(host).OnCalendar, baseTime)
 }
 
 func selectBackupHosts(cfg *config.Config, hostName string) ([]*config.Host, error) {

@@ -94,7 +94,7 @@ func TestOpen_RejectsInvalidPathAndNewerSchema(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "ark.db")
 	store := openTestStore(t, path)
-	if _, err := store.db.Exec("PRAGMA user_version = 2"); err != nil {
+	if _, err := store.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion+1)); err != nil {
 		t.Fatalf("设置较新 schema 版本失败: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -112,25 +112,19 @@ func TestOpen_RejectsInvalidPathAndNewerSchema(t *testing.T) {
 
 func TestOpen_MigrationFailureRollsBackPartialSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ark.db")
-	if err := prepareDatabaseFile(path); err != nil {
-		t.Fatalf("预创建数据库失败: %v", err)
-	}
-	raw, err := sql.Open("sqlite", dataSourceName(path))
-	if err != nil {
-		t.Fatalf("打开预置数据库失败: %v", err)
-	}
-	if _, err := raw.Exec("CREATE TABLE run_targets (id TEXT PRIMARY KEY)"); err != nil {
+	raw := prepareV1Database(t, path)
+	if _, err := raw.Exec("CREATE TABLE manual_operations (id TEXT PRIMARY KEY)"); err != nil {
 		t.Fatalf("创建冲突表失败: %v", err)
 	}
 	if err := raw.Close(); err != nil {
 		t.Fatalf("关闭预置数据库失败: %v", err)
 	}
 
-	_, err = Open(context.Background(), path)
+	_, err := Open(context.Background(), path)
 	if err == nil {
 		t.Fatal("期望迁移因冲突表失败，实际成功")
 	}
-	if !strings.Contains(err.Error(), "schema v1") {
+	if !strings.Contains(err.Error(), "schema v2") {
 		t.Errorf("迁移错误 %q 中未包含 schema 版本", err.Error())
 	}
 
@@ -143,13 +137,37 @@ func TestOpen_MigrationFailureRollsBackPartialSchema(t *testing.T) {
 			t.Errorf("关闭失败数据库连接失败: %v", err)
 		}
 	}()
-	if got := queryInt(t, raw, "PRAGMA user_version"); got != 0 {
-		t.Errorf("失败迁移后的 user_version = %d，期望 0", got)
+	if got := queryInt(t, raw, "PRAGMA user_version"); got != 1 {
+		t.Errorf("失败迁移后的 user_version = %d，期望 1", got)
 	}
-	wantTables := []string{"run_targets"}
+	wantTables := []string{"doctor_reports", "manual_operations", "run_targets", "runs", "verifications"}
 	if got := schemaObjectNames(t, raw, "table"); !equalStrings(got, wantTables) {
 		t.Errorf("失败迁移后的表 = %#v，期望仅保留 %#v", got, wantTables)
 	}
+}
+
+func TestOpen_MigratesV1ToV2并保留数据(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	raw := prepareV1Database(t, path)
+	startedAt := time.Date(2026, 8, 17, 4, 17, 0, 0, time.UTC)
+	if _, err := raw.Exec(`
+		INSERT INTO runs (id, status, started_at, ark_version, error)
+		VALUES (?, ?, ?, ?, '')`, "run-v1", StatusRunning, startedAt.UnixMilli(), "v1"); err != nil {
+		t.Fatalf("写入 v1 数据失败: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("关闭 v1 数据库失败: %v", err)
+	}
+
+	state := openTestStore(t, path)
+	if got := queryInt(t, state.db, "PRAGMA user_version"); got != currentSchemaVersion {
+		t.Fatalf("迁移后 user_version=%d，期望 %d", got, currentSchemaVersion)
+	}
+	run, err := state.GetRun(context.Background(), "run-v1")
+	if err != nil || run.ID != "run-v1" || run.Status != StatusRunning {
+		t.Fatalf("迁移后 v1 数据=%#v err=%v", run, err)
+	}
+	assertSchemaObjects(t, state.db)
 }
 
 func TestStore_RunAndTargetLifecycle(t *testing.T) {
@@ -714,6 +732,26 @@ func openTestStore(t *testing.T, path string) *Store {
 	return store
 }
 
+func prepareV1Database(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	if err := prepareDatabaseFile(path); err != nil {
+		t.Fatalf("预创建数据库失败: %v", err)
+	}
+	raw, err := sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("打开预置数据库失败: %v", err)
+	}
+	if _, err := raw.Exec(schemaV1); err != nil {
+		_ = raw.Close()
+		t.Fatalf("创建 schema v1 失败: %v", err)
+	}
+	if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
+		_ = raw.Close()
+		t.Fatalf("设置 schema v1 版本失败: %v", err)
+	}
+	return raw
+}
+
 func createRun(t *testing.T, store *Store, run Run) {
 	t.Helper()
 	if err := store.CreateRun(context.Background(), run); err != nil {
@@ -750,9 +788,12 @@ func rollbackTestTransaction(t *testing.T, conn *sql.Conn) {
 
 func assertSchemaObjects(t *testing.T, db *sql.DB) {
 	t.Helper()
-	wantTables := []string{"doctor_reports", "run_targets", "runs", "verifications"}
+	wantTables := []string{"doctor_reports", "manual_operations", "run_targets", "runs", "verifications"}
 	wantIndexes := []string{
 		"idx_doctor_reports_scope_host_created",
+		"idx_manual_operations_host_started",
+		"idx_manual_operations_started",
+		"idx_manual_operations_status_started",
 		"idx_run_targets_lookup",
 		"idx_runs_started_at",
 		"idx_runs_status_started_at",

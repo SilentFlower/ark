@@ -52,7 +52,8 @@ elif [ -n "${OBJECT_TOKEN+x}" ]; then
   printf 'leaked' > "$DOCTOR_LEAK"
 fi
 if [ "$name" = "systemd-analyze" ] && [ "$1" = "calendar" ]; then
-  printf 'Next elapse: test\n'
+  printf '       (in UTC): Mon 2026-08-17 20:17:00 UTC\n'
+  printf '       (in UTC): Tue 2026-08-18 20:17:00 UTC\n'
 else
   printf 'fake version\n'
 fi

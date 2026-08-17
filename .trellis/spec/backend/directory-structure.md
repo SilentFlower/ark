@@ -22,17 +22,21 @@ ark 是一个单仓库 Go 项目，产出两个二进制：
 
 ## Directory Layout
 
-当前已存在的部分：
+关键入口与基础包：
 
 ```
 cmd/
-└── ark/main.go              入口，只做一件事：os.Exit(cli.Execute())
+├── ark/main.go              oneshot CLI 薄入口
+└── ark-hub/main.go          常驻 Hub 薄入口
 internal/
 ├── cli/root.go              cobra 命令组装、退出码语义、人类可读输出
 ├── config/                  备份清单的数据模型 + 静态校验
 │   ├── config.go
 │   └── config_test.go
-└── doctor/doctor.go         运行环境校验（外部命令、文件权限、compose 资源）
+├── doctor/doctor.go         运行环境校验（外部命令、文件权限、compose 资源）
+├── schedule/                systemd OnCalendar 的结构化下一次触发与有效周期
+├── store/                   SQLite 状态、查询 DTO、迁移和在线一致性导出
+└── hub/                     鉴权、HTTP DTO、健康投影和 Ark 子进程生命周期
 docs/
 ├── design.md                架构与 13 条 ADR
 └── roadmap.md               分阶段任务，含接口草案与验收标准
@@ -40,7 +44,7 @@ examples/
 └── ark.yaml                 清单模板（真实清单是 /etc/ark/ark.yaml，不入库）
 ```
 
-roadmap 已经规划、但尚未创建的包（新建时按此归位，不要另起名字）：
+职责归属（扩展现有能力时按此归位，不要另起同义包）：
 
 | 包 | 职责 | 阶段 |
 |---|---|---|
@@ -50,6 +54,7 @@ roadmap 已经规划、但尚未创建的包（新建时按此归位，不要另
 | `internal/restic/` | restic CLI 的 Go 封装 | P2-2 |
 | `internal/backup/` | 各 target 执行器 + 流完整性 + 快照清单 | P2-3 / P2-4 / P2-5 |
 | `internal/systemd/` | systemd unit 模板 | P2-6 |
+| `internal/schedule/` | 委托 `systemd-analyze calendar` 解析 next run 与有效周期 | P4-2 |
 | `internal/restore/` | 恢复计划与执行 | P3-1 / P3-2 |
 | `internal/verify/` | 原 host 隔离恢复演练、生产基线与结果持久化 | P3-5 |
 | `internal/hub/` + `cmd/ark-hub/` | hub 后端（界面与 API） | P4-1 / P4-2 |
@@ -79,11 +84,18 @@ int 交给 `os.Exit`。命令定义、flag 绑定、输出格式一律在 `inter
 ```
 cli  ──►  doctor  ──►  config
  ├────►  hostkey
+ ├────►  backup / restore / verify
  └────►  sshexec ──► config
+
+hub  ──►  config / schedule / store
+ └─exec─► ark --json
 ```
 
 `config` 不认识任何其他内部包；`hostkey` 只依赖标准库和 OpenSSH 工具；
-`doctor` 与 `sshexec` 依赖 `config`，`cli` 负责编排这些边界。
+`doctor` 与 `sshexec` 依赖 `config`，`cli` 负责编排业务边界。`schedule` 只负责
+systemd calendar 结构化解析，可被 doctor、CLI 与 Hub 复用；`store` 不反向依赖业务包。
+`hub` 可以依赖 config、schedule 和 store，但不得导入 backup、restore、verify、restic 或 sshexec；
+长任务跨进程调用 `ark --json`，避免 Hub 成为第二套业务编排器。
 新增包时保持这个方向：**越靠近数据模型的包依赖越少**。
 如果发现需要反向依赖（比如 `config` 想调用 `doctor`），说明职责切错了，
 应该重新划边界而不是加接口绕过去。

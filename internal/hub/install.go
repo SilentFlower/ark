@@ -21,6 +21,8 @@ func newInstallCmd(dependencies commandDependencies) *cobra.Command {
 	listenAddress := defaultListenAddress
 	stateDBPath := store.DefaultPath
 	authFile := defaultAuthFile
+	configPath := defaultConfigPath
+	arkBinaryPath := defaultArkBinaryPath
 	secureCookie := false
 	command := &cobra.Command{
 		Use:   "install",
@@ -40,6 +42,8 @@ func newInstallCmd(dependencies commandDependencies) *cobra.Command {
 				ListenAddress: listenAddress,
 				StateDBPath:   stateDBPath,
 				AuthFile:      authFile,
+				ConfigPath:    configPath,
+				ArkBinaryPath: arkBinaryPath,
 				SecureCookie:  secureCookie,
 			})
 			if err != nil {
@@ -53,6 +57,8 @@ func newInstallCmd(dependencies commandDependencies) *cobra.Command {
 	command.Flags().StringVar(&listenAddress, "listen", defaultListenAddress, "HTTP 监听地址")
 	command.Flags().StringVar(&stateDBPath, "state-db", store.DefaultPath, "ark 状态库路径")
 	command.Flags().StringVar(&authFile, "auth-file", defaultAuthFile, "管理员凭证文件路径")
+	command.Flags().StringVar(&configPath, "config", defaultConfigPath, "ark v2 清单绝对路径")
+	command.Flags().StringVar(&arkBinaryPath, "ark-binary", defaultArkBinaryPath, "ark 可执行文件绝对路径")
 	command.Flags().BoolVar(&secureCookie, "secure-cookie", false, "为浏览器 Cookie 设置 Secure")
 	return command
 }
