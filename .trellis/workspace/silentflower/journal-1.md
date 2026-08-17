@@ -442,3 +442,24 @@ P3 五个保留子任务完成集成复核并归档；P3-3 保留 CHK-001 与 FB
 ### Status
 
 [OK] **Completed**
+
+
+## Session 17: 完成 P4-2 ark-hub HTTP API
+
+**Date**: 2026-08-17
+**Task**: 完成 P4-2 ark-hub HTTP API
+**Branch**: `main`
+
+### Summary
+
+完成 ark-hub 主机、运行、告警与异步操作 API，新增 schema v2 手工操作持久化、恢复预检确认和 Hub 启动路径契约；Full Check-All 严格通过，规范与上线操作已同步。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f2f3924` | (see git log) |
+
+### Status
+
+[OK] **Completed**
