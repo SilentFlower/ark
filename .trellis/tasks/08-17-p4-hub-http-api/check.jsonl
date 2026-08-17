@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/hub-guidelines.md","reason":"检查新 API 是否保持默认鉴权、CSRF、生命周期和 timer 隔离。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 schema v2、Store 边界、WAL 并发、迁移回滚和 context 取消。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"检查命令注入、Pdeathsig、输出生命周期、退出码和凭证环境。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"检查错误链、HTTP 状态与失败不伪装成功。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"检查 stderr、token、Cookie、路径与 JSON 持久化的脱敏边界。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行完整测试、构建、注释和禁止模式审计。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"反向核对 API DTO、Store DTO、CLI JSON 和健康派生的一致性。"}
+{"file":".trellis/tasks/08-17-p4-hub-http-api/research/code-evidence.md","reason":"按已确认的现状缺口和关键风险检查实现完整性。"}

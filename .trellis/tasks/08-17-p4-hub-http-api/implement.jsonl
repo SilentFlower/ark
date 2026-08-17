@@ -1,0 +1,9 @@
+{"file":".trellis/spec/backend/hub-guidelines.md","reason":"约束 ark-hub 鉴权、HTTP 默认保护、Store 生命周期、子进程边界与 systemd service。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"约束 schema v2 迁移、WAL 并发、Store 查询和手动操作持久化。"}
+{"file":".trellis/spec/backend/external-command-guidelines.md","reason":"约束 Ark 子进程 argv、context、输出限制、退出状态与凭证隔离。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"约束中文错误链、fail closed 和状态语义。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"约束 API、状态库和子进程输出的脱敏红线。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"约束 Hub、Store、schedule 与 CLI 的包归属和依赖方向。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"约束公共 API 注释、race 测试、失败可见性和最终质量门禁。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"约束 config、Store、Hub API 和 CLI JSON 之间的跨层数据契约。"}
+{"file":".trellis/tasks/08-17-p4-hub-http-api/research/code-evidence.md","reason":"提供当前代码缺口、恢复冲突时点、schedule 实测和建议数据流。"}

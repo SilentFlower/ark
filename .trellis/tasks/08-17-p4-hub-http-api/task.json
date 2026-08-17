@@ -1,0 +1,62 @@
+{
+  "id": "p4-hub-http-api",
+  "name": "p4-hub-http-api",
+  "title": "P4-2 ark-hub HTTP API",
+  "description": "实现 ark-hub 的主机、运行、告警与操作 API，持久化异步手动操作，并为恢复提供只读预检和单次二次确认。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P4",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-17",
+  "completedAt": "2026-08-17",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-17T05:19:52Z",
+      "contextKey": "codex_01a00df2-dab0-7923-bbfe-cf3a7313448a",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "d6615fd6de0fb97c436ab1fec81719f11c113db8",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "d6615fd6de0fb97c436ab1fec81719f11c113db8",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "20fd6846fc311012f49c7c8d320f2bb1dc5e06994692da32ce1c3bb2c6b08446"
+          }
+        ],
+        "fingerprint": "dc789b44d6e7bbedb7a0dcf460bda75ec091b45321cd9525bff83e24621538a8"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-17T07:49:48Z",
+    "completedSteps": [
+      "完成 P4-2 ark-hub HTTP API、异步操作持久化与恢复确认",
+      "通过 Full Check-All 并同步后端可执行规范",
+      "业务提交已推送至 origin/main"
+    ],
+    "partialStep": null,
+    "nextStep": "运行 trellis-finish-work 记录会话并归档任务",
+    "notes": "Full Check-All 严格通过，剩余 CHK/FBK 为 0；业务提交 f2f3924 已推送。"
+  }
+}
