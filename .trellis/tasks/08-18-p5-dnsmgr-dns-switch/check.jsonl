@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"检查旧清单兼容性、静态/运行时职责和秘密不落清单。"}
+{"file":".trellis/spec/backend/restore-plan-guidelines.md","reason":"检查 dry-run、preview digest、completion marker 后置联动与失败路径。"}
+{"file":".trellis/spec/backend/backup-manifest-guidelines.md","reason":"检查实现没有误改 backup manifest 契约。"}

@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"约束 schema v2 的可选配置建模、静态校验、host 错误前缀与凭证路径边界。"}
+{"file":".trellis/spec/backend/restore-plan-guidelines.md","reason":"约束 dry-run 零写入、跨机恢复计划、人工检查项与真实执行边界。"}
+{"file":".trellis/spec/backend/backup-manifest-guidelines.md","reason":"确认 DNS 关联属于当前部署配置，不进入历史 backup manifest。"}

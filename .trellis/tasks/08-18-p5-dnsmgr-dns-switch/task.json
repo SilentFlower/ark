@@ -1,0 +1,80 @@
+{
+  "id": "p5-dnsmgr-dns-switch",
+  "name": "p5-dnsmgr-dns-switch",
+  "title": "P5-2 恢复后自动切换 dnsmgr DNS",
+  "description": "在 ark 主机清单中关联 dnsmgr DNS 记录，跨机恢复成功后通过现有 AuthApi 调用更新记录到新机器 IP，并保持 dry-run、失败边界、凭证安全和可验证回滚。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-18",
+  "completedAt": "2026-08-18",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-18T10:21:59Z",
+      "contextKey": "codex_01a01312-b1d8-78b2-b134-ea21aec10987",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "7a18813887c8987c9a4ff5270d375d309aeab364",
+        "status": [
+          {
+            "status": " M",
+            "path": "docs/design.md"
+          },
+          {
+            "status": " M",
+            "path": "docs/roadmap.md"
+          }
+        ],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "7a18813887c8987c9a4ff5270d375d309aeab364",
+            "status": [
+              {
+                "status": " M",
+                "path": "docs/design.md"
+              },
+              {
+                "status": " M",
+                "path": "docs/roadmap.md"
+              }
+            ],
+            "worktreeDiffSha256": "2a4610da5d753897f89aaefdf23ba194d69140f3b1c5110935c401ecb5aedf58",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "ac6964713e7531ba8dd164cc72cbb93f8eca1e0081148ea7843fc8aa48098de2"
+          }
+        ],
+        "fingerprint": "e40451e604227d6d7c20f3e773b512769d1e95bd173ed60ef454f4ad4a020979"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-18T14:05:57Z",
+    "completedSteps": [
+      "完成 dnsmgr Value-only API 与生产部署",
+      "完成 ark 恢复后 DNS 切换、补偿和 doctor 集成",
+      "完成 Full Check-All 与代码规范沉淀"
+    ],
+    "partialStep": null,
+    "nextStep": "等待显式执行 trellis-finish-work 归档任务",
+    "notes": "可回滚 DNS 记录 forward/expected compensation 与 ark 真实跨机恢复保留为上线后验证。"
+  }
+}
