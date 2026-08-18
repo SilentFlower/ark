@@ -625,9 +625,9 @@ def cmd_archive(args: argparse.Namespace) -> int:
     if not task_data:
         print(colored(f"Error: task.json not found or invalid: {task_json_path}", Colors.RED), file=sys.stderr)
         return 1
-    if task_data.get("status") != "completed" or not task_data.get("completedAt"):
+    if task_data.get("status") != "completed":
         print(
-            colored("Error: only completed tasks with completedAt can be archived", Colors.RED),
+            colored("Error: only completed tasks can be archived", Colors.RED),
             file=sys.stderr,
         )
         print(
@@ -670,7 +670,16 @@ def cmd_archive(args: argparse.Namespace) -> int:
                 )
 
 # BEGIN skill-garden patch task-archive-status-write v0.6
-            # completed 状态和 completedAt 已由普通 push 的原子 progress 写入完成；归档只移动任务。
+            # completedAt 仅是审计元数据；兼容旧任务时在移动前补齐，不把缺失元数据当作非法状态。
+            if not data.get("completedAt"):
+                data["completedAt"] = today
+                if not write_json(task_json_path, data):
+                    print(colored("Error: Failed to persist completedAt before archive", Colors.RED), file=sys.stderr)
+                    return 1
+                print(
+                    colored(f"Warning: completedAt was missing and has been set to {today}.", Colors.YELLOW),
+                    file=sys.stderr,
+                )
 # END skill-garden patch task-archive-status-write v0.6
 
             # Handle subtask relationships on archive.

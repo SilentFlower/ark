@@ -28,7 +28,7 @@ Run:
 python3 ./.trellis/scripts/task_progress.py status --task <task-name> --json
 ```
 
-Read the current task's `task.json` as the authoritative lifecycle record. Continue only when `taskStatus=completed` and `completedAt` is present. Progress text is recovery evidence and never substitutes for the task status.
+Read the current task's `task.json` as the authoritative lifecycle record. Continue only when `taskStatus=completed`. A missing `completedAt` is recoverable archive metadata: `task.py archive` backfills it after the decision audit succeeds. Progress text is recovery evidence and never substitutes for the task status.
 
 - `in_progress`: stop and return to Phase 3.4 `trellis-push`; finish-work must not manufacture completion.
 - `completed`: keep the active task pointer until archive succeeds, then apply the archive eligibility gate below before continuing.
@@ -56,7 +56,7 @@ python3 ./.trellis/scripts/decision_log.py status --task <task-name> --json
 - Request changes: run `decision_log.py review --task <task-name> --verdict changes-requested --decision-id <id> [...] --notes <text>`, stop before release audit, and return the task for rework.
 - A corrupt decision log fails closed. Do not edit or discard it to bypass review.
 
-`task.py archive` repeats the completion-state and decision guards before any session cleanup or directory move. It preserves the existing `completedAt` and performs no lifecycle status write.
+`task.py archive` repeats the completion-state and decision guards before any session cleanup or directory move. It preserves an existing `completedAt`, backfills a missing value after those guards pass, and performs no lifecycle status transition.
 
 ### 3. Current Task Release Audit
 

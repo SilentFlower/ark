@@ -631,8 +631,8 @@ def _auto_progress_for_item(state: dict[str, Any], item: dict[str, Any]) -> dict
 def _apply_local_completion(item: dict[str, Any], task_data: dict[str, Any]) -> bool:
     """把已本地提交的队列项写入任务本地完成态，返回 task.json 是否发生变化。
 
-    auto-loop 的终点是本地提交，但归档守卫要求 `status=completed` 且有 `completedAt`；
-    若不在这里落地本地完成态，任务会卡在既无法 finish-work 也无法 archive 的状态。
+    auto-loop 的终点是本地提交，finish-work 仍要求 `status=completed`；正常完成时同时
+    写入 `completedAt` 作为审计元数据，旧任务缺失该字段时由 archive 兼容补写。
     只允许 `in_progress -> completed` 这一个跃迁，并保留既有 `completedAt`，
     避免覆盖人工已确认的完成日期或把 planning/已完成任务重复改写。
     """

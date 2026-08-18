@@ -55,7 +55,7 @@ untracked 必须为 `stage=check`，只读个人 check 偏好，不创建 task-s
 2. validated auto-loop action 的 `requested_check_depth`；
 3. 默认 `auto`。
 
-显式意图按语义识别：`简单检查`、`轻量检查`、`light check` 表示 light；`全面检查`、`全量检查`、`最终检查`、`提交前检查`、`full check` 表示 full。同一请求出现多次切换时，以最后一次明确表达为准。单独说 `check` / `check-all` 只是调用统一入口，不自动等同 full。
+深度按最后一次明确表达：`简单检查` / `轻量检查` / `light check` 为 light；`全面检查` / `全量检查` / `full check` 为 full。`check` / `check-all` / `最终检查` / `提交前检查` 只调用统一入口并保持 `requested_depth=auto`；提交不等同 full。
 
 历史 auto-loop 缺少深度字段时 runner 返回 `full`。文件数、diff 行数或“看起来简单”不能单独决定 light。
 
@@ -87,8 +87,8 @@ hard-full 只看行为契约变化和影响面是否闭合。文件载体或主�
 - 公共 API、CLI、schema、持久化状态、协议字段、缓存、迁移或历史数据兼容发生行为变化；
 - 权限、安全、资金、并发、时序、状态机、回滚、发布或 Git 控制门禁发生行为变化；
 - 改动跨越独立行为边界，或直接引用点、状态传播或回归路径无法完整列出；
-- 正在重检既有 full `CHK-*` / `FBK-*` 修复结果；
 - light 执行中发现未知 dirty path、真实影响面扩大或关键验证缺口。
+- 计划基线、相关契约或既有验证证据已经变化，导致原 full 证据失效或无法证明仍覆盖当前 diff。
 
 无法确认是否改变行为契约或影响面是否闭合时，使用 `effective=full`、`confidence=fallback-full`。
 
@@ -98,6 +98,8 @@ hard-full 只看行为契约变化和影响面是否闭合。文件载体或主�
 - 无行为性 hard-full 信号；
 - 受影响规划条目、直接引用点、状态传播和回归路径可穷举；
 - 局部行为修改时，直接引用点和回归路径可穷举，并有可运行的定向验证；无行为变化时，仅涉及注释、错别字、排版、解释文字、示例或机械投影同步；
-- 不在既有 full 修复/重检链中。
+- 承接既有 full 报告时，原 finding、修复路径、引用/回归和定向证据可闭合。
 
-light 执行中命中 hard-full 时，立即单向升级 full 并补齐所有适用维度；同一修复/重检循环内 full 不得降级。
+跨轮局部修复可重新选择 light；结束任务、提交或已有 full 报告不触发 full。既有 full 证据仍覆盖当前 diff且后续修改已定向重检时可复用。仅显式 full、hard-full、范围不闭合、未知 dirty、基线/契约变化或证据失效时重跑 full。
+
+light 执行中命中 hard-full 时，立即单向升级 full 并补齐所有适用维度；同一次 Check-All 执行中一旦升级为 full，不得降回 light。
