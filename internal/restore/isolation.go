@@ -16,6 +16,7 @@ import (
 
 	"github.com/silentflower/ark/internal/backup"
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/dnsmgr"
 	"github.com/silentflower/ark/internal/sshexec"
 	"gopkg.in/yaml.v3"
 )
@@ -229,6 +230,7 @@ func WithIsolationOptions(plan Plan, options IsolationOptions) (Plan, error) {
 	projectName := isolationProjectName(effectiveProjectName(originalProject), options.Purpose, shortID)
 	generatedComposeFile := path.Join(root, "compose.generated.json")
 	isolated := copyPlan(plan)
+	isolated.DNS = nil
 	isolated.Isolation = &IsolationSpec{
 		SchemaVersion:        isolationSchemaVersion,
 		ID:                   id,
@@ -451,6 +453,11 @@ func copyPlan(plan Plan) Plan {
 	copied := plan
 	copied.Project = plan.Project
 	copied.ManualChecks = append([]string(nil), plan.ManualChecks...)
+	if plan.DNS != nil {
+		dnsPlan := *plan.DNS
+		dnsPlan.Records = append([]dnsmgr.Record(nil), plan.DNS.Records...)
+		copied.DNS = &dnsPlan
+	}
 	copied.Steps = make([]Step, len(plan.Steps))
 	for index, step := range plan.Steps {
 		copied.Steps[index] = step

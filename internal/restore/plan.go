@@ -12,6 +12,7 @@ import (
 
 	"github.com/silentflower/ark/internal/backup"
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/dnsmgr"
 	"github.com/silentflower/ark/internal/store"
 )
 
@@ -38,7 +39,7 @@ const (
 const defaultConflictPolicy = "refuse_existing"
 
 var defaultManualChecks = []string{
-	"暂停 dnsmgr 对目标主机的检测",
+	"确认已暂停 dnsmgr 对目标主机的检测，并在恢复结束后重新启用",
 	"确认 DNS 指向目标主机",
 	"确认 TLS 证书适配目标环境",
 	"确认防火墙端口已放行",
@@ -110,6 +111,8 @@ type Plan struct {
 	Steps []Step `json:"steps"`
 	// ManualChecks 是执行或切流前必须由管理员复核的固定事项。
 	ManualChecks []string `json:"manual_checks"`
+	// DNS 是跨机原位恢复完成后执行的非秘密 dnsmgr 切换计划。
+	DNS *dnsmgr.Plan `json:"dns,omitempty"`
 	// Isolation 是显式隔离恢复的纯数据意图；原位恢复为空。
 	Isolation *IsolationSpec `json:"isolation,omitempty"`
 }
@@ -184,6 +187,7 @@ func BuildPlan(
 	}
 
 	steps := buildSteps(source.Targets, results)
+	dnsPlan := buildDNSPlan(*source, *destination)
 	return Plan{
 		ManifestSnapshotID: manifestSnapshotID,
 		RunID:              manifest.RunID,
@@ -192,8 +196,34 @@ func BuildPlan(
 		Project:            copyProject(source.Project),
 		ConflictPolicy:     defaultConflictPolicy,
 		Steps:              steps,
-		ManualChecks:       append([]string(nil), defaultManualChecks...),
+		ManualChecks:       manualChecksFor(dnsPlan),
+		DNS:                dnsPlan,
 	}, nil
+}
+
+func buildDNSPlan(source config.Host, destination config.Host) *dnsmgr.Plan {
+	if source.Host == destination.Host || destination.DNSMgr == nil {
+		return nil
+	}
+	plan := &dnsmgr.Plan{
+		Value:   destination.DNSMgr.Value,
+		Records: make([]dnsmgr.Record, len(destination.DNSMgr.Records)),
+	}
+	for index, record := range destination.DNSMgr.Records {
+		plan.Records[index] = dnsmgr.Record{DomainID: record.DomainID, RecordID: record.RecordID}
+	}
+	return plan
+}
+
+func manualChecksFor(plan *dnsmgr.Plan) []string {
+	checks := make([]string, 0, len(defaultManualChecks))
+	for _, item := range defaultManualChecks {
+		if plan != nil && item == "确认 DNS 指向目标主机" {
+			continue
+		}
+		checks = append(checks, item)
+	}
+	return checks
 }
 
 func findConfigHost(cfg *config.Config, name string) *config.Host {

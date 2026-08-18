@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/dnsmgr"
 	"github.com/silentflower/ark/internal/restic"
 	"github.com/silentflower/ark/internal/sshexec"
 	"github.com/silentflower/ark/internal/store"
@@ -107,6 +108,8 @@ type Result struct {
 	ManualChecks []string `json:"manual_checks"`
 	// Error 是脱敏后的整体失败摘要。
 	Error string `json:"error,omitempty"`
+	// DNS 是数据恢复完成后的 dnsmgr 切换与补偿摘要；无自动 DNS 计划时为空。
+	DNS *dnsmgr.SwitchResult `json:"dns,omitempty"`
 	// Isolation 是隔离恢复的资源、端口和清理摘要；原位恢复为空。
 	Isolation *IsolationResult `json:"isolation,omitempty"`
 }
@@ -547,6 +550,14 @@ func validateInspectionPlan(plan Plan, rawFileTargets map[string]string, force b
 	}
 	if plan.Isolation != nil && force {
 		return fmt.Errorf("执行恢复失败: isolation Plan 不允许 force")
+	}
+	if plan.DNS != nil {
+		if plan.Isolation != nil || plan.SourceHost == plan.DestinationHost {
+			return fmt.Errorf("执行恢复失败: DNS 计划只允许跨机原位恢复")
+		}
+		if err := plan.DNS.Validate(); err != nil {
+			return fmt.Errorf("执行恢复失败: %w", err)
+		}
 	}
 	if err := validateExecutePlan(plan); err != nil {
 		return err

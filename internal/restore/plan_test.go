@@ -3,6 +3,7 @@ package restore
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -166,6 +167,59 @@ func TestBuildPlan_同名恢复默认目标为来源(t *testing.T) {
 	}
 	if plan.DestinationHost != "source-01" {
 		t.Fatalf("destination = %q", plan.DestinationHost)
+	}
+}
+
+func TestBuildPlan_DNS计划只用于跨机原位恢复且深拷贝(t *testing.T) {
+	cfg, manifest := testRestoreInputs()
+	cfg.Hosts[1].DNSMgr = &config.HostDNSMgr{
+		Value: "203.0.113.10",
+		Records: []config.DNSMgrRecord{
+			{DomainID: 12, RecordID: "record-a"},
+			{DomainID: 12, RecordID: "record-b"},
+		},
+	}
+	plan, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+	if err != nil {
+		t.Fatalf("BuildPlan 失败: %v", err)
+	}
+	if plan.DNS == nil || plan.DNS.Value != "203.0.113.10" || len(plan.DNS.Records) != 2 {
+		t.Fatalf("DNS 计划 = %#v", plan.DNS)
+	}
+	if len(plan.ManualChecks) != 4 || slices.Contains(plan.ManualChecks, "确认 DNS 指向目标主机") {
+		t.Fatalf("自动 DNS 计划的人工项 = %#v", plan.ManualChecks)
+	}
+	cfg.Hosts[1].DNSMgr.Value = "198.51.100.20"
+	cfg.Hosts[1].DNSMgr.Records[0].RecordID = "changed"
+	if plan.DNS.Value != "203.0.113.10" || plan.DNS.Records[0].RecordID != "record-a" {
+		t.Fatalf("DNS 计划未深拷贝: %#v", plan.DNS)
+	}
+
+	sameHost, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "source-01")
+	if err != nil {
+		t.Fatalf("同机 BuildPlan 失败: %v", err)
+	}
+	if sameHost.DNS != nil {
+		t.Fatalf("同机恢复不应包含 DNS 计划: %#v", sameHost.DNS)
+	}
+}
+
+func TestWithIsolation_清除DNS计划且不修改原计划(t *testing.T) {
+	cfg, manifest := testRestoreInputs()
+	cfg.Hosts[1].DNSMgr = &config.HostDNSMgr{
+		Value:   "203.0.113.10",
+		Records: []config.DNSMgrRecord{{DomainID: 12, RecordID: "record-a"}},
+	}
+	plan, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+	if err != nil {
+		t.Fatalf("BuildPlan 失败: %v", err)
+	}
+	isolated, err := WithIsolation(plan)
+	if err != nil {
+		t.Fatalf("WithIsolation 失败: %v", err)
+	}
+	if isolated.DNS != nil || plan.DNS == nil {
+		t.Fatalf("隔离 DNS 边界错误: isolated=%#v original=%#v", isolated.DNS, plan.DNS)
 	}
 }
 

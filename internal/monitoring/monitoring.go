@@ -5,18 +5,14 @@
 package monitoring
 
 import (
-	"errors"
 	"fmt"
-	"net"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
+	"github.com/silentflower/ark/internal/endpoint"
 	"github.com/silentflower/ark/internal/envfile"
-	"golang.org/x/sys/unix"
+	"github.com/silentflower/ark/internal/secretfile"
 )
 
 const (
@@ -72,7 +68,7 @@ const (
 // @return Settings 已校验且不会向外暴露秘密值的监控配置。
 // @return error 文件安全、语法、键组合或 URL 校验错误；错误不会包含秘密值。
 func Load(path string) (Settings, error) {
-	file, err := openSecretFile(path)
+	file, err := secretfile.Open(path, "monitoring.env_file")
 	if err != nil {
 		return Settings{}, err
 	}
@@ -122,47 +118,6 @@ func Load(path string) (Settings, error) {
 	return settings, nil
 }
 
-func openSecretFile(path string) (*os.File, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, errors.New("monitoring.env_file 不能为空")
-	}
-	if !filepath.IsAbs(path) {
-		return nil, errors.New("monitoring.env_file 必须是绝对路径")
-	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, fmt.Errorf("安全打开监控凭证文件 %s 失败: %w", path, err)
-	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("安全打开监控凭证文件 %s 失败", path)
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("读取监控凭证文件 %s 元数据失败: %w", path, err)
-	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
-		return nil, fmt.Errorf("拒绝读取监控凭证文件 %s: 不是普通文件", path)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		_ = file.Close()
-		return nil, fmt.Errorf("拒绝读取监控凭证文件 %s: 权限为 %04o，应不超过 0600", path, info.Mode().Perm())
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		_ = file.Close()
-		return nil, fmt.Errorf("拒绝读取监控凭证文件 %s: 无法确认所有者", path)
-	}
-	if stat.Uid != uint32(os.Geteuid()) {
-		_ = file.Close()
-		return nil, fmt.Errorf("拒绝读取监控凭证文件 %s: 所有者 UID 为 %d，必须是当前进程 UID %d", path, stat.Uid, os.Geteuid())
-	}
-	return file, nil
-}
-
 func rejectUnknownKeys(path string, values map[string]string) error {
 	var unknown []string
 	for key := range values {
@@ -178,35 +133,5 @@ func rejectUnknownKeys(path string, values map[string]string) error {
 }
 
 func parseEndpoint(name, value string) (*url.URL, error) {
-	if value == "" {
-		return nil, fmt.Errorf("%s 不能为空", name)
-	}
-	endpoint, err := url.Parse(value)
-	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || endpoint.Opaque != "" {
-		return nil, fmt.Errorf("%s 不是合法的绝对 URL", name)
-	}
-	if endpoint.User != nil {
-		return nil, fmt.Errorf("%s 不允许包含 userinfo", name)
-	}
-	if endpoint.Fragment != "" {
-		return nil, fmt.Errorf("%s 不允许包含 fragment", name)
-	}
-	switch strings.ToLower(endpoint.Scheme) {
-	case "https":
-	case "http":
-		if !isLoopbackHost(endpoint.Hostname()) {
-			return nil, fmt.Errorf("%s 只允许 HTTPS；HTTP 仅可用于 loopback 地址", name)
-		}
-	default:
-		return nil, fmt.Errorf("%s 只允许 HTTPS；HTTP 仅可用于 loopback 地址", name)
-	}
-	return endpoint, nil
-}
-
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return endpoint.ParseHTTPSOrLoopback(name, value)
 }

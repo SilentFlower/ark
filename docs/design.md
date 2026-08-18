@@ -580,14 +580,22 @@ hub 上同时运行 dnsmgr（`SilentFlower/dnsmgr`，上游 `netcccyun/dnsmgr`�
 
 ### 11.1 恢复完成后的自动化
 
-`design.md` §7 第 8 步的人工确认清单里，前两项可以交给 dnsmgr：
+`design.md` §7 第 8 步的人工确认清单里，DNS 指向已由 P5-2 自动化，TLS 证书仍留给 P5-4：
 
-- **DNS 指向** → 调 dnsmgr 的 `POST /api/record/update/:id`，把域名切到新机器 IP。
-  该路由在 `Route::group('api', ...)` 里、由 `AuthApi` 中间件保护，ark 用 API token 即可调用。
+- **DNS 指向** → 跨机原位恢复 completion marker 成功后，调用 dnsmgr 的
+  `POST /api/record/value/:id`，只提交记录 ID 和目标 IP。接口保留 provider 当前记录元数据，
+  支持 A/AAAA 地址族校验、幂等和 `expected_value` 补偿保护。目标值已存在时幂等成功优先；
+  只有需要实际写入时才要求当前值匹配 `expected_value`，使已由其它操作完成的补偿可以安全重试。
 - **TLS 证书** → dnsmgr 的证书自动部署支持 `ssh`、`local` 等 40+ 目标，
   可以把证书推到重建后的机器。
 
-恢复流程的最后一公里因此从「打印一张清单让人去点」变成「调两个 API」。
+ark 清单顶层保存 dnsmgr HTTPS 地址和 root-only 凭证文件路径，目标 host 保存显式 IP 与有序的
+`domain_id/record_id` 关联。普通 dry-run、inspect 和 preview digest 包含非秘密 DNS 计划，但不会
+读取凭证或发 HTTP；同机恢复与隔离恢复不生成 DNS 动作。
+
+多记录按清单顺序更新，任一失败后停止前向调用，并按逆序把本轮已变更记录补偿到各自旧值。
+补偿使用目标 IP 作为 `expected_value`，避免覆盖期间发生的其他切换。DNS 或补偿失败会让命令整体
+返回 `fail`，但保留数据恢复 completion marker，使重跑可以跳过已完成步骤并再次尝试 DNS。
 
 ### 11.2 一个会真打架的地方
 
@@ -598,11 +606,14 @@ hub 上同时运行 dnsmgr（`SilentFlower/dnsmgr`，上游 `netcccyun/dnsmgr`�
 
 因此 ark 在发起恢复前应当暂停对应的 dmtask，完成后恢复。
 
-**现存障碍**：dnsmgr 的 `/dmonitor/task/:action` 路由挂在 `CheckLogin` 会话组里，
-**不在 `AuthApi` 组**，ark 用 API token 调不到。打通需要给 dnsmgr fork
-加一个小补丁，把 dmtask 的启停暴露到 API 组。
+**接口条件已具备**：dnsmgr fork 已增加固定的
+`POST /api/dmonitor/task/setactive` 路由，由 `AuthApi` 保护，并在控制器中执行
+管理员权限检查。接口只允许按任务 ID 设置 `active=0|1`，重复设置保持幂等，
+没有把 `/dmonitor/task/:action` 的新增、编辑、删除或批量操作暴露给 API。
 
-在补丁落地之前，恢复流程把「请先暂停 dnsmgr 对该主机的检测」放进人工确认清单。
+ark 侧的配置与调用逻辑留在 P5-3：恢复开始前暂停任务，并通过 `defer` 保证成功、
+失败或中断后都尝试恢复。在 P5-3 落地之前，恢复流程仍把
+「确认已暂停 dnsmgr 对目标主机的检测，并在恢复结束后重新启用」放进人工确认清单。
 
 演练（`ark verify`）不受此影响，因为演练环境不绑定生产域名和 IP。
 
@@ -615,7 +626,7 @@ hub 上同时运行 dnsmgr（`SilentFlower/dnsmgr`，上游 `netcccyun/dnsmgr`�
 | hub 带宽成为总量上限 | 未处理 | 串行执行；机器数量增长时评估分流或改回直传 |
 | RPO 最坏等于一个备份周期 | 默认 24h | 可配到小时级；需要更小则要上 WAL 归档 |
 | 大库全量逻辑备份耗时长 | 未处理 | restic 去重只减少传输量，不减少 dump 时间 |
-| 恢复到新机器后 IP/域名变化 | 部分处理 | 人工确认清单；后续与 dnsmgr 联动自动化（§11） |
+| 恢复到新机器后 IP/域名变化 | 已处理 | P5-2 通过 Value-only AuthApi 自动切换并在部分失败时逆序补偿（§11） |
 | 对象存储账号本身被封 | 未处理 | 后续支持同时写入第二个后端 |
 | 单机多 compose 项目 | 未支持 | 清单当前假设一台机器一个项目 |
 | 共享仓库损坏影响全部机器 | 已知取舍（ADR-009） | `restic check` 定期校验 + 对象锁 |
@@ -627,5 +638,5 @@ hub 上同时运行 dnsmgr（`SilentFlower/dnsmgr`，上游 `netcccyun/dnsmgr`�
 | 对象锁保留期与 restic 保留策略如何对齐 | P2 | 保留期 = 月备保留时长，prune 交给生命周期规则 |
 | `ark verify` 的频率与执行位置（原机 / 专用隔离机） | P3 | 每周一次；先在原机跑通，有条件再上专用机 |
 | `ark-hub` 的鉴权形式（本地账号 / OIDC / 反代托管） | P4 | 已定：本地单管理员密码，CLI 初始化/重置，不使用二次验证 |
-| dnsmgr fork 的 API 补丁何时提交 | P5 | 与联动功能同批做，尽量做成能回馈上游的形态 |
+| dnsmgr fork 的 API 补丁何时提交 | P5 | 已提交到 fork，接口前置条件已满足；后续择机回馈上游 |
 | manifest schema 的向后兼容策略 | P6 | 新版必须能读旧 manifest，写入始终用最新版 |

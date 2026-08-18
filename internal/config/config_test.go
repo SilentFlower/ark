@@ -84,6 +84,24 @@ hosts:
         database: app
 `
 
+// manifestWithDNSMgr 在合法旧清单上增加可选 dnsmgr 配置。
+func manifestWithDNSMgr() string {
+	manifest := strings.Replace(validManifest, "defaults:\n", `dnsmgr:
+  base_url: https://dns.example.com
+  env_file: /etc/ark/dnsmgr.env
+defaults:
+`, 1)
+	return strings.Replace(manifest, "    project:\n      name: sub2api", `    dnsmgr:
+      value: 203.0.113.10
+      records:
+        - domain_id: 12
+          record_id: cf-record-1
+        - domain_id: 12
+          record_id: cf-record-2
+    project:
+      name: sub2api`, 1)
+}
+
 // writeManifest 把清单内容写入临时文件并返回路径。
 func writeManifest(t *testing.T, content string) string {
 	t.Helper()
@@ -138,6 +156,115 @@ func TestLoadAndValidate_Valid(t *testing.T) {
 	}
 	if len(web.Targets) != 5 {
 		t.Errorf("web-01 targets 数量 = %d, 期望 5", len(web.Targets))
+	}
+}
+
+func TestLoadAndValidate_DNSMgr配置(t *testing.T) {
+	cfg, err := LoadAndValidate(writeManifest(t, manifestWithDNSMgr()))
+	if err != nil {
+		t.Fatalf("dnsmgr 清单应通过校验: %v", err)
+	}
+	if cfg.DNSMgr == nil || cfg.DNSMgr.BaseURL != "https://dns.example.com" ||
+		cfg.DNSMgr.EnvFile != "/etc/ark/dnsmgr.env" {
+		t.Fatalf("顶层 dnsmgr 配置 = %#v", cfg.DNSMgr)
+	}
+	web := hostByName(t, cfg, "web-01")
+	if web.DNSMgr == nil || web.DNSMgr.Value != "203.0.113.10" || len(web.DNSMgr.Records) != 2 {
+		t.Fatalf("host dnsmgr 配置 = %#v", web.DNSMgr)
+	}
+}
+
+func TestLoadAndValidate_旧清单不要求DNSMgr(t *testing.T) {
+	cfg, err := LoadAndValidate(writeManifest(t, validManifest))
+	if err != nil {
+		t.Fatalf("未配置 dnsmgr 的旧清单应保持兼容: %v", err)
+	}
+	if cfg.DNSMgr != nil {
+		t.Fatalf("旧清单不应产生 dnsmgr 配置: %#v", cfg.DNSMgr)
+	}
+}
+
+func TestValidate_DNSMgrErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(string) string
+		wantSub string
+	}{
+		{
+			name: "base_url 为空",
+			mutate: func(s string) string {
+				return strings.Replace(s, "base_url: https://dns.example.com", "base_url: ''", 1)
+			},
+			wantSub: "dnsmgr.base_url",
+		},
+		{
+			name: "非 loopback HTTP",
+			mutate: func(s string) string {
+				return strings.Replace(s, "https://dns.example.com", "http://dns.example.com", 1)
+			},
+			wantSub: "只允许 HTTPS",
+		},
+		{
+			name: "env_file 相对路径",
+			mutate: func(s string) string {
+				return strings.Replace(s, "/etc/ark/dnsmgr.env", "dnsmgr.env", 1)
+			},
+			wantSub: "dnsmgr.env_file",
+		},
+		{
+			name: "host 缺少顶层配置",
+			mutate: func(s string) string {
+				start := strings.Index(s, "dnsmgr:\n  base_url:")
+				end := strings.Index(s[start:], "defaults:\n") + start
+				return s[:start] + s[end:]
+			},
+			wantSub: "顶层 dnsmgr 配置缺失",
+		},
+		{
+			name: "目标值不是 IP",
+			mutate: func(s string) string {
+				return strings.Replace(s, "value: 203.0.113.10", "value: app.example.com", 1)
+			},
+			wantSub: "hosts[1](web-01).dnsmgr.value",
+		},
+		{
+			name: "记录列表为空",
+			mutate: func(s string) string {
+				start := strings.Index(s, "      records:\n")
+				end := strings.Index(s[start:], "    project:\n") + start
+				return s[:start] + "      records: []\n" + s[end:]
+			},
+			wantSub: "至少需要一条记录关联",
+		},
+		{
+			name: "domain_id 非正数",
+			mutate: func(s string) string {
+				return strings.Replace(s, "domain_id: 12", "domain_id: 0", 1)
+			},
+			wantSub: "domain_id",
+		},
+		{
+			name: "record_id 为空",
+			mutate: func(s string) string {
+				return strings.Replace(s, "record_id: cf-record-1", "record_id: ''", 1)
+			},
+			wantSub: "record_id",
+		},
+		{
+			name: "记录关联重复",
+			mutate: func(s string) string {
+				return strings.Replace(s, "record_id: cf-record-2", "record_id: cf-record-1", 1)
+			},
+			wantSub: "重复",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadAndValidate(writeManifest(t, tc.mutate(manifestWithDNSMgr())))
+			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("错误 = %v，期望包含 %q", err, tc.wantSub)
+			}
+		})
 	}
 }
 

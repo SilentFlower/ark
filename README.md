@@ -128,6 +128,33 @@ ARK_HEARTBEAT_FAILURE_URL=https://monitor.example/ping/REDACTED/fail
 `heartbeat_status=disabled|sent|failed`。心跳失败不会改写备份 run、manifest 或既有退出码。
 `ark-hub` 与 backup timer 仍彼此独立，停止 Hub 不影响定时备份和外部心跳。
 
+## 恢复后自动切换 DNS
+
+跨机原位恢复可以在目标 host 下关联 dnsmgr 的 A/AAAA 记录。顶层只保存服务地址和受限凭证文件路径，
+host 只保存目标 IP、dnsmgr domain ID 与 provider record ID：
+
+```yaml
+dnsmgr:
+  base_url: https://dns.example.com
+  env_file: /etc/ark/dnsmgr.env
+
+hosts:
+  - host: web-02
+    dnsmgr:
+      value: 203.0.113.10
+      records:
+        - domain_id: 12
+          record_id: "provider-record-id"
+```
+
+`/etc/ark/dnsmgr.env` 必须由运行 ark 的用户所有、权限不超过 `0600`，且只包含
+`ARK_DNSMGR_UID` 与 `ARK_DNSMGR_API_KEY`。DNS 计划会进入 dry-run、inspect 和 preview digest，
+但这些只读模式不会打开凭证文件或发 HTTP。真实切换只发生在恢复 completion marker 成功后；
+多记录失败会逆序补偿，补偿不完整时结果会列出需人工核对的记录。
+
+详细发布、验收和回滚步骤见 [运维说明](docs/operations.md)。P5-3 完成前，恢复前后仍需人工暂停和恢复
+相关 dnsmgr 健康检测任务。
+
 ## ⚠️ 关于密钥
 
 **restic 仓库密码必须另外保存一份在 hub 之外**（密码管理器 / 离线介质）。
@@ -137,6 +164,7 @@ ARK_HEARTBEAT_FAILURE_URL=https://monitor.example/ping/REDACTED/fail
 
 SSH 私钥同理，且**密钥本身不进备份**：把开锁的钥匙和锁着的箱子放在同一个地方没有意义。
 `monitoring.env` 同样不得进入备份，否则群机器人与外部监控凭证会随快照扩散。
+`dnsmgr.env` 也不得进入备份；它包含可修改 DNS 记录的 AuthApi 凭证。
 
 ## 开发
 

@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/silentflower/ark/internal/endpoint"
 	"gopkg.in/yaml.v3"
 )
 
@@ -93,6 +94,7 @@ type Config struct {
 	Repo       Repo        `yaml:"repo"`
 	Defaults   Defaults    `yaml:"defaults"`
 	Monitoring *Monitoring `yaml:"monitoring,omitempty"`
+	DNSMgr     *DNSMgr     `yaml:"dnsmgr,omitempty"`
 	Hosts      []Host      `yaml:"hosts"`
 
 	// path 记录清单自身的来源路径，仅用于错误信息，不参与序列化。
@@ -113,6 +115,17 @@ type Defaults struct {
 // 清单只保存绝对路径，Webhook、签名密钥与心跳 URL 都留在权限受限的文件中，
 // 避免它们进入示例、状态库或清单备份。
 type Monitoring struct {
+	EnvFile string `yaml:"env_file"`
+}
+
+// DNSMgr 描述 ark 调用 dnsmgr AuthApi 所需的非秘密连接配置。
+//
+// UID 与 API key 只存在 EnvFile 指向的受限文件中，避免进入清单、
+// dry-run、状态库或普通错误上下文。
+type DNSMgr struct {
+	// BaseURL 是 dnsmgr 服务的绝对 URL，不包含 API 路由。
+	BaseURL string `yaml:"base_url"`
+	// EnvFile 是 dnsmgr AuthApi 凭证文件的绝对路径。
 	EnvFile string `yaml:"env_file"`
 }
 
@@ -138,6 +151,25 @@ type Host struct {
 	// Schedule 与 Retention 为 nil 时套用 Defaults，见 ScheduleFor / RetentionFor。
 	Schedule  *Schedule  `yaml:"schedule"`
 	Retention *Retention `yaml:"retention"`
+
+	// DNSMgr 描述恢复到该 host 后需要切换的 dnsmgr 记录，可为空。
+	DNSMgr *HostDNSMgr `yaml:"dnsmgr,omitempty"`
+}
+
+// HostDNSMgr 描述恢复到一台 host 后的 DNS 目标值与记录关联。
+type HostDNSMgr struct {
+	// Value 是所有关联 A 或 AAAA 记录要切换到的显式 IP。
+	Value string `yaml:"value"`
+	// Records 按声明顺序保存需要切换的 dnsmgr 记录。
+	Records []DNSMgrRecord `yaml:"records"`
+}
+
+// DNSMgrRecord 是一条 dnsmgr 域名与 provider 记录的稳定关联。
+type DNSMgrRecord struct {
+	// DomainID 是 dnsmgr 本地 domain 表的主键。
+	DomainID int64 `yaml:"domain_id"`
+	// RecordID 是 DNS provider 返回的稳定记录 ID。
+	RecordID string `yaml:"record_id"`
 }
 
 // SSH 描述 hub 连到一台目标机所需的全部信息。
@@ -445,10 +477,26 @@ func (c *Config) Validate() error {
 
 	c.validateRepo(add)
 	c.validateMonitoring(add)
+	c.validateDNSMgr(add)
 	c.validateDefaults(add)
 	c.validateHosts(add)
 
 	return errors.Join(errs...)
+}
+
+// validateDNSMgr 只校验清单中的连接字段；凭证文件和网络属于 doctor。
+func (c *Config) validateDNSMgr(add func(string, ...any)) {
+	if c.DNSMgr == nil {
+		return
+	}
+	if _, err := endpoint.ParseBaseURL("dnsmgr.base_url", c.DNSMgr.BaseURL); err != nil {
+		add("%v", err)
+	}
+	if c.DNSMgr.EnvFile == "" {
+		add("dnsmgr.env_file: 不能为空")
+	} else if !filepath.IsAbs(c.DNSMgr.EnvFile) {
+		add("dnsmgr.env_file: 必须是绝对路径，实际 %q", c.DNSMgr.EnvFile)
+	}
 }
 
 // validateMonitoring 只校验清单字段本身；文件存在性、权限和内容属于运行时与 doctor。
@@ -526,12 +574,52 @@ func (c *Config) validateHosts(add func(string, ...any)) {
 		validateConnection(prefix, h, add)
 		validateProject(prefix, h.Project, add)
 		validateTargets(prefix, h.Targets, add)
+		validateHostDNSMgr(prefix+".dnsmgr", h.DNSMgr, c.DNSMgr != nil, add)
 
 		if h.Schedule != nil {
 			validateSchedule(prefix+".schedule", *h.Schedule, add)
 		}
 		if h.Retention != nil {
 			validateRetention(prefix+".retention", *h.Retention, add)
+		}
+	}
+}
+
+// validateHostDNSMgr 校验 host 级 DNS 目标与记录关联。
+func validateHostDNSMgr(
+	prefix string,
+	settings *HostDNSMgr,
+	hasGlobalSettings bool,
+	add func(string, ...any),
+) {
+	if settings == nil {
+		return
+	}
+	if !hasGlobalSettings {
+		add("%s: 已配置记录关联，但顶层 dnsmgr 配置缺失", prefix)
+	}
+	if net.ParseIP(strings.TrimSpace(settings.Value)) == nil {
+		add("%s.value: %q 不是合法的 IPv4 或 IPv6 地址", prefix, settings.Value)
+	}
+	if len(settings.Records) == 0 {
+		add("%s.records: 至少需要一条记录关联", prefix)
+		return
+	}
+	seen := make(map[string]int, len(settings.Records))
+	for index := range settings.Records {
+		record := settings.Records[index]
+		recordPrefix := fmt.Sprintf("%s.records[%d]", prefix, index)
+		if record.DomainID <= 0 {
+			add("%s.domain_id: 必须大于 0", recordPrefix)
+		}
+		if strings.TrimSpace(record.RecordID) == "" {
+			add("%s.record_id: 不能为空", recordPrefix)
+		}
+		key := fmt.Sprintf("%d\x00%s", record.DomainID, strings.TrimSpace(record.RecordID))
+		if previous, exists := seen[key]; exists {
+			add("%s: 与 %s.records[%d] 重复", recordPrefix, prefix, previous)
+		} else {
+			seen[key] = index
 		}
 	}
 }

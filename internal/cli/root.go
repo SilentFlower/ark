@@ -146,17 +146,27 @@ func printManifestSummary(cmd *cobra.Command, cfg *config.Config) {
 
 // newDoctorCmd 校验运行环境。
 func newDoctorCmd(configPath *string) *cobra.Command {
-	return newDoctorCmdWithRunners(configPath, doctor.RunLocal, doctor.RunHost)
+	return newDoctorCmdWithChecks(configPath, doctor.RunLocal, doctor.RunHost, doctor.RunDNSMgr)
 }
 
 type runLocalFunc func(context.Context, *config.Config) *doctor.Report
 type runHostFunc func(context.Context, *config.Config, *config.Host) *doctor.Report
+type runDNSMgrFunc func(context.Context, *config.Config) *doctor.Report
 
 // newDoctorCmdWithRunners 允许测试替换实际环境探测，同时保留完整的 CLI 编排行为。
 func newDoctorCmdWithRunners(
 	configPath *string,
 	runLocal runLocalFunc,
 	runHost runHostFunc,
+) *cobra.Command {
+	return newDoctorCmdWithChecks(configPath, runLocal, runHost, doctor.RunDNSMgr)
+}
+
+func newDoctorCmdWithChecks(
+	configPath *string,
+	runLocal runLocalFunc,
+	runHost runHostFunc,
+	runDNSMgr runDNSMgrFunc,
 ) *cobra.Command {
 	var asJSON bool
 	var hostName string
@@ -178,7 +188,7 @@ func newDoctorCmdWithRunners(
 				return err
 			}
 
-			report, err := runDoctor(cmd.Context(), cfg, hostName, all, runLocal, runHost)
+			report, err := runDoctorWithDNSMgr(cmd.Context(), cfg, hostName, all, runLocal, runHost, runDNSMgr)
 			if err != nil {
 				return err
 			}
@@ -205,6 +215,28 @@ func newDoctorCmdWithRunners(
 	cmd.Flags().BoolVar(&all, "all", false, "检查 hub 和清单中的全部 host")
 	cmd.MarkFlagsMutuallyExclusive("host", "all")
 	return cmd
+}
+
+func runDoctorWithDNSMgr(
+	ctx context.Context,
+	cfg *config.Config,
+	hostName string,
+	all bool,
+	runLocal runLocalFunc,
+	runHost runHostFunc,
+	runDNSMgr runDNSMgrFunc,
+) (*doctor.Report, error) {
+	report, err := runDoctor(ctx, cfg, hostName, all, runLocal, runHost)
+	if err != nil || hostName != "" || cfg == nil || cfg.DNSMgr == nil {
+		return report, err
+	}
+	if runDNSMgr == nil {
+		return nil, fmt.Errorf("执行 dnsmgr doctor 失败: 内部依赖不完整")
+	}
+	if next := runDNSMgr(ctx, cfg); next != nil {
+		report.Checks = append(report.Checks, next.Checks...)
+	}
+	return report, nil
 }
 
 // runDoctor 选择检查范围并按调用顺序合并报告。

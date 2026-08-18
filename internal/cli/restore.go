@@ -13,6 +13,7 @@ import (
 
 	"github.com/silentflower/ark/internal/backup"
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/dnsmgr"
 	"github.com/silentflower/ark/internal/doctor"
 	"github.com/silentflower/ark/internal/restic"
 	"github.com/silentflower/ark/internal/restore"
@@ -39,12 +40,15 @@ type restoreDependencies struct {
 	acquireLock      func(string) (io.Closer, error)
 	runLocalDoctor   runLocalFunc
 	runRestoreDoctor runHostFunc
+	runDNSMgrDoctor  runDNSMgrFunc
 	newRepo          func(*config.Repo) (*restic.Repo, error)
 	loadManifest     func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error)
 	newRunner        func(*config.Host) (sshexec.Runner, error)
 	execute          func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error)
 	inspect          func(context.Context, restore.Plan, sshexec.Runner, restore.InspectOptions) (restore.Preview, error)
 	cleanup          func(context.Context, sshexec.Runner, string, string) (restore.CleanupResult, error)
+	newDNSMgrClient  func(string, string) (dnsmgr.ValueSetter, error)
+	switchDNS        func(context.Context, dnsmgr.ValueSetter, dnsmgr.Plan) (dnsmgr.SwitchResult, error)
 	backup           backupDependencies
 }
 
@@ -59,13 +63,18 @@ func defaultRestoreDependencies() restoreDependencies {
 		acquireLock:      acquireBackupLock,
 		runLocalDoctor:   doctor.RunLocal,
 		runRestoreDoctor: doctor.RunRestoreHost,
+		runDNSMgrDoctor:  doctor.RunDNSMgr,
 		newRepo:          restic.New,
 		loadManifest:     backup.LoadManifestSelection,
 		newRunner:        backupRunnerForHost,
 		execute:          restore.Execute,
 		inspect:          restore.Inspect,
 		cleanup:          restore.CleanupIsolation,
-		backup:           defaultBackupDependencies(),
+		newDNSMgrClient: func(baseURL string, envFile string) (dnsmgr.ValueSetter, error) {
+			return dnsmgr.New(baseURL, envFile)
+		},
+		switchDNS: dnsmgr.Switch,
+		backup:    defaultBackupDependencies(),
 	}
 }
 
@@ -328,6 +337,9 @@ func runRestore(
 			return result, err
 		}
 	}
+	if err := validateDNSRestoreDependencies(plan, options.skipDoctor, dependencies); err != nil {
+		return result, err
+	}
 
 	if !options.skipDoctor {
 		if err := requireDoctor("本地", dependencies.runLocalDoctor(cmd.Context(), cfg)); err != nil {
@@ -335,6 +347,11 @@ func runRestore(
 		}
 		if err := requireDoctor("恢复目标", dependencies.runRestoreDoctor(cmd.Context(), cfg, destination)); err != nil {
 			return result, err
+		}
+		if plan.DNS != nil {
+			if err := requireDoctor("dnsmgr", dependencies.runDNSMgrDoctor(cmd.Context(), cfg)); err != nil {
+				return result, err
+			}
 		}
 	}
 	runner, err := dependencies.newRunner(destination)
@@ -366,7 +383,11 @@ func runRestore(
 			return runRestoreSafetyBackup(ctx, cfg, destination, options, dependencies.backup)
 		}
 	}
-	return dependencies.execute(cmd.Context(), plan, repo, runner, executeOptions)
+	result, runErr = dependencies.execute(cmd.Context(), plan, repo, runner, executeOptions)
+	if runErr != nil || plan.DNS == nil || (result.Status != store.StatusOK && result.Status != store.StatusWarn) {
+		return result, runErr
+	}
+	return runRestoreDNS(cmd.Context(), cfg, plan, result, dependencies)
 }
 
 type restoreCleanupOptions struct {
@@ -459,6 +480,64 @@ func validateRestoreDependencies(dependencies restoreDependencies) error {
 		return fmt.Errorf("执行 restore 失败: 内部依赖不完整")
 	}
 	return nil
+}
+
+func validateDNSRestoreDependencies(plan restore.Plan, skipDoctor bool, dependencies restoreDependencies) error {
+	if plan.DNS == nil {
+		return nil
+	}
+	if (!skipDoctor && dependencies.runDNSMgrDoctor == nil) ||
+		dependencies.newDNSMgrClient == nil || dependencies.switchDNS == nil {
+		return fmt.Errorf("执行 restore DNS 切换失败: 内部依赖不完整")
+	}
+	return nil
+}
+
+func runRestoreDNS(
+	ctx context.Context,
+	cfg *config.Config,
+	plan restore.Plan,
+	result restore.Result,
+	dependencies restoreDependencies,
+) (restore.Result, error) {
+	if cfg == nil || cfg.DNSMgr == nil || plan.DNS == nil {
+		return result, fmt.Errorf("执行 restore DNS 切换失败: 配置或计划不完整")
+	}
+	client, err := dependencies.newDNSMgrClient(cfg.DNSMgr.BaseURL, cfg.DNSMgr.EnvFile)
+	if err != nil {
+		records := make([]dnsmgr.RecordResult, len(plan.DNS.Records))
+		for index, record := range plan.DNS.Records {
+			records[index] = dnsmgr.RecordResult{
+				DomainID: record.DomainID, RecordID: record.RecordID, Status: "not_attempted",
+			}
+		}
+		dnsResult := dnsmgr.SwitchResult{
+			Status:        "rollback_failed",
+			Records:       records,
+			ManualRecords: append([]dnsmgr.Record(nil), plan.DNS.Records...),
+			Error:         "DNS 切换未执行",
+		}
+		result.DNS = &dnsResult
+		return failDNSRestore(result, fmt.Errorf("创建 dnsmgr client 失败: %w", err))
+	}
+	dnsResult, err := dependencies.switchDNS(ctx, client, *plan.DNS)
+	result.DNS = &dnsResult
+	if err != nil {
+		return failDNSRestore(result, err)
+	}
+	return result, nil
+}
+
+func failDNSRestore(result restore.Result, err error) (restore.Result, error) {
+	result.Status = store.StatusFail
+	result.Error = "数据恢复已完成，但 DNS 切换失败"
+	if result.DNS != nil {
+		for _, record := range result.DNS.ManualRecords {
+			result.ManualChecks = append(result.ManualChecks,
+				fmt.Sprintf("人工核对 dnsmgr 记录 %d/%s 当前指向", record.DomainID, record.RecordID))
+		}
+	}
+	return result, fmt.Errorf("数据恢复完成后切换 DNS 失败: %w", err)
 }
 
 func requireDoctor(scope string, report *doctor.Report) error {
@@ -554,6 +633,16 @@ func printRestoreResult(cmd *cobra.Command, result restore.Result) error {
 				port.Service, restoreIsolationAddress(port), port.Target, port.Protocol)
 		}
 		fmt.Fprintf(&output, "  清理命令: %s\n", result.Isolation.CleanupCommand)
+	}
+	if result.DNS != nil {
+		fmt.Fprintf(&output, "  DNS 切换: %s\n", result.DNS.Status)
+		for _, record := range result.DNS.Records {
+			fmt.Fprintf(&output, "    - %d/%s: %s", record.DomainID, record.RecordID, record.Status)
+			if record.RollbackStatus != "" {
+				fmt.Fprintf(&output, "，回滚 %s", record.RollbackStatus)
+			}
+			fmt.Fprintln(&output)
+		}
 	}
 	for _, step := range result.Steps {
 		target := "项目级"
@@ -660,6 +749,12 @@ func printRestorePlan(cmd *cobra.Command, plan restore.Plan) error {
 		fmt.Fprintln(&output, "  隔离策略: 不覆盖原项目资源；--force 禁用")
 	} else {
 		fmt.Fprintf(&output, "  冲突策略: %s（默认拒绝覆盖；真实恢复需显式 --force）\n", plan.ConflictPolicy)
+		if plan.DNS != nil {
+			fmt.Fprintf(&output, "  DNS 目标: %s\n", plan.DNS.Value)
+			for _, record := range plan.DNS.Records {
+				fmt.Fprintf(&output, "  DNS 记录: %d/%s\n", record.DomainID, record.RecordID)
+			}
+		}
 	}
 
 	var current restore.Phase

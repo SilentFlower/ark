@@ -473,7 +473,7 @@ files → 镜像 digest → volume → 起数据库 → 灌数据 → 起应用 
 - `--to <host>` 支持恢复到另一台机器，这是跨机重建的入口。
 - 结束时输出**人工确认清单**：DNS 指向、TLS 证书、防火墙端口、
   以及 `.env` 里需要按新环境调整的项。
-  暂时也包括「请先暂停 dnsmgr 对该主机的检测」，直到 P5 自动化。
+  暂时也包括「请先暂停 dnsmgr 对该主机的检测」，直到 P5-3 自动化。
 
 **验收**：见 P3-3。
 
@@ -651,23 +651,31 @@ timer 不受影响。
 
 粗估 1–2 天。依赖 P3 完成——要先有真实的恢复流程，才知道联动点确切在哪。
 
-### P5-1 dnsmgr fork 的 API 补丁
+### P5-1 dnsmgr fork 的 API 补丁（已实现）
 
-`/dmonitor/task/:action` 目前挂在 `CheckLogin` 会话组，不在 `AuthApi` 组，
-ark 用 API token 调不到。需要在 `SilentFlower/dnsmgr` 的 `route/app.php`
-把 dmtask 的启停暴露到 API 组。
+`SilentFlower/dnsmgr` 已增加固定的 `POST /api/dmonitor/task/setactive` 路由，
+由现有 `AuthApi` 中间件保护，并在独立控制器方法中执行管理员权限检查。
+接口只接受单个任务的 `id` 与 `active=0|1`，重复设置保持幂等；原有
+`/dmonitor/task/:action` 会话入口及新增、编辑、删除、批量操作均未暴露给 API。
 
-改动很小，但尽量做成能回馈上游的形态，避免每次追 upstream 都要处理冲突。
+补丁已按通用 dmonitor 语义落地，没有引入 ark 专用配置，后续可择机回馈上游。
 
-### P5-2 恢复后自动切 DNS
+### P5-2 恢复后自动切 DNS（已实现）
 
-调 dnsmgr 的 `POST /api/record/update/:id`，把域名指到新机器 IP。
-配置在清单的 host 条目下增加可选的 dnsmgr 记录关联。
+dnsmgr fork 增加受 `AuthApi` 保护的 `POST /api/auth/check` 与
+`POST /api/record/value/:id`。Value-only 接口只接收稳定记录 ID、目标 IP 和可选
+`expected_value`，从 provider 读取并保留 Name、Type、Line、TTL、MX、Weight、Remark。
+目标值已存在时优先返回幂等成功；只有实际写入时才校验 `expected_value`，避免补偿重试误报冲突。
+
+ark schema v2 以兼容的可选字段增加顶层连接配置和 host 级目标 IP/多记录关联。跨机原位恢复
+completion marker 成功后顺序切换 DNS；部分失败会逆序补偿。DNS 计划进入 dry-run、inspect、
+JSON 和 preview digest，但只读路径不读取凭证或发 HTTP；同机与隔离恢复不切换 DNS。
 
 ### P5-3 维护窗口联动
 
 ark 发起恢复前暂停对应 dmtask，完成后恢复。
 **失败也要恢复**——用 defer 保证，不能因为恢复失败就把检测永久关着。
+P5-1 的 dnsmgr API 前置条件已经满足；本阶段实现 ark 侧配置、客户端调用与恢复兜底。
 
 ### P5-4 证书部署联动
 
@@ -710,5 +718,5 @@ ark 发起恢复前暂停对应 dmtask，完成后恢复。
 | 对象锁保留期与 restic 保留策略如何对齐 | P2-7 | 保留期 = 月备保留时长，prune 交给生命周期规则 |
 | `ark verify` 的频率与执行位置（原机 / 专用隔离机） | P3-5 | 每周一次；先在原机跑通，有条件再上专用机 |
 | `ark-hub` 的鉴权形式（本地账号 / OIDC / 反代托管） | P4-1 | 已定：本地单管理员密码，CLI 初始化/重置，不使用二次验证 |
-| dnsmgr fork 的 API 补丁能否回馈上游 | P5-1 | 尽量做成通用形态提 PR，避免长期维护分叉 |
+| dnsmgr fork 的 API 补丁能否回馈上游 | P5-1 | fork 补丁已按通用形态落地；后续择机提 PR，避免长期维护分叉 |
 | manifest schema 的向后兼容策略 | P6 | 新版必须能读旧 manifest，写入始终用最新版 |

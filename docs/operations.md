@@ -21,6 +21,7 @@ online backup 导出一致的单文件副本，再把该副本流式交给 resti
 - `repo.password_file` 指向的 restic 密码文件；
 - `repo.env_file` 指向的对象存储凭证文件；
 - `monitoring.env_file` 指向的钉钉与外部心跳凭证文件；
+- `dnsmgr.env_file` 指向的 AuthApi 凭证文件；
 - 每台机器的 SSH 私钥；
 - `/var/lib/ark-hub/auth.json`；
 - 应用解密密钥和其它登录或解密介质。
@@ -82,7 +83,55 @@ backup 读取失败时仍完成真实备份，但摘要显示 `heartbeat_status=
 静默期内确认不重复发送。再停止 `ark-hub`，确认 backup timer 和成功心跳仍执行；恢复 Hub 后停止
 backup timer，确认外部监控按配置的宽限期报告失联。任何测试结束后都要恢复 timer 和故障注入。
 
-## 3. 离线恢复材料
+## 3. 恢复后 dnsmgr DNS 切换
+
+先在 hub 创建受限凭证文件，并确保所有者与运行 `ark`、`ark-hub` 的用户一致：
+
+```bash
+install -m 0600 /dev/null /etc/ark/dnsmgr.env
+```
+
+文件只允许以下两个键，不要把真实值写入清单、工单、日志或命令行：
+
+```dotenv
+ARK_DNSMGR_UID=REDACTED
+ARK_DNSMGR_API_KEY=REDACTED
+```
+
+清单顶层声明 AuthApi 地址和凭证路径，目标 host 声明显式 IP 与有序记录关联：
+
+```yaml
+dnsmgr:
+  base_url: https://dns.example.com
+  env_file: /etc/ark/dnsmgr.env
+
+hosts:
+  - host: web-02
+    dnsmgr:
+      value: 203.0.113.10
+      records:
+        - domain_id: 12
+          record_id: "provider-record-id"
+```
+
+发布顺序必须是：
+
+1. 先部署包含 `POST /api/auth/check` 与 `POST /api/record/value/:id` 的 dnsmgr fork；
+2. 再部署新版 ark，但暂不增加 host 的 `dnsmgr` 关联；
+3. 执行 `ark validate` 与 `ark doctor`，确认 `dnsmgr.auth` 通过；
+4. 最后增加目标 host 关联，运行 `ark restore --host <source> --to <destination> --dry-run`；
+5. 再运行带 `--inspect` 的 dry-run，确认 DNS 目标与记录已进入 preview digest。
+
+真实跨机原位恢复只在数据恢复 completion marker 成功后切 DNS。同机恢复和 `--isolate` 不切换；
+DNS 失败不会删除 completion marker，重跑同一 restore 会重新验证/跳过已完成数据步骤并再次尝试 DNS。
+多记录部分失败会逆序补偿，补偿请求带本轮目标 IP 作为 `expected_value`；若结果为
+`rollback_failed`，按结果中的 `domain_id/record_id` 在 dnsmgr 人工核对当前 Value。
+
+P5-3 完成前，开始恢复前必须人工暂停相关 dmonitor 检测，结束后无论成功失败都恢复检测。
+回滚 ark 联动时，先从所有 host 删除 `dnsmgr` 关联并通过 `ark validate`，阻止新恢复继续调用；
+然后回滚 ark 二进制。dnsmgr 的两个加法接口可以保留，也可以在确认没有旧版 ark 调用后回滚镜像。
+
+## 4. 离线恢复材料
 
 至少在 hub 之外保存两份恢复材料，并定期确认仍能读取：
 
@@ -96,7 +145,7 @@ backup timer，确认外部监控按配置的宽限期报告失联。任何测�
 推荐一份放在团队密码管理器，另一份放在受控离线介质。离线介质不能和 hub 放在同一
 故障域，也不能只保存“获取密钥的方法”而没有验证该方法实际可用。
 
-## 4. 对象锁与保留期
+## 5. 对象锁与保留期
 
 在对象存储控制台为 restic bucket 开启 Object Lock、Immutability 或等价的仅追加保留。
 ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` 会固定输出
@@ -106,7 +155,7 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 期内时，`restic forget --prune` 可能无法删除或回收空间，这是预期行为。容量规划必须按
 对象锁保留期计算，不能把 prune 暂时失败误判为仓库损坏后关闭保护。
 
-## 5. SSH 主机密钥维护
+## 6. SSH 主机密钥维护
 
 每台远程主机都必须配置持久化的 `known_hosts_file`。默认 `host_key_policy: accept-new`
 允许 OpenSSH 在第一次连接时记录主机密钥，以降低新环境接入成本；一旦该主机已有记录，
@@ -123,7 +172,7 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 因此刷新命令默认不写文件，`--apply` 必须由管理员在带外核对后显式给出。任何场景都不要
 改成 `StrictHostKeyChecking=no`；这会让首次连接和后续密钥变化都失去保护。
 
-## 6. 定期人工验证
+## 7. 定期人工验证
 
 建议每月至少执行一次：
 
@@ -135,7 +184,7 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 
 真实对象删除测试和控制台配置属于人工上线验收，不在自动测试或 auto-loop 中执行。
 
-## 7. hub 重建顺序
+## 8. hub 重建顺序
 
 1. 在新机器安装与清单匹配的 ark 和 restic；
 2. 从离线介质恢复 restic 密码和对象存储凭证；

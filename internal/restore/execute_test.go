@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/dnsmgr"
 	"github.com/silentflower/ark/internal/store"
 )
 
@@ -393,6 +394,21 @@ func TestPreview_冲突排序稳定且资源变化改变Digest(t *testing.T) {
 	}
 	if left.Digest != right.Digest || left.Digest == changed.Digest || !left.Destructive {
 		t.Fatalf("preview digest 不符合稳定性要求: left=%#v right=%#v changed=%#v", left, right, changed)
+	}
+	dnsPlan := plan
+	dnsPlan.DNS = &dnsmgr.Plan{
+		Value:   "203.0.113.10",
+		Records: []dnsmgr.Record{{DomainID: 12, RecordID: "record-a"}},
+	}
+	dnsPreview, err := newPreview(dnsPlan, true, preflight{conflicts: []Conflict{
+		{Resource: "container-a", Detail: "已存在", ForceAllowed: true},
+		{Resource: "volume-b", Detail: "已存在", ForceAllowed: true},
+	}})
+	if err != nil {
+		t.Fatalf("生成 DNS preview 失败: %v", err)
+	}
+	if dnsPreview.Digest == left.Digest {
+		t.Fatal("DNS 计划变化必须进入 preview digest")
 	}
 }
 

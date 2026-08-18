@@ -71,6 +71,49 @@ func TestRunDoctor_未知Host返回工具错误(t *testing.T) {
 	}
 }
 
+func TestRunDoctorWithDNSMgr_只追加到本地范围(t *testing.T) {
+	cfg := &config.Config{
+		DNSMgr: &config.DNSMgr{BaseURL: "https://dns.example", EnvFile: "/etc/ark/dnsmgr.env"},
+		Hosts:  []config.Host{{Host: "hub-01", Local: true}, {Host: "web-01", SSH: &config.SSH{}}},
+	}
+	tests := []struct {
+		name     string
+		hostName string
+		all      bool
+		want     []string
+	}{
+		{name: "默认本地范围", want: []string{"local", "dnsmgr"}},
+		{name: "全部范围", all: true, want: []string{"local", "host:hub-01", "host:web-01", "dnsmgr"}},
+		{name: "指定host不追加", hostName: "web-01", want: []string{"host:web-01"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			report, err := runDoctorWithDNSMgr(
+				context.Background(), cfg, tc.hostName, tc.all,
+				func(context.Context, *config.Config) *doctor.Report {
+					calls = append(calls, "local")
+					return &doctor.Report{}
+				},
+				func(_ context.Context, _ *config.Config, host *config.Host) *doctor.Report {
+					calls = append(calls, "host:"+host.Host)
+					return &doctor.Report{}
+				},
+				func(context.Context, *config.Config) *doctor.Report {
+					calls = append(calls, "dnsmgr")
+					return &doctor.Report{}
+				},
+			)
+			if err != nil || !reflect.DeepEqual(calls, tc.want) {
+				t.Fatalf("调用顺序 = %#v, err=%v，期望 %#v", calls, err, tc.want)
+			}
+			if report == nil {
+				t.Fatal("报告不能为空")
+			}
+		})
+	}
+}
+
 func TestDoctorCommand_AllJSON合并并保持失败语义(t *testing.T) {
 	configPath := writeValidManifest(t)
 	var calls []string
