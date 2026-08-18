@@ -463,3 +463,24 @@ P3 五个保留子任务完成集成复核并归档；P3-3 保留 CHK-001 与 FB
 ### Status
 
 [OK] **Completed**
+
+
+## Session 18: 完成 P4-3 ark-hub Web 控制台并内嵌打包
+
+**Date**: 2026-08-18
+**Task**: 完成 P4-3 ark-hub Web 控制台并内嵌打包
+**Branch**: `main`
+
+### Summary
+
+Vue 3 控制台四页面 + go:embed 单二进制；合并原 P4-4；修复真机暴露的登录 CSRF Cookie 既有缺陷；Check-All strict pass 并新增前端 spec 层
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6777071 742286f` | (see git log) |
+
+### Status
+
+[OK] **Completed**

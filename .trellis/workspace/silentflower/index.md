@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 17
-- **Last Active**: 2026-08-17
+- **Total Sessions**: 18
+- **Last Active**: 2026-08-18
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~465 | Active |
+| `journal-1.md` | ~486 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 18 | 2026-08-18 | 完成 P4-3 ark-hub Web 控制台并内嵌打包 | `6777071` `742286f` | `main` |
 | 17 | 2026-08-17 | 完成 P4-2 ark-hub HTTP API | `f2f3924` | `main` |
 | 16 | 2026-08-14 | 完成并归档 P4-1 ark-hub 骨架与鉴权 | `178069b`, `640f28e` | `main` |
 | 15 | 2026-08-14 | 完成并归档 P3 恢复可用 | `39206c8`, `ed05aa8`, `226156d`, `c58a952`, `6898e89`, `7ceca6d` | `main` |
