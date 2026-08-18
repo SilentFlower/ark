@@ -505,3 +505,41 @@ Vue 3 控制台四页面 + go:embed 单二进制；合并原 P4-4；修复真机
 ### Status
 
 [OK] **Completed**
+
+
+## Session 20: 完成 P5-2 恢复后自动切换 dnsmgr DNS
+
+**Date**: 2026-08-18
+**Task**: 完成 P5-2 恢复后自动切换 dnsmgr DNS
+**Branch**: `main`
+
+### Summary
+
+为 dnsmgr 增加 Value-only API，并在 ark 跨机恢复 completion marker 后编排 DNS 切换、逆序补偿、doctor 与安全凭证；完成全量检查、规范沉淀、双仓推送和 release 审计。
+
+### Main Changes
+
+- dnsmgr 增加无副作用认证检查、Value-only A/AAAA 更新、provider 列表回退和 qingcloud 元数据保留。
+- ark 增加清单模型、安全 client、DNS 恢复计划、后置切换、补偿结果、doctor 与运维文档。
+- 新增 dnsmgr 集成代码规范与单任务 release.md，任务进入 completed 后归档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d6799e3` | (see git log) |
+| `9121e93` | (see git log) |
+
+### Testing
+
+- [OK] ark make check、race 测试、示例清单校验和 diff 检查通过。
+- [OK] dnsmgr PHP 语法、行为夹具、Composer 严格校验和部署冒烟通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 使用可回滚 DNS 记录验证 forward 与 expected compensation。
+- 部署 ark 后执行一次真实跨机恢复并核对 completion marker、DNS 日志和无秘密输出。
