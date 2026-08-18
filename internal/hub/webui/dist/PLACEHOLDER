@@ -1,0 +1,12 @@
+前端构建产物目录。
+
+`make web-build` 会先跑 Vite（输出到 web/dist），再把产物同步到这里，
+由 internal/hub/webui 的 go:embed 打进 ark-hub 二进制。
+
+除本文件外，本目录内容不进版本库：构建产物每次都会变，提交它们只会制造 diff 噪音。
+
+**本文件必须保留。** `go:embed dist` 要求目录存在且非空，否则在没有跑过前端构建的
+环境里 `go build ./...` 会直接编译失败。这也是 Vite 不直接输出到本目录的原因——
+它的 emptyOutDir 会把这个文件一起删掉。
+
+没有真实产物时，webui 会回落到包内的 placeholder.html 并提示改用 `make hub`。

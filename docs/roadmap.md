@@ -566,7 +566,7 @@ volume、network、files root 和 Docker 自动端口，并通过 isolation labe
 - `ark-hub install` 只安装独立的 `ark-hub.service`，不创建、扫描或修改任何 timer。
 - **不承载调度**（ADR-005），**不执行长任务**：需要执行时由 P4-2 起一个 `ark` 子进程。
 
-### P4-2 HTTP API 🚧 验收中
+### P4-2 HTTP API ✅ 已完成
 
 - 已提供 hosts、runs、alerts、operations 查询；列表使用有上限的 keyset 分页，
   清单中的 SSH、repo 和凭证路径不会进入 API DTO。
@@ -578,7 +578,12 @@ volume、network、files root 和 Docker 自动端口，并通过 isolation labe
 - 健康与告警共用同一投影：无成功备份或超过有效计划周期两倍、连续两次失败、最近演练失败。
 - `ark-hub serve/install` 显式携带 `--config` 与 `--ark-binary`，停止 Hub 仍不影响 systemd timer。
 
-### P4-3 前端 `web/`
+### P4-3 前端 `web/` 与内嵌打包
+
+> **P4-3 与原 P4-4 已合并。** 让 Vue 产物真正跑起来需要放宽 CSP、加静态资源路由和
+> SPA fallback，这三件事与 `go:embed` 是同一件事的两半：分两轮做意味着中间态要靠一个
+> 「从磁盘读产物」的临时 flag 撑着，而那段代码在下一轮必然删掉。合并之后
+> CSP 只改一次，也只需要一次端到端验收。
 
 Vue 3 + Vite + TypeScript + Pinia + Tailwind（与现有项目同栈，便于长期维护）。
 
@@ -587,12 +592,44 @@ Vue 3 + Vite + TypeScript + Pinia + Tailwind（与现有项目同栈，便于长
 - **告警**：超时未备份、连续失败、演练失败
 - **操作**：触发备份 / 演练 / 恢复，带确认对话框
 
-### P4-4 内嵌打包
+内嵌打包：
 
-`go:embed` 把 `web/dist` 打进 `ark-hub` 单二进制，部署时不需要 node 环境。
-Makefile 增加 `make hub`（先 pnpm build 再 go build）。
+- `go:embed` 把 Vite 产物打进 `ark-hub` 单二进制，部署时不需要 node 环境。
+  产物落在 `internal/hub/webui/dist/`，该目录只提交一个 `PLACEHOLDER`——
+  构建结果不进版本库，但目录必须非空，否则没跑过前端构建的环境里 `go build ./...`
+  会直接编译失败。真实产物缺失时页面回落到占位提示，服务照常启动。
+- `make hub`（先 pnpm build 再 go build）是**发布 `ark-hub` 的唯一正确方式**；
+  直接 `go build` 得到的二进制界面是占位页。
+- `make check` 保持纯 Go，不依赖 node；前端改动跑 `make web-check`。
 
-### P4-5 告警与死人开关
+已定的设计点：
+
+- **静态资源与入口 HTML 都要求登录**。未认证者拿不到控制台 JS，也就拿不到 API 形状；
+  代价是登录页不能共用同一份 CSS，因此登录页保持服务端渲染 + 内联样式。
+- **登录与退出不动**：仍走已验收的表单 + 登录 CSRF + 限流路径，不新增 JSON 登录端点。
+  SPA 收到 `401` 直接跳 `/login`。
+- **CSP 从「禁止一切脚本」放宽到 `script-src 'self'`**，这是引入 SPA 的必然代价，
+  也是本阶段唯一实质扩大的攻击面。`style-src` 保留 `'unsafe-inline'` 是既定取舍：
+  Vue 的 `:style` 绑定需要它，而静态嵌入的 HTML 无法注入 per-request nonce。
+  策略整串由测试精确断言，收紧或放宽都必须显式改测试。
+- **SPA fallback 必须在鉴权之后**。未知非 API 路径返回入口 HTML，`/api/` 未知路径
+  仍返回 404 JSON；未认证请求任何路径都不得拿到入口 HTML。
+- **`/api/hosts` 摘要增加 `last_backup_bytes` 与 `recent_backup_sizes`**（最多 14 点）。
+  健康投影本来就取了 100 条运行记录，加字段近乎零成本，好过让总览页为一个数字
+  去拉 N 份完整详情。只统计成功与 warn 的 run——失败 run 的字节数是半截数据，
+  混进趋势会掩盖 ADR-011 要盯的体积腰斩信号。
+- **恢复确认 token 只存内存**。后端只在预检首次成功的那一次读取里下发，
+  前端轮询必须每次响应就地捕获；刷新页面即作废，界面要明说这一点。
+- **页面开放三种恢复模式**，默认 `isolate`。`force` 需要三重闸门：
+  完整冲突清单 → 手动输入目标主机名 → 红色二次确认弹窗。
+
+**验收**：`make hub` 后替换二进制并重启，浏览器打开监听地址；未登录跳转登录页，
+登录后总览显示全部主机的健康度、大小趋势与下次计划；从页面发起一次备份能看到
+running → 终态；`isolate` 恢复预检并执行成功且生产资源无变化；刷新后确认失效并
+提示重新预检；浏览器控制台无 CSP 报错；`systemctl stop ark-hub` 后备份与演练
+timer 不受影响。
+
+### P4-4 告警与死人开关
 
 - 复用现有钉钉机器人。触发条件：超时未备份、连续两次失败、演练失败。
   **告警要有静默期**，否则一台机器坏掉会每轮刷一次群。

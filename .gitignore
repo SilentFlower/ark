@@ -19,6 +19,12 @@ node_modules/
 /web/dist/
 .vite/
 
+# 内嵌前端产物。构建结果每次都不同，提交它们只会制造 diff 噪音；
+# 但 dist/ 目录必须存在且非空，否则没跑过前端构建的环境里
+# `go:embed dist` 会让 go build 直接失败——因此保留 PLACEHOLDER。
+/internal/hub/webui/dist/*
+!/internal/hub/webui/dist/PLACEHOLDER
+
 # 编辑器
 .idea/
 .vscode/

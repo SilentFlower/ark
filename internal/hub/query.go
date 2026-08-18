@@ -11,17 +11,26 @@ import (
 )
 
 type hostSummaryResponse struct {
-	Host                   string        `json:"host"`
-	Local                  bool          `json:"local"`
-	Project                string        `json:"project"`
-	TargetCount            int           `json:"target_count"`
-	Schedule               string        `json:"schedule"`
-	LastBackupStatus       *store.Status `json:"last_backup_status"`
-	LastSuccessfulBackupAt *string       `json:"last_successful_backup_at"`
-	LastVerificationStatus *store.Status `json:"last_verification_status"`
-	NextRunAt              *string       `json:"next_run_at"`
-	Diagnostics            []string      `json:"diagnostics"`
-	Health                 string        `json:"health"`
+	Host                   string            `json:"host"`
+	Local                  bool              `json:"local"`
+	Project                string            `json:"project"`
+	TargetCount            int               `json:"target_count"`
+	Schedule               string            `json:"schedule"`
+	LastBackupStatus       *store.Status     `json:"last_backup_status"`
+	LastSuccessfulBackupAt *string           `json:"last_successful_backup_at"`
+	LastVerificationStatus *store.Status     `json:"last_verification_status"`
+	NextRunAt              *string           `json:"next_run_at"`
+	Diagnostics            []string          `json:"diagnostics"`
+	Health                 string            `json:"health"`
+	LastBackupBytes        *int64            `json:"last_backup_bytes"`
+	RecentBackupSizes      []backupSizePoint `json:"recent_backup_sizes"`
+}
+
+// backupSizePoint 是一次成功备份的体积采样，用于总览卡片的大小趋势。
+type backupSizePoint struct {
+	RunID      string `json:"run_id"`
+	FinishedAt string `json:"finished_at"`
+	Bytes      int64  `json:"bytes"`
 }
 
 type hostDetailResponse struct {

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ark-hub</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, 'Noto Sans SC', sans-serif;
+        max-width: 34rem;
+        margin: 14vh auto;
+        padding: 0 1rem;
+        color: #1e293b;
+        background: #f8fafc;
+      }
+      code {
+        background: #e2e8f0;
+        border-radius: 0.25rem;
+        padding: 0.1rem 0.35rem;
+      }
+      p {
+        line-height: 1.7;
+        color: #475569;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <h1>ark-hub</h1>
+      <p>
+        这个二进制里没有前端产物：它是用 <code>go build</code> 直接编译的，
+        而控制台需要先构建 <code>web/</code>。
+      </p>
+      <p>
+        请改用 <code>make hub</code> 构建（它会先跑 <code>pnpm build</code> 再编译），
+        然后替换二进制并重启 <code>ark-hub.service</code>。
+      </p>
+      <p>API、登录与备份调度不受影响，均可正常使用。</p>
+    </div>
+  </body>
+</html>

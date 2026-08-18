@@ -37,6 +37,8 @@ internal/
 ├── schedule/                systemd OnCalendar 的结构化下一次触发与有效周期
 ├── store/                   SQLite 状态、查询 DTO、迁移和在线一致性导出
 └── hub/                     鉴权、HTTP DTO、健康投影和 Ark 子进程生命周期
+    └── webui/               go:embed 前端产物 + 静态资源与 SPA fallback
+web/                         Vue 3 控制台源码（规约见 .trellis/spec/frontend/）
 docs/
 ├── design.md                架构与 13 条 ADR
 └── roadmap.md               分阶段任务，含接口草案与验收标准
@@ -58,7 +60,8 @@ examples/
 | `internal/restore/` | 恢复计划与执行 | P3-1 / P3-2 |
 | `internal/verify/` | 原 host 隔离恢复演练、生产基线与结果持久化 | P3-5 |
 | `internal/hub/` + `cmd/ark-hub/` | hub 后端（界面与 API） | P4-1 / P4-2 |
-| `web/` | Vue 3 前端，构建产物 go:embed 进 ark-hub | P4-3 / P4-4 |
+| `internal/hub/webui/` | go:embed 前端产物、静态资源与 SPA fallback | P4-3 |
+| `web/` | Vue 3 前端，构建产物 go:embed 进 ark-hub | P4-3 |
 
 早期规划过的 `internal/status/` **已取消**：hub 自己就是执行者，
 状态直接落本地 SQLite，不再需要把 `_status/<host>.json` 推到对象存储（design.md §9）。
@@ -88,6 +91,7 @@ cli  ──►  doctor  ──►  config
  └────►  sshexec ──► config
 
 hub  ──►  config / schedule / store
+ ├────►  hub/webui
  └─exec─► ark --json
 ```
 
@@ -96,6 +100,8 @@ hub  ──►  config / schedule / store
 systemd calendar 结构化解析，可被 doctor、CLI 与 Hub 复用；`store` 不反向依赖业务包。
 `hub` 可以依赖 config、schedule 和 store，但不得导入 backup、restore、verify、restic 或 sshexec；
 长任务跨进程调用 `ark --json`，避免 Hub 成为第二套业务编排器。
+`hub/webui` 是依赖链的末端：它只依赖标准库，不认识 config、store 或任何业务概念，
+因此可以独立验证「静态资源服务是否正确」而不必造一份清单或状态库。
 新增包时保持这个方向：**越靠近数据模型的包依赖越少**。
 如果发现需要反向依赖（比如 `config` 想调用 `doctor`），说明职责切错了，
 应该重新划边界而不是加接口绕过去。

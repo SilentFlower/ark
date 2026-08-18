@@ -32,6 +32,7 @@ These guides help you **ask the right questions before coding**.
 
 - [ ] Feature touches 3+ layers (API, Service, Component, Database)
 - [ ] Data format changes between layers
+- [ ] **You changed a hub HTTP DTO** — `web/src/api/types.ts` holds a second copy of that contract
 - [ ] Multiple consumers need the same data
 - [ ] You're not sure where to put some logic
 - [ ] You are adding an event kind, JSONL record, RPC payload, or config field

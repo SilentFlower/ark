@@ -82,6 +82,7 @@ func (application *application) projectHosts(
 			}
 		}
 		summary.LastSuccessfulBackupAt = optionalTime(lastSuccessful)
+		summary.RecentBackupSizes, summary.LastBackupBytes = deriveBackupSizes(hostRuns)
 		if len(verifications) > 0 {
 			status := verifications[0].Status
 			summary.LastVerificationStatus = &status
@@ -131,6 +132,46 @@ func (application *application) projectHosts(
 	}
 	sort.Slice(alerts, func(left int, right int) bool { return alerts[left].ID < alerts[right].ID })
 	return projections, alerts, nil
+}
+
+// maximumSizePoints 是大小趋势保留的采样点数。14 个点覆盖两周的日备，
+// 既能看出体积突变，又不会让总览响应变大。
+const maximumSizePoints = 14
+
+// deriveBackupSizes 从 host 的运行历史里提取成功备份的体积序列。
+//
+// 数据来源就是投影已经取到的 hostRuns，不额外查库。只统计 ok 与 warn 的 run：
+// 失败 run 的字节数是半截数据，放进趋势里会把体积腰斩误判成正常波动，
+// 而体积突变正是 ADR-011 的第二道防线要盯的信号。
+// @param hostRuns 按开始时间倒序的运行记录，已排除 running。
+// @return []backupSizePoint 按时间正序、最多 maximumSizePoints 个采样点。
+// @return *int64 最近一次成功备份的总字节；没有成功记录时为 nil。
+func deriveBackupSizes(hostRuns []store.HostRun) ([]backupSizePoint, *int64) {
+	points := make([]backupSizePoint, 0, maximumSizePoints)
+	for _, run := range hostRuns {
+		if run.Status != store.StatusOK && run.Status != store.StatusWarn {
+			continue
+		}
+		if len(points) == maximumSizePoints {
+			break
+		}
+		var total int64
+		for _, target := range run.Targets {
+			total += target.Bytes
+		}
+		points = append(points, backupSizePoint{
+			RunID: run.Run.ID, FinishedAt: formatTime(run.Run.FinishedAt), Bytes: total,
+		})
+	}
+	if len(points) == 0 {
+		return points, nil
+	}
+	// hostRuns 是倒序，采样点要按时间正序交给前端画折线。
+	for left, right := 0, len(points)-1; left < right; left, right = left+1, right-1 {
+		points[left], points[right] = points[right], points[left]
+	}
+	latest := points[len(points)-1].Bytes
+	return points, &latest
 }
 
 func deriveAlerts(

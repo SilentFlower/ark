@@ -49,8 +49,8 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 
 ## 当前状态
 
-**P4 后端阶段。** 备份、恢复、恢复演练和 `ark-hub` 鉴权已实现；P4-2 HTTP API 正在验收，
-Vue 控制台、内嵌前端产物和外部告警仍按 P4-3 至 P4-5 推进。进度见 [路线图](docs/roadmap.md)。
+**P4 界面阶段。** 备份、恢复、恢复演练、`ark-hub` 鉴权、HTTP API 与 Vue 控制台已实现；
+钉钉告警和外部心跳死人开关待 P4-4 推进。进度见 [路线图](docs/roadmap.md)。
 
 | 命令 | 状态 | 说明 |
 |---|---|---|
@@ -59,7 +59,7 @@ Vue 控制台、内嵌前端产物和外部告警仍按 P4-3 至 P4-5 推进。�
 | `ark backup` | ✅ | 执行多 host 备份并持久化运行、target 与 doctor 结果 |
 | `ark restore` | ✅ | 恢复 / 跨机重建 / 隔离恢复 / 只读目标预检 |
 | `ark verify` | ✅ | 自动隔离恢复演练 |
-| `ark-hub` | 🚧 P4 | P4-1 鉴权已完成；P4-2 HTTP API 验收中，Web 界面待 P4-3/P4-4 |
+| `ark-hub` | 🚧 P4 | 鉴权、HTTP API 与内嵌 Web 控制台已完成；告警待 P4-4 |
 
 > ⚠️ 清单格式已是 `version: 2`——**一份清单描述全部机器**，只放在 hub 上。
 > P0 时期按单机写的 v1 清单需要迁移，`ark validate` 会直接给出迁移提示。
@@ -117,17 +117,25 @@ SSH 私钥同理，且**密钥本身不进备份**：把开锁的钥匙和锁着
 ## 开发
 
 ```bash
-make check     # 格式化 + vet + 测试
-make build     # 编译到 bin/
-make test      # 只跑测试
+make check      # 格式化 + vet + 测试（纯 Go，不需要 node）
+make build      # 编译 ark 到 bin/
+make test       # 只跑测试
+
+make hub        # 构建前端并编译 ark-hub 到 bin/
+make web-check  # 前端 lint + 类型检查 + 单测
 ```
 
-要求 Go 1.22+。
+要求 Go 1.22+。改动 `web/` 还需要 Node 20+ 与 pnpm。
+
+**发布 `ark-hub` 必须用 `make hub`。** 前端产物不进版本库，直接 `go build` 得到的
+二进制里只有一页占位提示（API、登录和备份调度不受影响，但界面是空的）。
 
 运行时依赖分两侧：
 
 - **hub**：`restic`、`ssh`、`systemd`、`docker`（hub 自己也被备份时需要）
 - **目标机**：`docker`、`docker compose v2`、`sshd`——**不需要装 ark 或 restic**
+
+`ark-hub` 的界面随二进制分发，**部署环境不需要 node**。
 
 ## 文档
 

@@ -85,8 +85,12 @@ func TestHTTP_登录访问退出与安全Cookie(t *testing.T) {
 	shellRequest.AddCookie(sessionCookie)
 	shellResponse := httptest.NewRecorder()
 	handler.ServeHTTP(shellResponse, shellRequest)
-	if shellResponse.Code != http.StatusOK || !strings.Contains(shellResponse.Body.String(), "当前管理员：admin") ||
-		!strings.Contains(shellResponse.Body.String(), `action="/logout"`) {
+	// 入口 HTML 现在是内嵌控制台产物，用户名与 CSRF 由前端调 /api/session 获取，
+	// 因此这里只校验它确实是一份 HTML 入口，不断言具体产物内容
+	// （未跑 make hub 时是占位页，跑过之后是真实控制台，两者都必须可用）。
+	if shellResponse.Code != http.StatusOK ||
+		!strings.Contains(shellResponse.Body.String(), "<!doctype html>") ||
+		!strings.Contains(shellResponse.Header().Get("Content-Type"), "text/html") {
 		t.Fatalf("受保护壳 status=%d body=%q", shellResponse.Code, shellResponse.Body.String())
 	}
 
@@ -148,7 +152,11 @@ func TestHTTP_错误密码限流且不泄露账号存在性(t *testing.T) {
 		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "用户名或密码错误") {
 			t.Fatalf("第 %d 次失败 status=%d body=%q", attempt+1, response.Code, response.Body.String())
 		}
-		csrfCookie = responseCookie(t, response, loginCSRFCookieName)
+		// 登录 CSRF Cookie 的值在未过期时会被复用（只刷新有效期），
+		// 因此这里继续沿用同一个 Cookie。
+		if renewed := responseCookie(t, response, loginCSRFCookieName); renewed.Value != csrfCookie.Value {
+			t.Fatalf("第 %d 次失败轮换了登录 CSRF token", attempt+1)
+		}
 	}
 
 	// 限流 key 包含规范化用户名；先前 missing 的失败不应计入 admin，所以补一次 admin 失败。
@@ -164,7 +172,9 @@ func TestHTTP_错误密码限流且不泄露账号存在性(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("第五次 admin 失败 status=%d", response.Code)
 	}
-	csrfCookie = responseCookie(t, response, loginCSRFCookieName)
+	if renewed := responseCookie(t, response, loginCSRFCookieName); renewed.Value != csrfCookie.Value {
+		t.Fatal("第五次失败轮换了登录 CSRF token")
+	}
 
 	blocked := postFormRequest("/login", url.Values{
 		"username":   {"admin"},

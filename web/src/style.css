@@ -1,0 +1,28 @@
+@import 'tailwindcss';
+
+/*
+ * 运维控制台的基调：浅色、克制、信息密度优先。
+ * 不做深色模式（YAGNI：单管理员、内网访问）。
+ */
+@theme {
+  --color-ok: oklch(0.72 0.16 150);
+  --color-warn: oklch(0.78 0.16 80);
+  --color-fail: oklch(0.63 0.2 25);
+  --color-unknown: oklch(0.72 0.02 260);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'Noto Sans SC',
+    sans-serif;
+}

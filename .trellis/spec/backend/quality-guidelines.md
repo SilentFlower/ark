@@ -41,6 +41,28 @@ make check   # = fmt + vet + test
 目前项目没有引入 golangci-lint。`gofmt` + `go vet` 够用，
 需要更多规则时先讨论，不要单方面加进 Makefile。
 
+### 改动 web/ 时还要跑 make web-check
+
+```bash
+make web-check   # = eslint + vue-tsc --noEmit + vitest run
+```
+
+**`make check` 刻意只跑 Go**，因为它必须能在没有 node 的机器上通过（CI、
+没装前端工具链的开发机都要能验证后端）。代价是：只改了 `web/` 却只跑
+`make check`，会看到一片全绿——而 lint、类型检查和前端测试**一次都没执行**。
+这正是本项目最不能接受的那种「失败看起来像成功」，所以两条命令都要跑。
+
+| 目标 | 命令 | 覆盖 |
+|---|---|---|
+| `web-lint` | `eslint .` | 未用变量、Vue 模板问题 |
+| `web-typecheck` | `vue-tsc --noEmit` | TS 类型，含与 Go DTO 对齐的前端类型 |
+| `web-test` | `vitest run` | API 客户端、轮询状态机、恢复确认、纯函数 |
+
+发布 `ark-hub` 必须走 `make hub`：它先构建前端再编译。直接 `go build` 得到的
+二进制里只有一页占位提示，API 与调度正常但界面是空的。
+
+前端的具体编码规约见 `.trellis/spec/frontend/`。
+
 ### 每个包都要有 package doc 注释
 
 而且要写清**职责边界**，不是复述包名。参照 `internal/config/config.go:1`：
@@ -191,6 +213,8 @@ CI 环境不一定装了这些工具，不加保护会让 `go test ./...` 直接
 ## Code Review Checklist
 
 - [ ] `make check` 通过（fmt / vet / test -race 全绿）。
+- [ ] 改了 `web/` 时 `make web-check` 也通过（lint / typecheck / vitest）。
+- [ ] 改了 hub 的 HTTP DTO 时，`web/src/api/types.ts` 已同步（见 `spec/frontend/`）。
 - [ ] 新增包有 package doc，说明职责边界而非复述包名。
 - [ ] 复杂逻辑的注释解释了「为什么」，涉及 ADR 的地方点明了约束。
 - [ ] 没有引入 Forbidden Patterns 表里的任何一项。

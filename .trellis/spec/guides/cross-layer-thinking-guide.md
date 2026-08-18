@@ -288,6 +288,30 @@ When a CLI auto-detects a mode by probing a remote resource (e.g., checking if `
 
 ---
 
+## Go 后端 ↔ TypeScript 前端契约边界
+
+`ark-hub` 的 HTTP DTO 在 Go 里定义（`internal/hub/query.go`、`health.go`、
+`operation.go`），在 TS 里被复制一份（`web/src/api/types.ts`）。这是**两种语言各持
+一份契约**的边界：编译器不会告诉你它们不一致，前端只会安静地少显示一块信息。
+
+### Checklist: 改动 hub 的 HTTP DTO 之后
+
+- [ ] `web/src/api/types.ts` 已同步：字段名、可空性（Go 的 `*T` 对应 TS 的 `| null`）、
+      枚举取值
+- [ ] 改的是 operation result 时，`operationResultFields` 的白名单与 TS 侧四类
+      result 类型一起更新
+- [ ] 新字段的空值/零值在前端有明确显示（「从未」「—」而不是空白或 0）
+- [ ] `make web-check` 与 `make check` 都跑过
+
+详细规约见 `.trellis/spec/frontend/web-guidelines.md`；后端侧的 DTO 契约见
+`.trellis/spec/backend/hub-guidelines.md`。
+
+**真实例子**：总览的大小趋势需要 `last_backup_bytes` 与 `recent_backup_sizes`。
+后端在健康投影里已经取了运行记录，加字段近乎零成本；但如果只加 Go 侧，
+前端卡片会静静地显示「—」，看起来像"这台机器没备份过"，而不是"前端没读到字段"。
+
+---
+
 ## When to Create Flow Documentation
 
 Create detailed flow docs when:
