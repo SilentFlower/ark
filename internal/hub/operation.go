@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/silentflower/ark/internal/monitoring"
 	"github.com/silentflower/ark/internal/store"
 )
 
@@ -89,11 +90,12 @@ type backupManifestWire struct {
 }
 
 type backupOperationResult struct {
-	RunID              string              `json:"run_id"`
-	Status             store.Status        `json:"status"`
-	Manifest           *backupManifestWire `json:"manifest,omitempty"`
-	ManifestSnapshotID string              `json:"manifest_snapshot_id"`
-	Error              string              `json:"error"`
+	RunID              string                     `json:"run_id"`
+	Status             store.Status               `json:"status"`
+	Manifest           *backupManifestWire        `json:"manifest,omitempty"`
+	ManifestSnapshotID string                     `json:"manifest_snapshot_id"`
+	HeartbeatStatus    monitoring.HeartbeatStatus `json:"heartbeat_status"`
+	Error              string                     `json:"error"`
 }
 
 type verifyOperationResult struct {
@@ -405,8 +407,9 @@ func validateOperationResult(kind store.OperationKind, encoded json.RawMessage) 
 		if err := json.Unmarshal(encoded, &result); err != nil {
 			return err
 		}
-		if strings.TrimSpace(result.RunID) == "" || !validFinalStatus(result.Status) {
-			return fmt.Errorf("backup JSON 结果缺少有效 run_id 或 status")
+		if strings.TrimSpace(result.RunID) == "" || !validFinalStatus(result.Status) ||
+			!validHeartbeatStatus(result.HeartbeatStatus) {
+			return fmt.Errorf("backup JSON 结果缺少有效 run_id、status 或 heartbeat_status")
 		}
 		if result.Manifest != nil && result.Manifest.RunID != result.RunID {
 			return fmt.Errorf("backup JSON 结果的 manifest run_id 不一致")
@@ -505,6 +508,15 @@ func validFinalStatus(status store.Status) bool {
 	}
 }
 
+func validHeartbeatStatus(status monitoring.HeartbeatStatus) bool {
+	switch status {
+	case monitoring.HeartbeatDisabled, monitoring.HeartbeatSent, monitoring.HeartbeatFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 func validPreviewDigest(value string) bool {
 	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
 		return false
@@ -518,7 +530,7 @@ func operationResultFields(kind store.OperationKind) map[string]struct{} {
 	var names []string
 	switch kind {
 	case store.OperationKindBackup:
-		names = []string{"run_id", "status", "manifest", "manifest_snapshot_id", "error"}
+		names = []string{"run_id", "status", "manifest", "manifest_snapshot_id", "heartbeat_status", "error"}
 	case store.OperationKindVerify:
 		names = []string{"manifest_snapshot_id", "status", "results", "error"}
 	case store.OperationKindRestorePreview:

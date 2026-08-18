@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/monitoring"
 	"github.com/silentflower/ark/internal/store"
 )
 
@@ -42,6 +43,9 @@ type serveDependencies struct {
 	newApplication func(string, bool) (*application, error)
 	newServer      func(http.Handler) httpServerLifecycle
 	loadConfig     func(string) (*config.Config, error)
+	loadMonitoring func(string) (monitoring.Settings, error)
+	sendDingTalk   func(context.Context, monitoring.DingTalkSettings, monitoring.MarkdownMessage) error
+	reportAlert    func(error)
 	stat           func(string) (os.FileInfo, error)
 	now            func() time.Time
 }
@@ -79,10 +83,15 @@ func Run(ctx context.Context, options ServeOptions) error {
 		newApplication: func(authFile string, secureCookie bool) (*application, error) {
 			return newApplication(authFile, secureCookie, rand.Reader, time.Now)
 		},
-		newServer:  newHTTPServer,
-		loadConfig: config.LoadAndValidate,
-		stat:       os.Stat,
-		now:        time.Now,
+		newServer:      newHTTPServer,
+		loadConfig:     config.LoadAndValidate,
+		loadMonitoring: monitoring.Load,
+		sendDingTalk:   monitoring.SendDingTalk,
+		reportAlert: func(err error) {
+			fmt.Fprintln(os.Stderr, "ark-hub 告警评估失败:", err)
+		},
+		stat: os.Stat,
+		now:  time.Now,
 	})
 }
 
@@ -102,7 +111,9 @@ func run(ctx context.Context, options ServeOptions, dependencies serveDependenci
 		return fmt.Errorf("启动 ark-hub 失败: %w", err)
 	}
 	if strings.TrimSpace(options.ConfigPath) != "" || strings.TrimSpace(options.ArkBinaryPath) != "" {
-		if dependencies.loadConfig == nil || dependencies.stat == nil || dependencies.now == nil {
+		if dependencies.loadConfig == nil || dependencies.loadMonitoring == nil ||
+			dependencies.sendDingTalk == nil || dependencies.reportAlert == nil ||
+			dependencies.stat == nil || dependencies.now == nil {
 			return fmt.Errorf("启动 ark-hub 失败: 配置校验依赖不完整")
 		}
 		if err := validateRuntimePaths(options, dependencies); err != nil {
@@ -113,6 +124,7 @@ func run(ctx context.Context, options ServeOptions, dependencies serveDependenci
 	if err != nil {
 		return fmt.Errorf("启动 ark-hub 失败: %w", err)
 	}
+	var alerts *alertManager
 	if options.ConfigPath != "" {
 		recovery, ok := state.(operationRecoveryStore)
 		if !ok {
@@ -134,6 +146,27 @@ func run(ctx context.Context, options ServeOptions, dependencies serveDependenci
 		application.configureRuntime(
 			state, options.ConfigPath, options.ArkBinaryPath, dependencies.loadConfig, manager,
 		)
+		alertState, ok := state.(alertStore)
+		if !ok {
+			return errors.Join(fmt.Errorf("启动 ark-hub 失败: 状态库不支持告警状态"), closeOperations(application), state.Close())
+		}
+		alerts, err = newAlertManager(
+			alertState,
+			options.ConfigPath,
+			dependencies.loadConfig,
+			dependencies.loadMonitoring,
+			func(ctx context.Context, cfg *config.Config) ([]alertResponse, error) {
+				_, currentAlerts, projectErr := application.projectHosts(ctx, cfg)
+				return currentAlerts, projectErr
+			},
+			dependencies.sendDingTalk,
+			application.now,
+			alertEvaluationInterval,
+			dependencies.reportAlert,
+		)
+		if err != nil {
+			return errors.Join(fmt.Errorf("启动 ark-hub 失败: %w", err), closeOperations(application), state.Close())
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return errors.Join(err, closeOperations(application), state.Close())
@@ -152,6 +185,17 @@ func run(ctx context.Context, options ServeOptions, dependencies serveDependenci
 			fmt.Errorf("启动 ark-hub 失败: HTTP server 不能为空"), listener.Close(),
 			closeOperations(application), state.Close(),
 		)
+	}
+	var stopAlerts context.CancelFunc
+	var alertsDone chan struct{}
+	if alerts != nil {
+		alertContext, cancelAlerts := context.WithCancel(ctx)
+		stopAlerts = cancelAlerts
+		alertsDone = make(chan struct{})
+		go func() {
+			defer close(alertsDone)
+			alerts.run(alertContext)
+		}()
 	}
 	serveErrors := make(chan error, 1)
 	go func() {
@@ -180,6 +224,10 @@ func run(ctx context.Context, options ServeOptions, dependencies serveDependenci
 		}
 		runErr = errors.Join(shutdownErr, closeErr, serveErr)
 	}
+	if stopAlerts != nil {
+		stopAlerts()
+		<-alertsDone
+	}
 	return errors.Join(runErr, closeOperations(application), state.Close())
 }
 
@@ -194,8 +242,14 @@ func validateRuntimePaths(options ServeOptions, dependencies serveDependencies) 
 	if !filepath.IsAbs(options.ConfigPath) {
 		return fmt.Errorf("启动 ark-hub 失败: config 路径必须是绝对路径")
 	}
-	if _, err := dependencies.loadConfig(options.ConfigPath); err != nil {
+	cfg, err := dependencies.loadConfig(options.ConfigPath)
+	if err != nil {
 		return fmt.Errorf("启动 ark-hub 失败: 清单校验失败: %w", err)
+	}
+	if cfg.Monitoring != nil {
+		if _, err := dependencies.loadMonitoring(cfg.Monitoring.EnvFile); err != nil {
+			return fmt.Errorf("启动 ark-hub 失败: 监控配置校验失败: %w", err)
+		}
 	}
 	if !filepath.IsAbs(options.ArkBinaryPath) {
 		return fmt.Errorf("启动 ark-hub 失败: ark binary 路径必须是绝对路径")

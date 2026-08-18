@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/silentflower/ark/internal/config"
+	"github.com/silentflower/ark/internal/monitoring"
 	"github.com/silentflower/ark/internal/store"
 	arksystemd "github.com/silentflower/ark/internal/systemd"
 )
@@ -90,6 +93,47 @@ func TestRun_凭证失败时不打开状态库或监听(t *testing.T) {
 	}
 	if opened || listened {
 		t.Fatalf("凭证失败后 opened=%v listened=%v", opened, listened)
+	}
+}
+
+func TestRun_监控配置失败时不打开状态库或监听(t *testing.T) {
+	opened := false
+	listened := false
+	err := run(context.Background(), ServeOptions{
+		ListenAddress: "127.0.0.1:0",
+		ConfigPath:    "/etc/ark/ark.yaml",
+		ArkBinaryPath: "/usr/bin/ark",
+	}, serveDependencies{
+		openStore: func(context.Context, string) (stateStore, error) {
+			opened = true
+			return nil, errors.New("不应调用")
+		},
+		listen: func(string, string) (net.Listener, error) {
+			listened = true
+			return nil, errors.New("不应调用")
+		},
+		newApplication: func(string, bool) (*application, error) { return &application{}, nil },
+		newServer:      newHTTPServer,
+		loadConfig: func(string) (*config.Config, error) {
+			return &config.Config{Monitoring: &config.Monitoring{EnvFile: "/etc/ark/monitoring.env"}}, nil
+		},
+		loadMonitoring: func(string) (monitoring.Settings, error) {
+			return monitoring.Settings{}, errors.New("权限过宽")
+		},
+		sendDingTalk: func(context.Context, monitoring.DingTalkSettings, monitoring.MarkdownMessage) error {
+			return nil
+		},
+		reportAlert: func(error) {},
+		stat: func(string) (os.FileInfo, error) {
+			return fakeFileInfo{mode: 0o755}, nil
+		},
+		now: time.Now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "监控配置校验失败") {
+		t.Fatalf("监控配置错误 = %v", err)
+	}
+	if opened || listened {
+		t.Fatalf("监控配置失败后 opened=%v listened=%v", opened, listened)
 	}
 }
 
@@ -241,6 +285,17 @@ type fakeStateStore struct {
 	closeErr error
 	closed   bool
 }
+
+type fakeFileInfo struct {
+	mode os.FileMode
+}
+
+func (info fakeFileInfo) Name() string       { return "ark" }
+func (info fakeFileInfo) Size() int64        { return 0 }
+func (info fakeFileInfo) Mode() os.FileMode  { return info.mode }
+func (info fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (info fakeFileInfo) IsDir() bool        { return false }
+func (info fakeFileInfo) Sys() any           { return nil }
 
 func (state *fakeStateStore) Close() error {
 	state.closed = true

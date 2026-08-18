@@ -28,6 +28,27 @@ ark install [--unit-dir <absolute-path>] [--json]
 ```
 
 ```go
+// internal/monitoring
+type HeartbeatStatus string
+
+const (
+    HeartbeatDisabled HeartbeatStatus = "disabled"
+    HeartbeatSent     HeartbeatStatus = "sent"
+    HeartbeatFailed   HeartbeatStatus = "failed"
+)
+
+// internal/cli
+type backupRunSummary struct {
+    RunID              string                     `json:"run_id"`
+    Status             store.Status               `json:"status"`
+    Manifest           *backup.Manifest           `json:"manifest,omitempty"`
+    ManifestSnapshotID string                     `json:"manifest_snapshot_id"`
+    HeartbeatStatus    monitoring.HeartbeatStatus `json:"heartbeat_status"`
+    Error              string                     `json:"error"`
+}
+```
+
+```go
 func BuildUnits(cfg *config.Config, binaryPath, configPath string) ([]systemd.Unit, error)
 func Install(ctx context.Context, cfg *config.Config, options systemd.InstallOptions) (systemd.InstallResult, error)
 ```
@@ -57,7 +78,7 @@ load/validate -> select host -> nonblocking flock -> local doctor
   -> open store/create running run -> restic EnsureInit
   -> hosts in manifest order: host doctor -> targets in manifest order
   -> save manifest -> forget policies without prune -> one prune
-  -> FinishRun -> Close store -> unlock
+  -> FinishRun -> Close store -> unlock -> deliver heartbeat -> print summary
 ```
 
 - `--dry-run` 只读取并静态校验 `ark.yaml`，输出 host、target、稳定 filename、tags、
@@ -90,6 +111,14 @@ load/validate -> select host -> nonblocking flock -> local doctor
   所有 `ForgetPolicy` 完成后只调用一次 `Prune`。
 - `--json` 的 stdout 只含 snake_case JSON。backup 已输出成功/warn/fail 摘要后，失败通过
   `errBackupFailed` 只转换退出码，根命令不得重复打印同一错误。
+- 非 dry-run 的 heartbeat 位于 `runBackup` 返回后的命令边界；此时 Store、锁、run 和 manifest 已经收尾。
+  `ok` / `warn` 选择成功端点，`fail`、取消、锁失败、前置失败或空摘要选择失败端点。
+- `--dry-run`、未配置 `monitoring` 或秘密文件中未启用 heartbeat 时不得发请求，状态分别不产生摘要或为 `disabled`。
+- backup context 已取消时，heartbeat 使用 `context.WithoutCancel` 加 10 秒超时尽力发送最终失败终态。
+- heartbeat 配置或网络失败只把摘要设为 `heartbeat_status=failed` 并输出脱敏警告；不得修改 run、manifest、
+  `backupFailureSet`、`errBackupFailed` 或既有退出码。原 ok/warn 仍退出 0，原 fail 仍退出 1。
+- 已形成的 backup JSON 必须总是包含 `heartbeat_status=disabled|sent|failed`；Hub 手工 backup 的
+  operation 白名单和前端类型必须同步。清单本身加载失败时不能安全取得秘密路径，因此不发送 heartbeat。
 
 systemd 合同：
 
@@ -131,6 +160,11 @@ systemd 合同：
 | 某 host 有 target fail | 该 host 不执行 retention；成功 host 可执行 |
 | retention 失败 | 继续其它 retention 和最终单次 prune，run fail |
 | FinishRun 失败 | 返回非零，摘要降为 fail，不伪造成成功 |
+| dry-run 或未配置 heartbeat | 零网络请求；dry-run 保持原计划输出，正常摘要为 `heartbeat_status=disabled` |
+| backup 终态 ok/warn | 调成功端点；成功后为 `sent` |
+| backup 终态 fail、取消、锁失败或其它运行错误 | 调失败端点；heartbeat 结果不覆盖原错误 |
+| heartbeat 配置或网络失败 | 摘要为 `failed`，stderr 只输出脱敏警告，run/manifest/退出码不变 |
+| 清单加载失败 | 不读取 monitoring 文件、不发送请求，由外部监控宽限期发现缺失 heartbeat |
 | unit verify 失败 | 旧 unit 完全不变 |
 | system service 没有 HOME | 使用 `/var/cache/ark` 作为 `XDG_CACHE_HOME`，restic 可启动 |
 | rename/delete/fsync 失败 | 回滚全部目标 unit；回滚错误与原错误组合 |
@@ -146,6 +180,9 @@ systemd 合同：
   普通 files tar；识别不跟随符号链接，也不靠 target name 猜测。
 - **Base**：systemd 在没有 `HOME` 的 system service 中创建 `/var/cache/ark`，权限 0700，
   restic 使用 `XDG_CACHE_HOME` 正常执行。
+- **Good**：warn 备份完成并持久化后成功调用 heartbeat 成功端点，JSON 为 `heartbeat_status=sent` 且退出 0。
+- **Base**：未配置 monitoring 的旧清单继续完成备份，JSON 为 `disabled`，没有新增网络副作用。
+- **Bad**：heartbeat 超时后把已成功的 run 改为 fail，或把 URL/token 写进 stderr；监控故障不能改写备份事实。
 - **Bad**：web-01 target 失败后仍对 web-01 执行 retention，可能在没有新可用备份时
   删除旧恢复点。
 - **Bad**：install 看到用户自建的同名 timer 后直接 rename 覆盖，或跟随 symlink
@@ -171,6 +208,10 @@ systemd 合同：
 - image_digest target 缺失、漏默认活跃 service 或包含未知 service 时 doctor fail；
 - doctor 的 `repo.object_lock` 在人类和 JSON 输出中都是 warn；local/host fail 摘要只包含
   失败项名称，不复制 Detail。
+- ok/warn 调成功端点，fail/取消/锁失败调失败端点；配置失败和网络失败保持原退出码；
+- disabled/sent/failed 的人类输出与 JSON，Hub operation 对必填字段的解析；
+- dry-run、未配置和清单加载失败零请求；取消路径使用独立有界收尾 context；
+- URL query、签名密钥和完整端点不出现在 warning、error、JSON、Store 或 manifest。
 
 `internal/systemd/unit_test.go` 至少覆盖：
 
@@ -231,3 +272,24 @@ if isStateDatabaseTarget(host, target, store.DefaultPath) {
 
 状态库识别必须同时依赖 local host、files 类型、单一路径和清理后的绝对路径；只看文件名
 或 target name 会误伤远程机器，只看 `paths` 包含关系会放过混合 tar。
+
+#### Wrong
+
+```go
+if err := monitoring.SendHeartbeat(ctx, settings, failed); err != nil {
+    summary.Status = store.StatusFail
+    runErr = errors.Join(runErr, err)
+}
+```
+
+#### Correct
+
+```go
+heartbeatStatus, heartbeatErr := deliverBackupHeartbeat(ctx, cfg, summary, runErr, dependencies)
+summary.HeartbeatStatus = heartbeatStatus
+if heartbeatErr != nil {
+    cmd.PrintErrf("警告: %v\n", heartbeatErr)
+}
+```
+
+heartbeat 是已完成备份事实之外的可观测性投递；失败必须可见，但不能污染 run 状态或退出语义。

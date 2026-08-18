@@ -1,6 +1,6 @@
 # Hub Guidelines
 
-> `ark-hub` 的本地鉴权、HTTP API、会话、限流、状态投影、手工操作、内嵌控制台与常驻 service 契约。
+> `ark-hub` 的本地鉴权、HTTP API、会话、限流、状态投影、主动告警、手工操作、内嵌控制台与常驻 service 契约。
 
 ---
 
@@ -13,6 +13,7 @@
 - 修改 `cmd/ark-hub/`、`internal/hub/` 的 CLI、凭证文件、密码哈希、会话、CSRF 或 HTTP 路由；
 - 修改 `ark-hub` 对 `store.Store` 的打开、关闭或请求期读取方式；
 - 修改 hosts、runs、alerts、operations 投影，或 backup、verify、restore 手工操作；
+- 修改主动告警评估、钉钉投递、静默/恢复状态或告警 manager 生命周期；
 - 修改登录限流、Cookie、安全响应头、CSP、缓存策略、HTTP server 超时或优雅停止；
 - 修改 `internal/hub/webui/` 的内嵌产物、静态资源服务或 SPA fallback；
 - 修改 `ark-hub install` 或 `ark-hub.service` 的生成、校验和安装行为。
@@ -54,7 +55,27 @@ type ServeOptions struct {
 func Run(ctx context.Context, options ServeOptions) error
 func BuildHubUnit(options systemd.HubInstallOptions) (systemd.Unit, error)
 func InstallHub(ctx context.Context, options systemd.HubInstallOptions) (systemd.InstallResult, error)
+
+func monitoring.SendDingTalk(
+    ctx context.Context,
+    settings monitoring.DingTalkSettings,
+    message monitoring.MarkdownMessage,
+) error
+func (s *store.Store) ListAlertStates(ctx context.Context) ([]store.AlertState, error)
+func (s *store.Store) SaveAlertState(ctx context.Context, state store.AlertState) error
 ```
+
+backup operation 的 JSON 结果必须包含：
+
+```json
+{
+  "run_id": "run-id",
+  "status": "ok|warn|fail",
+  "heartbeat_status": "disabled|sent|failed"
+}
+```
+
+`heartbeat_status` 是 `operationResultFields(backup)` 的必需白名单字段；未知值或缺失都拒绝持久化。
 
 HTTP 路由：
 
@@ -156,6 +177,16 @@ func webui.NewHandler() (*webui.Handler, error)
   二进制必须是可执行普通文件。业务 API 每次重新严格加载清单，运行期损坏时 fail closed 为 `503`。
 - hosts 与 alerts 必须复用同一个健康投影。schedule 无法分析时健康为 `unknown`，返回
   `schedule_unavailable`，只展示状态库中的最后已知 `next_run_at`，不得伪造超时告警。
+- 主动告警 manager 监听成功后立即评估一次，之后每分钟串行评估。它必须直接复用
+  `application.projectHosts` 返回的 `alertResponse` 集合，不在通知层复制 overdue、连续失败或演练失败判定。
+- 每轮重新严格加载清单和 `monitoring.env_file`。启动前已配置但秘密文件非法时拒绝 listen；
+  运行期配置损坏或单轮投递失败只报告脱敏错误并跳过/重试该轮，不能终止 HTTP 服务。
+- 告警生命周期固定为：首次立即、持续故障距最近成功投递满 24 小时重发、恢复通知一次、恢复后复发立即。
+  只有成功投递才更新 `last_alert_sent_at` / `recovery_sent_at`；发送失败不能进入静默期。
+- 当前投影消失时先保存 inactive + `resolved_at`。只有历史告警曾成功发送且 host 仍在清单中才发恢复；
+  host 被删除只关闭状态，不把“停止监控”误报成恢复。
+- 同轮到期活动告警和恢复事件按稳定 ID 排序，合并成一条 Markdown。先保存观察状态，再发送，成功后保存投递时间。
+  这是 at-least-once：发送成功后、状态提交前崩溃可能重复一条，但不能永久漏报。
 - 主机摘要的 `last_backup_bytes` 与 `recent_backup_sizes` 只能复用投影已取的 `ListHostRuns`
   结果，不得为趋势另开查询。采样只统计 `ok` 与 `warn` 的 run（失败 run 的字节数是半截数据，
   混进趋势会掩盖 ADR-011 要盯的体积腰斩信号），每点是该 run 全部 target 字节之和，
@@ -172,6 +203,8 @@ func webui.NewHandler() (*webui.Handler, error)
   snapshot 和 SHA-256 digest，10 分钟有效且只能展示、消费一次。真实恢复必须使用预检中的精确参数。
 - context 取消后先有界 `Shutdown` HTTP，再取消并等待活动 operation，最后关闭 Store；使用
   `errors.Join` 聚合 Serve、Shutdown、server Close、operation 和 Store.Close 错误。
+- 告警 manager 是 Serve 生命周期的一部分：HTTP shutdown 后必须先取消并等待告警循环，
+  再关闭 operation manager 和 Store，禁止遗留访问已关闭 Store 的 goroutine。
 - `ark-hub.service` 只包含二进制路径和非秘密启动 flag，使用 `Type=simple`、`UMask=0077`、
   `Restart=on-failure`。安装只管理 `ark-hub.service`，不创建、扫描、删除、enable 或启动 timer。
 - 密码、hash、session token、CSRF token、完整 Cookie 和请求 body 不得进入日志、错误、普通响应
@@ -205,6 +238,13 @@ func webui.NewHandler() (*webui.Handler, error)
 | 清单或 Ark 二进制在启动前非法 | 不创建 listener，返回带上下文错误 |
 | 运行期清单损坏 | 业务 API 返回 `503`，登录和 `/healthz` 保持可用 |
 | schedule 分析失败 | health=`unknown`、diagnostics 含 `schedule_unavailable`，不生成 `backup_overdue` |
+| 首次出现稳定告警 ID | 保存 active 状态并立即加入本轮 Markdown |
+| 活动告警距最近成功投递不足 24 小时 | 保持 active，不重复发送 |
+| 活动告警距最近成功投递达到 24 小时 | 本轮重发，成功后刷新静默时间 |
+| 钉钉投递失败 | 不写成功投递时间，下一评估周期继续尝试；HTTP 服务保持可用 |
+| 已发送告警恢复且 host 仍存在 | 保存 resolved 并发送一次恢复；成功后写 `recovery_sent_at` |
+| host 从清单删除 | 状态转 inactive，不发送恢复消息 |
+| backup operation 缺少或包含非法 `heartbeat_status` | 拒绝 Ark JSON，不持久化伪造结果 |
 | POST 缺 CSRF、body 超限、未知字段或非法 host | 返回 `403`/`400`/`404`，不创建 operation |
 | 已有活动手工操作 | 返回 `409 conflict`，不启动第二个 Ark 子进程 |
 | Ark 子进程启动失败 | operation 持久化为 fail，HTTP 返回 `500 operation_failed` |
@@ -230,6 +270,10 @@ func webui.NewHandler() (*webui.Handler, error)
 - **Good**：restore preview 只读探测目标资源，同一 session 第一次读取完成结果时获得一次性 token；
   URL source host 或目标冲突变化后旧 token 不能启动恢复。
 - **Base**：schedule 暂时不可用时继续返回最后已知 next run，但健康明确为 unknown。
+- **Good**：同一轮 3 个 host 的活动/恢复事件按稳定 ID 合并成一条钉钉 Markdown，成功后统一刷新对应状态。
+- **Base**：未配置钉钉时 manager 不发送网络请求；API 的 `/api/alerts` 仍照常返回实时投影。
+- **Bad**：发送失败也写 `last_alert_sent_at`，会把从未送达的告警静默 24 小时。
+- **Bad**：host 从清单移除时发送“恢复”，会把停止监控误报成系统恢复健康。
 - **Good**：未登录访问 `/hosts/web-01` 得到登录重定向且响应体不含入口 HTML；登录后同一路径
   返回入口 HTML 交给前端路由，而 `/api/typo` 仍是 `404` JSON。
 - **Base**：用 `go build` 而不是 `make hub` 编译出的 `ark-hub` 照常启动，页面是占位提示，
@@ -287,6 +331,10 @@ git diff --check
 - 缺少真实前端产物时回落占位页且服务可用；
 - POST 的鉴权、CSRF、body 上限、未知字段、argv、进程启动失败、非零退出、JSON/输出上限和客户端断开；
 - confirmation 的 session/source 绑定、过期、单次消费、精确 snapshot/digest，以及 shutdown interrupted。
+- 告警首次、24 小时边界、恢复一次、复发立即、发送失败不静默、重启恢复状态和 host 删除；
+- API 与钉钉使用完全一致的三个稳定 kind，schedule failure 不伪造 overdue；
+- 同轮批量消息确定性排序、并发 evaluate 不重复、manager 取消等待和 Store 关闭顺序；
+- backup operation 对 `heartbeat_status=disabled|sent|failed` 的白名单、必填和非法值拒绝。
 
 ### 7. Wrong vs Correct
 
@@ -334,4 +382,12 @@ if err := command.Start(); err != nil {
 }
 writeAccepted(operation.ID)
 go waitAndPersist(command)
+```
+
+```go
+// 错误：通知层重新实现健康规则，API 与钉钉迟早漂移。
+alerts := deriveAlertsAgain(cfg, runs, verifications)
+
+// 正确：告警 manager 复用 HTTP API 同一投影的 alertResponse 集合。
+_, alerts, err := application.projectHosts(ctx, cfg)
 ```

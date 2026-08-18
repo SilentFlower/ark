@@ -10,6 +10,9 @@
 /** 运行与检查的四态状态，对应 `store.Status`。 */
 export type Status = 'running' | 'ok' | 'warn' | 'fail'
 
+/** 外部心跳投递状态，对应 `monitoring.HeartbeatStatus`。 */
+export type HeartbeatStatus = 'disabled' | 'sent' | 'failed'
+
 /** 主机健康度，由 `deriveHealth` 投影得出。`unknown` 表示无法判断，不是通过。 */
 export type Health = 'ok' | 'warn' | 'fail' | 'unknown'
 
@@ -204,6 +207,7 @@ export interface BackupResult {
   status: Status
   manifest?: unknown
   manifest_snapshot_id: string
+  heartbeat_status: HeartbeatStatus
   error: string
 }
 

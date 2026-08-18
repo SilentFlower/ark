@@ -23,6 +23,8 @@ defaults:
     daily: 7
     weekly: 4
     monthly: 6
+monitoring:
+  env_file: /etc/ark/monitoring.env
 hosts:
   - host: hub-01
     local: true
@@ -111,6 +113,9 @@ func TestLoadAndValidate_Valid(t *testing.T) {
 	}
 	if len(cfg.Hosts) != 3 {
 		t.Fatalf("hosts 数量 = %d, 期望 3", len(cfg.Hosts))
+	}
+	if cfg.Monitoring == nil || cfg.Monitoring.EnvFile != "/etc/ark/monitoring.env" {
+		t.Fatalf("monitoring 配置 = %#v，期望读取受限秘密文件路径", cfg.Monitoring)
 	}
 
 	hub := hostByName(t, cfg, "hub-01")
@@ -331,6 +336,20 @@ func TestValidate_Errors(t *testing.T) {
 		mutate  func(string) string
 		wantSub string
 	}{
+		{
+			name: "monitoring env_file 为空",
+			mutate: func(s string) string {
+				return strings.Replace(s, "  env_file: /etc/ark/monitoring.env", "  env_file: ''", 1)
+			},
+			wantSub: "monitoring.env_file",
+		},
+		{
+			name: "monitoring env_file 是相对路径",
+			mutate: func(s string) string {
+				return strings.Replace(s, "/etc/ark/monitoring.env", "monitoring.env", 1)
+			},
+			wantSub: "绝对路径",
+		},
 		{
 			name:    "host 含非法字符",
 			mutate:  func(s string) string { return strings.Replace(s, "host: web-01", "host: Web_01", 1) },

@@ -7,6 +7,7 @@ package envfile
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -25,9 +26,17 @@ func Parse(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("打开凭证文件 %s 失败: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
+	return ParseReader(f, path)
+}
 
+// ParseReader 从已打开的数据流解析受限语法的环境变量。
+// @param reader 环境文件的数据流。
+// @param source 用于错误定位的来源名称或路径。
+// @return map[string]string 解析后的环境变量；重复 key 以后值覆盖前值。
+// @return error 扫描或语法错误；错误不会包含变量值。
+func ParseReader(reader io.Reader, source string) (map[string]string, error) {
 	values := make(map[string]string)
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(reader)
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++
@@ -42,19 +51,19 @@ func Parse(path string) (map[string]string, error) {
 		key, value, ok := strings.Cut(line, "=")
 		key = strings.TrimSpace(key)
 		if !ok || !keyPattern.MatchString(key) {
-			return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 环境变量格式无效", path, lineNumber)
+			return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 环境变量格式无效", source, lineNumber)
 		}
 		value = strings.TrimSpace(value)
 		if value != "" && (value[0] == '\'' || value[0] == '"') {
 			if len(value) < 2 || value[len(value)-1] != value[0] {
-				return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 引号未闭合", path, lineNumber)
+				return nil, fmt.Errorf("解析凭证文件 %s 第 %d 行失败: 引号未闭合", source, lineNumber)
 			}
 			value = value[1 : len(value)-1]
 		}
 		values[key] = value
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("读取凭证文件 %s 失败: %w", path, err)
+		return nil, fmt.Errorf("读取凭证文件 %s 失败: %w", source, err)
 	}
 	return values, nil
 }

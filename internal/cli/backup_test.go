@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/silentflower/ark/internal/backup"
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/doctor"
+	"github.com/silentflower/ark/internal/monitoring"
 	"github.com/silentflower/ark/internal/restic"
 	"github.com/silentflower/ark/internal/sshexec"
 	"github.com/silentflower/ark/internal/store"
@@ -40,6 +42,10 @@ type backupTestHarness struct {
 	forgetCalls     []string
 	nowCalls        int
 	sourceFilenames []string
+	monitoringLoads int
+	heartbeatFailed []bool
+	heartbeatCtxErr []error
+	heartbeatErr    error
 }
 
 type backupEventCloser struct {
@@ -105,6 +111,15 @@ func (h *backupTestHarness) dependencies() backupDependencies {
 		loadConfig: func(string) (*config.Config, error) {
 			h.events = append(h.events, "load")
 			return h.cfg, nil
+		},
+		loadMonitoring: func(path string) (monitoring.Settings, error) {
+			h.monitoringLoads++
+			return monitoring.Load(path)
+		},
+		sendHeartbeat: func(ctx context.Context, _ monitoring.HeartbeatSettings, failed bool) error {
+			h.heartbeatFailed = append(h.heartbeatFailed, failed)
+			h.heartbeatCtxErr = append(h.heartbeatCtxErr, ctx.Err())
+			return h.heartbeatErr
 		},
 		acquireLock: func(path string) (io.Closer, error) {
 			h.events = append(h.events, "lock:"+path)
@@ -271,6 +286,17 @@ func (h *backupTestHarness) dependencies() backupDependencies {
 		newRunID:  func(time.Time) (string, error) { return "run-1", nil },
 		statePath: "/state/ark.db",
 	}
+}
+
+func writeBackupMonitoringFile(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir() + "/monitoring.env"
+	contents := "ARK_HEARTBEAT_SUCCESS_URL=http://127.0.0.1/success\n" +
+		"ARK_HEARTBEAT_FAILURE_URL=http://127.0.0.1/failure\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("写入监控配置失败: %v", err)
+	}
+	return path
 }
 
 func TestRunBackup_成功按Host串行并统一Prune(t *testing.T) {
@@ -442,10 +468,19 @@ func TestDoctorFailureNames_仅返回失败项名称(t *testing.T) {
 
 func TestBackupCommand_DryRun只加载清单并输出纯JSON(t *testing.T) {
 	harness := &backupTestHarness{cfg: testBackupConfig()}
+	harness.cfg.Monitoring = &config.Monitoring{EnvFile: "/not/read/monitoring.env"}
 	dependencies := backupDependencies{
 		loadConfig: func(string) (*config.Config, error) {
 			harness.events = append(harness.events, "load")
 			return harness.cfg, nil
+		},
+		loadMonitoring: func(string) (monitoring.Settings, error) {
+			harness.events = append(harness.events, "monitoring:load")
+			return monitoring.Settings{}, nil
+		},
+		sendHeartbeat: func(context.Context, monitoring.HeartbeatSettings, bool) error {
+			harness.events = append(harness.events, "heartbeat:send")
+			return nil
 		},
 		statePath: "/state/ark.db",
 	}
@@ -766,6 +801,237 @@ func TestBackupCommand_Partial输出后返回可识别哨兵(t *testing.T) {
 	}
 	if summary.Status != store.StatusFail || summary.Error == "" {
 		t.Fatalf("summary = %#v", summary)
+	}
+	if summary.HeartbeatStatus != monitoring.HeartbeatDisabled {
+		t.Fatalf("heartbeat_status = %q", summary.HeartbeatStatus)
+	}
+	if len(harness.heartbeatFailed) != 0 {
+		t.Fatalf("未配置心跳时仍产生请求: %#v", harness.heartbeatFailed)
+	}
+}
+
+func TestBackupCommand_按备份终态发送心跳并输出状态(t *testing.T) {
+	tests := []struct {
+		name           string
+		executeErrors  map[string]error
+		targetStatuses map[string]store.Status
+		wantFailed     bool
+		wantErr        bool
+	}{
+		{name: "成功使用成功端点", executeErrors: map[string]error{}, targetStatuses: map[string]store.Status{}, wantFailed: false},
+		{name: "告警使用成功端点", executeErrors: map[string]error{}, targetStatuses: map[string]store.Status{"web-01:image_digest": store.StatusWarn}, wantFailed: false},
+		{name: "失败使用失败端点", executeErrors: map[string]error{"web-01:postgres/db/app": errors.New("stream failed")}, targetStatuses: map[string]store.Status{}, wantFailed: true, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			harness := &backupTestHarness{
+				cfg:            testBackupConfig(),
+				hostDoctorFail: map[string]bool{},
+				hostDoctorWarn: map[string]bool{},
+				executeErrors:  test.executeErrors,
+				targetStatuses: test.targetStatuses,
+				targetErrors:   map[string]error{},
+			}
+			harness.cfg.Monitoring = &config.Monitoring{EnvFile: writeBackupMonitoringFile(t)}
+			configPath := "/etc/ark/ark.yaml"
+			cmd := newBackupCmdWithDependencies(&configPath, harness.dependencies())
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			cmd.SetArgs([]string{"--host", "web-01", "--json"})
+			err := cmd.Execute()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("命令错误 = %v", err)
+			}
+			if !reflect.DeepEqual(harness.heartbeatFailed, []bool{test.wantFailed}) {
+				t.Fatalf("心跳端点选择 = %#v", harness.heartbeatFailed)
+			}
+			var summary backupRunSummary
+			if err := json.Unmarshal(output.Bytes(), &summary); err != nil {
+				t.Fatalf("解析 backup JSON 失败: %v\n%s", err, output.String())
+			}
+			if summary.HeartbeatStatus != monitoring.HeartbeatSent {
+				t.Fatalf("heartbeat_status = %q", summary.HeartbeatStatus)
+			}
+		})
+	}
+}
+
+func TestBackupCommand_心跳失败不改变备份退出结果(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		hostDoctorWarn: map[string]bool{},
+		executeErrors:  map[string]error{},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+		heartbeatErr:   errors.New("外部心跳投递失败: HTTP 状态 503"),
+	}
+	harness.cfg.Monitoring = &config.Monitoring{EnvFile: writeBackupMonitoringFile(t)}
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, harness.dependencies())
+	var output bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&stderr)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("心跳失败不应改变成功退出结果: %v", err)
+	}
+	var summary backupRunSummary
+	if err := json.Unmarshal(output.Bytes(), &summary); err != nil {
+		t.Fatalf("解析 backup JSON 失败: %v", err)
+	}
+	if summary.HeartbeatStatus != monitoring.HeartbeatFailed {
+		t.Fatalf("heartbeat_status = %q", summary.HeartbeatStatus)
+	}
+	if !strings.Contains(stderr.String(), "警告: 外部心跳投递失败") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestBackupCommand_失败心跳投递失败仍保留备份失败退出结果(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		hostDoctorWarn: map[string]bool{},
+		executeErrors:  map[string]error{"web-01:postgres/db/app": errors.New("stream failed")},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+		heartbeatErr:   errors.New("外部心跳投递失败: HTTP 状态 503"),
+	}
+	harness.cfg.Monitoring = &config.Monitoring{EnvFile: writeBackupMonitoringFile(t)}
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, harness.dependencies())
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--json"})
+	err := cmd.Execute()
+	if !errors.Is(err, errBackupFailed) {
+		t.Fatalf("命令错误 = %v", err)
+	}
+	var summary backupRunSummary
+	if err := json.Unmarshal(output.Bytes(), &summary); err != nil {
+		t.Fatalf("解析 backup JSON 失败: %v", err)
+	}
+	if summary.Status != store.StatusFail || summary.HeartbeatStatus != monitoring.HeartbeatFailed {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestBackupCommand_监控配置失败不改变备份退出结果(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		hostDoctorWarn: map[string]bool{},
+		executeErrors:  map[string]error{},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+	}
+	harness.cfg.Monitoring = &config.Monitoring{EnvFile: t.TempDir() + "/missing.env"}
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, harness.dependencies())
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("监控配置失败不应改变成功退出结果: %v", err)
+	}
+	var summary backupRunSummary
+	if err := json.Unmarshal(output.Bytes(), &summary); err != nil {
+		t.Fatalf("解析 backup JSON 失败: %v", err)
+	}
+	if summary.HeartbeatStatus != monitoring.HeartbeatFailed || len(harness.heartbeatFailed) != 0 {
+		t.Fatalf("summary=%#v requests=%#v", summary, harness.heartbeatFailed)
+	}
+}
+
+func TestBackupCommand_清单加载失败不读取监控配置(t *testing.T) {
+	monitoringLoads := 0
+	dependencies := backupDependencies{
+		loadConfig: func(string) (*config.Config, error) {
+			return nil, errors.New("manifest invalid")
+		},
+		loadMonitoring: func(string) (monitoring.Settings, error) {
+			monitoringLoads++
+			return monitoring.Settings{}, nil
+		},
+		statePath: "/state/ark.db",
+	}
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, dependencies)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "manifest invalid") {
+		t.Fatalf("命令错误 = %v", err)
+	}
+	if monitoringLoads != 0 {
+		t.Fatalf("清单加载失败后读取了监控配置 %d 次", monitoringLoads)
+	}
+}
+
+func TestBackupCommand_前置失败仍发送失败心跳(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		hostDoctorWarn: map[string]bool{},
+		executeErrors:  map[string]error{},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+	}
+	harness.cfg.Monitoring = &config.Monitoring{EnvFile: writeBackupMonitoringFile(t)}
+	dependencies := harness.dependencies()
+	dependencies.acquireLock = func(string) (io.Closer, error) {
+		return nil, errors.New("lock busy")
+	}
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, dependencies)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--json"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "lock busy") {
+		t.Fatalf("命令错误 = %v", err)
+	}
+	if !reflect.DeepEqual(harness.heartbeatFailed, []bool{true}) {
+		t.Fatalf("心跳端点选择 = %#v", harness.heartbeatFailed)
+	}
+}
+
+func TestBackupCommand_取消后使用独立上下文发送失败心跳(t *testing.T) {
+	harness := &backupTestHarness{
+		cfg:            testBackupConfig(),
+		hostDoctorFail: map[string]bool{},
+		hostDoctorWarn: map[string]bool{},
+		executeErrors:  map[string]error{},
+		targetStatuses: map[string]store.Status{},
+		targetErrors:   map[string]error{},
+	}
+	harness.cfg.Monitoring = &config.Monitoring{EnvFile: writeBackupMonitoringFile(t)}
+	dependencies := harness.dependencies()
+	dependencies.openStore = func(ctx context.Context, _ string) (*store.Store, error) {
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	configPath := "/etc/ark/ark.yaml"
+	cmd := newBackupCmdWithDependencies(&configPath, dependencies)
+	cmd.SetContext(ctx)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--json"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("已取消命令应失败")
+	}
+	if !reflect.DeepEqual(harness.heartbeatFailed, []bool{true}) ||
+		!reflect.DeepEqual(harness.heartbeatCtxErr, []error{nil}) {
+		t.Fatalf("failed=%#v ctxErr=%#v", harness.heartbeatFailed, harness.heartbeatCtxErr)
 	}
 }
 

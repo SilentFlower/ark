@@ -23,6 +23,14 @@ repo:
   password_file: /etc/ark/repo.pass
   env_file: /etc/ark/repo.env
 
+# 可选的主动告警与外部心跳。清单只保存 root-only 秘密文件的绝对路径，
+# Webhook、签名密钥和带 token 的心跳 URL 不得直接写进本文件。
+# /etc/ark/monitoring.env 必须是当前运行用户所有的普通文件，权限不超过 0600，
+# 且只允许 ARK_DINGTALK_WEBHOOK_URL、ARK_DINGTALK_SECRET、
+# ARK_HEARTBEAT_SUCCESS_URL、ARK_HEARTBEAT_FAILURE_URL 四个键。
+# monitoring:
+#   env_file: /etc/ark/monitoring.env
+
 # 各机器未显式覆盖时套用的默认值。
 #
 # 默认备份窗口刻意避开整点和半点：全世界的定时任务都挤在 0 分和 30 分，
@@ -53,7 +61,7 @@ hosts:
         paths:
           - /var/lib/ark/ark.db
       # 清单、known_hosts 和明确列出的 hub 服务配置。known_hosts 是服务器公钥，
-      # 可随清单备份；repo.pass、repo.env、SSH 私钥和其它解密/登录密钥绝不能加入。
+      # 可随清单备份；repo.pass、repo.env、monitoring.env、SSH 私钥和其它解密/登录密钥绝不能加入。
       # 不要把整个 /etc/ark 作为路径，否则会把凭证一起收入仓库。
       - type: files
         name: ark-config

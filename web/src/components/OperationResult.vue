@@ -44,6 +44,16 @@ const restore = computed(() =>
       <dd class="font-mono text-xs">{{ backup.run_id }}</dd>
       <dt class="text-slate-500">manifest 快照</dt>
       <dd class="font-mono text-xs">{{ backup.manifest_snapshot_id || '—' }}</dd>
+      <dt class="text-slate-500">外部心跳</dt>
+      <dd>
+        {{
+          backup.heartbeat_status === 'sent'
+            ? '已发送'
+            : backup.heartbeat_status === 'failed'
+              ? '发送失败'
+              : '未配置'
+        }}
+      </dd>
     </dl>
 
     <dl v-else-if="verify" class="grid grid-cols-[8rem_1fr] gap-y-1">

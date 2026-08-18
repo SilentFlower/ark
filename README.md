@@ -49,8 +49,8 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 
 ## 当前状态
 
-**P4 界面阶段。** 备份、恢复、恢复演练、`ark-hub` 鉴权、HTTP API 与 Vue 控制台已实现；
-钉钉告警和外部心跳死人开关待 P4-4 推进。进度见 [路线图](docs/roadmap.md)。
+**P4 界面与告警阶段。** 备份、恢复、恢复演练、`ark-hub` 鉴权、HTTP API、Vue 控制台、
+带 24 小时静默期的钉钉告警与外部心跳死人开关均已实现。进度见 [路线图](docs/roadmap.md)。
 
 | 命令 | 状态 | 说明 |
 |---|---|---|
@@ -59,7 +59,7 @@ hub 是刻意设计的单点：它持有 restic 密码、对象存储凭证和�
 | `ark backup` | ✅ | 执行多 host 备份并持久化运行、target 与 doctor 结果 |
 | `ark restore` | ✅ | 恢复 / 跨机重建 / 隔离恢复 / 只读目标预检 |
 | `ark verify` | ✅ | 自动隔离恢复演练 |
-| `ark-hub` | 🚧 P4 | 鉴权、HTTP API 与内嵌 Web 控制台已完成；告警待 P4-4 |
+| `ark-hub` | ✅ P4 | 鉴权、HTTP API、内嵌 Web 控制台与主动告警 |
 
 > ⚠️ 清单格式已是 `version: 2`——**一份清单描述全部机器**，只放在 hub 上。
 > P0 时期按单机写的 v1 清单需要迁移，`ark validate` 会直接给出迁移提示。
@@ -105,6 +105,29 @@ sudo vim /etc/ark/ark.yaml
 `1` 工具本身出错，`2` 检查未通过。
 方便直接挂到监控上。
 
+## 主动告警与死人开关
+
+清单可选配置 `monitoring.env_file`，指向当前运行用户所有、权限不超过 `0600` 的普通文件：
+
+```yaml
+monitoring:
+  env_file: /etc/ark/monitoring.env
+```
+
+秘密文件只允许以下四个键；不要把真实 URL 或签名密钥提交到仓库：
+
+```dotenv
+ARK_DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=REDACTED
+ARK_DINGTALK_SECRET=REDACTED
+ARK_HEARTBEAT_SUCCESS_URL=https://monitor.example/ping/REDACTED
+ARK_HEARTBEAT_FAILURE_URL=https://monitor.example/ping/REDACTED/fail
+```
+
+钉钉告警复用控制台的三类健康投影，首次立即发送，持续故障每 24 小时最多重发一次，恢复时发送一次。
+`ark backup` 的 `ok`/`warn` 调成功端点，`fail` 调失败端点；`--json` 和人类摘要都会显示
+`heartbeat_status=disabled|sent|failed`。心跳失败不会改写备份 run、manifest 或既有退出码。
+`ark-hub` 与 backup timer 仍彼此独立，停止 Hub 不影响定时备份和外部心跳。
+
 ## ⚠️ 关于密钥
 
 **restic 仓库密码必须另外保存一份在 hub 之外**（密码管理器 / 离线介质）。
@@ -113,6 +136,7 @@ sudo vim /etc/ark/ark.yaml
 这是备份系统最常见、也最致命的失败方式。
 
 SSH 私钥同理，且**密钥本身不进备份**：把开锁的钥匙和锁着的箱子放在同一个地方没有意义。
+`monitoring.env` 同样不得进入备份，否则群机器人与外部监控凭证会随快照扩散。
 
 ## 开发
 

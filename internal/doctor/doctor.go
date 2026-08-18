@@ -21,6 +21,7 @@ import (
 
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/envfile"
+	"github.com/silentflower/ark/internal/monitoring"
 	"github.com/silentflower/ark/internal/schedule"
 	"golang.org/x/sys/unix"
 )
@@ -108,6 +109,7 @@ func RunLocal(ctx context.Context, cfg *config.Config) *Report {
 
 	passwordOK := checkLocalPath(r, "repo.password_file", cfg.Repo.PasswordFile, true, 0o077)
 	envValues, envOK := checkRepoEnvFile(r, cfg.Repo.EnvFile)
+	checkMonitoringSettings(r, cfg.Monitoring)
 
 	for i := range cfg.Hosts {
 		h := &cfg.Hosts[i]
@@ -128,6 +130,19 @@ func RunLocal(ctx context.Context, cfg *config.Config) *Report {
 	checkRepoAccess(ctx, r, cfg, envValues, resticOK && passwordOK && envOK)
 	checkObjectLock(r)
 	return r
+}
+
+// checkMonitoringSettings 复用运行时加载器验证文件安全与全部端点。
+// 监控是辅助可观测性，配置损坏需要显式告警，但不能阻断真实备份。
+func checkMonitoringSettings(r *Report, settings *config.Monitoring) {
+	if settings == nil {
+		return
+	}
+	if _, err := monitoring.Load(settings.EnvFile); err != nil {
+		r.add("monitoring.env_file", StatusWarn, "%v", err)
+		return
+	}
+	r.add("monitoring.env_file", StatusOK, "%s", settings.EnvFile)
 }
 
 // checkKnownHostsPath 根据主机密钥策略检查信任库是否具备执行条件。

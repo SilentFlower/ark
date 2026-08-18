@@ -89,10 +89,11 @@ const (
 
 // Config 是 hub 的完整备份清单，描述它管理的全部机器。
 type Config struct {
-	Version  int      `yaml:"version"`
-	Repo     Repo     `yaml:"repo"`
-	Defaults Defaults `yaml:"defaults"`
-	Hosts    []Host   `yaml:"hosts"`
+	Version    int         `yaml:"version"`
+	Repo       Repo        `yaml:"repo"`
+	Defaults   Defaults    `yaml:"defaults"`
+	Monitoring *Monitoring `yaml:"monitoring,omitempty"`
+	Hosts      []Host      `yaml:"hosts"`
 
 	// path 记录清单自身的来源路径，仅用于错误信息，不参与序列化。
 	path string
@@ -105,6 +106,14 @@ type Config struct {
 type Defaults struct {
 	Schedule  *Schedule  `yaml:"schedule"`
 	Retention *Retention `yaml:"retention"`
+}
+
+// Monitoring 描述告警与外部心跳使用的受限秘密文件。
+//
+// 清单只保存绝对路径，Webhook、签名密钥与心跳 URL 都留在权限受限的文件中，
+// 避免它们进入示例、状态库或清单备份。
+type Monitoring struct {
+	EnvFile string `yaml:"env_file"`
 }
 
 // Host 是一台被备份的机器。
@@ -435,10 +444,23 @@ func (c *Config) Validate() error {
 	}
 
 	c.validateRepo(add)
+	c.validateMonitoring(add)
 	c.validateDefaults(add)
 	c.validateHosts(add)
 
 	return errors.Join(errs...)
+}
+
+// validateMonitoring 只校验清单字段本身；文件存在性、权限和内容属于运行时与 doctor。
+func (c *Config) validateMonitoring(add func(string, ...any)) {
+	if c.Monitoring == nil {
+		return
+	}
+	if c.Monitoring.EnvFile == "" {
+		add("monitoring.env_file: 不能为空")
+	} else if !filepath.IsAbs(c.Monitoring.EnvFile) {
+		add("monitoring.env_file: 必须是绝对路径，实际 %q", c.Monitoring.EnvFile)
+	}
 }
 
 // validateRepo 校验备份仓库配置。

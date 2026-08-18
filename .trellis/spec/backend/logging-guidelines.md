@@ -16,8 +16,8 @@
 真正需要被程序消费的运行结果，走的是**结构化状态库**而不是日志文本
 （见下文 Structured Reporting）。
 
-在 `ark-hub`（P4）引入之前不要加日志框架。如果某天需要，先在 `docs/design.md`
-里补一条 ADR 说明是什么需求逼出了这个依赖。
+`ark-hub` 已经进入 P4，但仍只使用受控 stderr reporter，不引入日志框架。如果某天需要，
+先在 `docs/design.md` 里补一条 ADR 说明是什么需求逼出了这个依赖。
 
 ---
 
@@ -139,6 +139,8 @@ type Check struct {
   它一旦泄漏，加上对象存储的读权限就能解密全部备份。
 - `repo.env_file` 的**内容**（对象存储 AK/SK）。
 - `project.env_file` 的内容（应用的数据库密码、加密密钥）。
+- `monitoring.env_file` 的内容，以及钉钉 webhook、access token、签名密钥、timestamp/sign、
+  heartbeat URL 的 path/query。完整 URL 本身就是认证材料，不能按普通仓库 URL 处理。
 - 数据库转储的任何片段。它就是全量业务数据。
 - 传给外部命令的环境变量集合。打印 `cmd.Env` 会把凭证整个吐出来。
 - `known_hosts` 原始公钥行、身份私钥内容或扫描得到的原始 key blob。刷新命令只输出
@@ -165,6 +167,25 @@ r.add(name, StatusOK, "密码已读取: %s", string(content))
 某些失败路径下工具会回显配置。往 restic 封装里加错误处理时，
 先确认它的错误输出不含 `AWS_SECRET_ACCESS_KEY` 之类的值，
 详见 `external-command-guidelines.md`。
+
+### 监控 HTTP 错误必须从构造时脱敏
+
+不能先把 `url.Error`、请求 URL、`Location` 或响应正文拼进 error，再指望上层正则清洗。
+`internal/monitoring` 的错误契约固定为：
+
+- 网络/客户端超时重试耗尽时只报告投递标签和已完成尝试次数；调用方 context 取消只附带 context 错误；
+- 非重试 HTTP 只报告状态码；`429` / `5xx` 重试到上限后也不回显端点；
+- 钉钉业务响应只允许报告数字 `errcode`，不回显 `errmsg` 或原始 JSON；
+- 3xx 禁止跟随，直接作为非 2xx 处理，避免已校验端点把请求体和秘密重定向到另一主机；
+- 响应超过 64 KiB 时只报告上限，不保留正文。
+
+```go
+// 错误：url.Error 会携带完整 URL，重定向还可能把请求送到未校验端点。
+return fmt.Errorf("钉钉请求失败: %w", err)
+
+// 正确：HTTP 边界只暴露脱敏、可操作的类别信息。
+return fmt.Errorf("钉钉投递失败，已完成 %d 次尝试", attempts)
+```
 
 ### 仓库 URL 可以输出，但要意识到它含账号标识
 

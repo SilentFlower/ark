@@ -19,6 +19,7 @@ import (
 	"github.com/silentflower/ark/internal/backup"
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/doctor"
+	"github.com/silentflower/ark/internal/monitoring"
 	"github.com/silentflower/ark/internal/restic"
 	"github.com/silentflower/ark/internal/schedule"
 	"github.com/silentflower/ark/internal/sshexec"
@@ -26,8 +27,9 @@ import (
 )
 
 const (
-	defaultBackupLockPath = "/run/ark.lock"
-	backupCleanupTimeout  = 10 * time.Second
+	defaultBackupLockPath  = "/run/ark.lock"
+	backupCleanupTimeout   = 10 * time.Second
+	backupHeartbeatTimeout = 10 * time.Second
 )
 
 type backupCommandOptions struct {
@@ -40,6 +42,8 @@ type backupCommandOptions struct {
 
 type backupDependencies struct {
 	loadConfig      func(string) (*config.Config, error)
+	loadMonitoring  func(string) (monitoring.Settings, error)
+	sendHeartbeat   func(context.Context, monitoring.HeartbeatSettings, bool) error
 	acquireLock     func(string) (io.Closer, error)
 	runLocalDoctor  runLocalFunc
 	runHostDoctor   runHostFunc
@@ -95,11 +99,12 @@ type backupPlanFile struct {
 }
 
 type backupRunSummary struct {
-	RunID              string           `json:"run_id"`
-	Status             store.Status     `json:"status"`
-	Manifest           *backup.Manifest `json:"manifest,omitempty"`
-	ManifestSnapshotID string           `json:"manifest_snapshot_id"`
-	Error              string           `json:"error"`
+	RunID              string                     `json:"run_id"`
+	Status             store.Status               `json:"status"`
+	Manifest           *backup.Manifest           `json:"manifest,omitempty"`
+	ManifestSnapshotID string                     `json:"manifest_snapshot_id"`
+	HeartbeatStatus    monitoring.HeartbeatStatus `json:"heartbeat_status"`
+	Error              string                     `json:"error"`
 }
 
 type backupFailureSet struct {
@@ -135,6 +140,11 @@ func newBackupCmdWithDependencies(configPath *string, dependencies backupDepende
 			}
 
 			summary, runErr := runBackup(cmd.Context(), cfg, hosts, options, dependencies)
+			heartbeatStatus, heartbeatErr := deliverBackupHeartbeat(cmd.Context(), cfg, summary, runErr, dependencies)
+			summary.HeartbeatStatus = heartbeatStatus
+			if heartbeatErr != nil {
+				cmd.PrintErrf("警告: %v\n", heartbeatErr)
+			}
 			if summary.Status == "" {
 				return runErr
 			}
@@ -157,6 +167,8 @@ func newBackupCmdWithDependencies(configPath *string, dependencies backupDepende
 func defaultBackupDependencies() backupDependencies {
 	return backupDependencies{
 		loadConfig:     config.LoadAndValidate,
+		loadMonitoring: monitoring.Load,
+		sendHeartbeat:  monitoring.SendHeartbeat,
 		acquireLock:    acquireBackupLock,
 		runLocalDoctor: doctor.RunLocal,
 		runHostDoctor:  doctor.RunHost,
@@ -209,6 +221,37 @@ func defaultBackupDependencies() backupDependencies {
 		newRunID:  generateRunID,
 		statePath: store.DefaultPath,
 	}
+}
+
+func deliverBackupHeartbeat(
+	ctx context.Context,
+	cfg *config.Config,
+	summary backupRunSummary,
+	runErr error,
+	dependencies backupDependencies,
+) (monitoring.HeartbeatStatus, error) {
+	if cfg == nil || cfg.Monitoring == nil {
+		return monitoring.HeartbeatDisabled, nil
+	}
+	if dependencies.loadMonitoring == nil || dependencies.sendHeartbeat == nil {
+		return monitoring.HeartbeatFailed, errors.New("外部心跳投递失败: 依赖为空")
+	}
+	settings, err := dependencies.loadMonitoring(cfg.Monitoring.EnvFile)
+	if err != nil {
+		return monitoring.HeartbeatFailed, fmt.Errorf("外部心跳投递失败: 加载监控配置: %w", err)
+	}
+	if settings.Heartbeat == nil {
+		return monitoring.HeartbeatDisabled, nil
+	}
+
+	// 备份可能因取消或超时退出；心跳必须使用独立收尾上下文，才能把失败终态送出。
+	heartbeatCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backupHeartbeatTimeout)
+	defer cancel()
+	failed := runErr != nil || summary.Status == "" || summary.Status == store.StatusFail
+	if err := dependencies.sendHeartbeat(heartbeatCtx, *settings.Heartbeat, failed); err != nil {
+		return monitoring.HeartbeatFailed, err
+	}
+	return monitoring.HeartbeatSent, nil
 }
 
 func loadBackupSelection(
@@ -843,6 +886,7 @@ func printBackupSummary(cmd *cobra.Command, value any) {
 	summary := value.(backupRunSummary)
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "备份运行 %s: %s\n", summary.RunID, summary.Status)
+	fmt.Fprintf(out, "  外部心跳: %s\n", summary.HeartbeatStatus)
 	if summary.Manifest == nil {
 		return
 	}

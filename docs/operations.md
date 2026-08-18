@@ -20,6 +20,7 @@ online backup 导出一致的单文件副本，再把该副本流式交给 resti
 
 - `repo.password_file` 指向的 restic 密码文件；
 - `repo.env_file` 指向的对象存储凭证文件；
+- `monitoring.env_file` 指向的钉钉与外部心跳凭证文件；
 - 每台机器的 SSH 私钥；
 - `/var/lib/ark-hub/auth.json`；
 - 应用解密密钥和其它登录或解密介质。
@@ -48,11 +49,40 @@ ark-hub install \
 生成的 `ark-hub.service` 会携带相同参数。清单或 Ark 二进制不是绝对路径、清单严格校验失败、
 二进制不是可执行普通文件时，Hub 必须在监听前失败；不要依赖 service 的工作目录或 PATH。
 
-P4-2 会把状态库迁移到 schema v2，并新增 `manual_operations`。Hub 正常停止时会取消当前手工
+当前状态库 schema v3 包含 `manual_operations` 与跨重启生效的 `alert_states`。Hub 正常停止时会取消当前手工
 Ark 子进程并写入 `interrupted`；若进程被强制终止，下次启动也会在监听前把遗留 running 记录
 原子改为 interrupted。该状态表示操作未证明完成，恢复类操作必须重新预检，不能直接重放旧确认。
 
-## 2. 离线恢复材料
+## 2. 主动告警与外部心跳
+
+在清单中只保存秘密文件路径：
+
+```yaml
+monitoring:
+  env_file: /etc/ark/monitoring.env
+```
+
+创建秘密文件后设置 `0600`，文件所有者必须与运行 `ark`、`ark-hub` 的用户一致：
+
+```bash
+install -m 0600 /dev/null /etc/ark/monitoring.env
+```
+
+允许的键只有 `ARK_DINGTALK_WEBHOOK_URL`、`ARK_DINGTALK_SECRET`、
+`ARK_HEARTBEAT_SUCCESS_URL`、`ARK_HEARTBEAT_FAILURE_URL`。心跳成功/失败 URL 必须同时配置，
+可以相同。默认只允许 HTTPS；HTTP 只供 loopback 本机代理与测试使用。不要在工单、日志或命令行
+粘贴完整 URL，因为 query 中通常就是认证材料。
+
+变更后依次执行 `ark validate` 和 `ark doctor --all`。Hub 启动时会 fail closed 校验秘密文件；
+backup 读取失败时仍完成真实备份，但摘要显示 `heartbeat_status=failed`，由外部监控在宽限期后报警。
+钉钉持续故障每 24 小时最多重发一次，恢复只发送一次。网络发送成功但状态提交前进程退出时，
+可能重复一条通知，这是避免永久漏报所接受的 at-least-once 行为。
+
+上线验收必须在真机完成：制造连续两次备份失败，确认页面与钉钉在一分钟内出现同一 kind；
+静默期内确认不重复发送。再停止 `ark-hub`，确认 backup timer 和成功心跳仍执行；恢复 Hub 后停止
+backup timer，确认外部监控按配置的宽限期报告失联。任何测试结束后都要恢复 timer 和故障注入。
+
+## 3. 离线恢复材料
 
 至少在 hub 之外保存两份恢复材料，并定期确认仍能读取：
 
@@ -66,7 +96,7 @@ Ark 子进程并写入 `interrupted`；若进程被强制终止，下次启动�
 推荐一份放在团队密码管理器，另一份放在受控离线介质。离线介质不能和 hub 放在同一
 故障域，也不能只保存“获取密钥的方法”而没有验证该方法实际可用。
 
-## 3. 对象锁与保留期
+## 4. 对象锁与保留期
 
 在对象存储控制台为 restic bucket 开启 Object Lock、Immutability 或等价的仅追加保留。
 ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` 会固定输出
@@ -76,7 +106,7 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 期内时，`restic forget --prune` 可能无法删除或回收空间，这是预期行为。容量规划必须按
 对象锁保留期计算，不能把 prune 暂时失败误判为仓库损坏后关闭保护。
 
-## 4. SSH 主机密钥维护
+## 5. SSH 主机密钥维护
 
 每台远程主机都必须配置持久化的 `known_hosts_file`。默认 `host_key_policy: accept-new`
 允许 OpenSSH 在第一次连接时记录主机密钥，以降低新环境接入成本；一旦该主机已有记录，
@@ -93,7 +123,7 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 因此刷新命令默认不写文件，`--apply` 必须由管理员在带外核对后显式给出。任何场景都不要
 改成 `StrictHostKeyChecking=no`；这会让首次连接和后续密钥变化都失去保护。
 
-## 5. 定期人工验证
+## 6. 定期人工验证
 
 建议每月至少执行一次：
 
@@ -105,7 +135,7 @@ ark 当前没有 provider-neutral 的自动探测能力，因此 `ark doctor` �
 
 真实对象删除测试和控制台配置属于人工上线验收，不在自动测试或 auto-loop 中执行。
 
-## 6. hub 重建顺序
+## 7. hub 重建顺序
 
 1. 在新机器安装与清单匹配的 ark 和 restic；
 2. 从离线介质恢复 restic 密码和对象存储凭证；

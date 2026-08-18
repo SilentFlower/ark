@@ -222,6 +222,19 @@ func TestRunLocal_Restic缺失时仓库检查降级(t *testing.T) {
 	assertCheckStatus(t, report, "repo.access", StatusWarn)
 }
 
+func TestRunLocal_监控配置错误只告警(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "monitoring.env")
+	writeTestFile(t, path, []byte("ARK_HEARTBEAT_SUCCESS_URL=https://example.com/ok\n"), 0o600)
+	report := RunLocal(context.Background(), &config.Config{
+		Monitoring: &config.Monitoring{EnvFile: path},
+	})
+
+	check := findCheck(t, report, "monitoring.env_file")
+	if check.Status != StatusWarn || !strings.Contains(check.Detail, "同时配置") {
+		t.Fatalf("监控配置检查 = %#v，期望不阻断备份的 warn", check)
+	}
+}
+
 func TestParseEnvFile_严格解析且不执行Shell语法(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "repo.env")
 	writeTestFile(t, path, []byte("# comment\nexport TOKEN='literal $(touch /tmp/not-created)'\nDUP=first\nDUP=second\nEMPTY=\n"), 0o600)

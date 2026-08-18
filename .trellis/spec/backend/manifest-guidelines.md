@@ -25,7 +25,8 @@
 - 新增、删除或重命名清单字段；
 - 升级 `SchemaVersion`；
 - 新增一条校验规则；
-- 新增可被 `defaults` 继承的配置项。
+- 新增可被 `defaults` 继承的配置项；
+- 修改 `monitoring.env_file`、监控秘密键或出站 URL 安全边界。
 
 ### 2. Signatures
 
@@ -38,6 +39,28 @@ func (c *Config) Validate() error                  // 静态语义校验，不�
 func (c *Config) ScheduleFor(h *Host) Schedule     // 生效值：host > defaults > 常量
 func (c *Config) RetentionFor(h *Host) Retention
 func (s SSH) EffectiveHostKeyPolicy() SSHHostKeyPolicy
+
+type Monitoring struct {
+    EnvFile string `yaml:"env_file"`
+}
+
+// internal/monitoring
+type Settings struct {
+    DingTalk  *DingTalkSettings
+    Heartbeat *HeartbeatSettings
+}
+
+func monitoring.Load(path string) (monitoring.Settings, error)
+func monitoring.SendDingTalk(
+    ctx context.Context,
+    settings monitoring.DingTalkSettings,
+    message monitoring.MarkdownMessage,
+) error
+func monitoring.SendHeartbeat(
+    ctx context.Context,
+    settings monitoring.HeartbeatSettings,
+    failed bool,
+) error
 ```
 
 ### 3. Contracts
@@ -47,6 +70,7 @@ func (s SSH) EffectiveHostKeyPolicy() SSHHostKeyPolicy
 | 顶层 | `version` | 必填且必须等于 `SchemaVersion`，不接受缺省 |
 | 顶层 | `repo` | 全局唯一仓库，URL 不按机器分路径（ADR-009） |
 | 顶层 | `defaults` | 可选，`schedule` / `retention` 均为指针 |
+| 顶层 | `monitoring` | 可选；只含绝对路径 `env_file`，不保存 webhook、签名密钥或心跳 URL |
 | 顶层 | `hosts` | 至少一台 |
 | host | `host` | 匹配 `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`，**全局唯一**（它是 restic tag 和恢复检索键） |
 | host | `local` / `ssh` | 二选一，互斥且不可都缺 |
@@ -57,6 +81,21 @@ func (s SSH) EffectiveHostKeyPolicy() SSHHostKeyPolicy
 
 环境依赖：无。`Validate` 全程不读文件系统、不连网络（ADR-008）——
 文件存在性与权限属于 `doctor` 的职责。
+
+监控秘密文件只允许以下键，未知键和非法组合必须拒绝：
+
+```text
+ARK_DINGTALK_WEBHOOK_URL
+ARK_DINGTALK_SECRET
+ARK_HEARTBEAT_SUCCESS_URL
+ARK_HEARTBEAT_FAILURE_URL
+```
+
+- `ARK_DINGTALK_SECRET` 只能与 webhook 同时出现；两个 heartbeat URL 必须同时存在或同时缺失，允许相同。
+- 文件必须是当前进程 effective UID 所有的普通文件、权限不超过 `0600`，并以 `O_NOFOLLOW` 打开；符号链接失败关闭。
+- URL 禁止 userinfo、fragment 和空 host。默认只允许 HTTPS；HTTP 仅允许 `localhost` 或 loopback IP。
+- HTTP 客户端固定 5 秒超时、64 KiB 响应上限和 3 次尝试；只重试网络错误、`429` 与 `5xx`。
+- 禁止跟随重定向。端点只在秘密文件加载时校验一次，跟随 3xx 会绕过 HTTPS/loopback 边界。
 
 ### 4. Validation & Error Matrix
 
@@ -75,20 +114,36 @@ func (s SSH) EffectiveHostKeyPolicy() SSHHostKeyPolicy
 | 缺 `known_hosts_file` | `…不能为空。生产数据会流经这条连接，不校验主机密钥意味着中间人既能窃取数据、也能在恢复时投毒` |
 | `host_key_policy` 不是 `accept-new` / `strict` | `…非法，只允许 "accept-new" 或 "strict"` |
 | `retention` 三项同时为 0 | `…三项不能同时为 0，否则清理时会删光所有快照` |
+| `monitoring` 存在但 `env_file` 为空或是相对路径 | `Validate` 返回 `monitoring.env_file` 字段级错误，不访问文件系统 |
+| 监控文件不存在、不是普通文件、owner 不匹配、权限过宽或是 symlink | `monitoring.Load` fail closed，错误只包含路径和失败类别 |
+| 监控文件含未知键、孤立签名密钥或单边 heartbeat URL | `monitoring.Load` 拒绝，不猜测配置意图 |
+| URL 为非 loopback HTTP、含 userinfo/fragment 或不是绝对 URL | `monitoring.Load` 拒绝，不发起网络请求 |
+| 端点返回 3xx | 不跟随 `Location`，按非 2xx 错误处理 |
+| 端点返回 400 | 立即失败，不重试 |
+| 端点返回 429 或 5xx | 最多重试到 3 次；最终错误不包含完整 URL 或秘密 |
 
 ### 5. Good/Base/Bad Cases
 
 - **Good**：3 台机器（含一台 `local: true`），`defaults` 写全，个别机器覆盖
   `schedule` / `retention`——见 `examples/ark.yaml`。
 - **Base**：只写必填字段，`defaults` 整段省略，全部套用内置常量。
+- **Base**：省略 `monitoring`，钉钉和 heartbeat 都关闭，所有命令保持零新增网络请求。
+- **Good**：`monitoring.env_file` 指向 root-only 文件，钉钉与 heartbeat 可独立启用，两个 heartbeat URL 可以相同。
 - **Bad**：`address: :22`（能解析、连不上）；两台机器同名（快照混在一个 tag 下，
   恢复时无法区分）；`local: true` 同时写 `ssh`（意图不明，不猜）。
+- **Bad**：把 webhook/token 直接写进 YAML，或允许已校验的 HTTPS URL 通过 307 跳转到非 loopback HTTP。
 
 ### 6. Tests Required
 
 `internal/config/config_test.go` 用一份 `validManifest` 作基准，
 各用例在它上面做最小改动。**每新增一条校验规则，必须同时新增一条
 断言其错误信息子串的用例**（表驱动 + `wantSub`）。
+
+监控清单和出站边界至少运行：
+
+```bash
+go test ./internal/config ./internal/envfile ./internal/monitoring ./internal/doctor -race -count=10
+```
 
 必须有断言点的路径：
 
@@ -98,6 +153,38 @@ func (s SSH) EffectiveHostKeyPolicy() SSHHostKeyPolicy
   显式写 `retention: {daily: 3}` 时 `weekly` / `monthly` 保持 0；
 - 主机密钥策略覆盖空值默认 `accept-new`、显式 `strict` 和非法值拒绝；
 - 错误信息包含出错机器的 host 名（多机清单里没有 host 名的错误无法定位）。
+- `monitoring.env_file` 的空值、相对路径、旧清单兼容与严格未知字段拒绝；
+- 监控文件的 owner/mode/symlink、未知键、键组合、loopback HTTP 与不安全 URL；
+- 钉钉 400 不重试、429/5xx 受限重试、真实超时、64 KiB 上限、业务 JSON/错误码、固定签名向量；
+- 307/308 不到达重定向目标，所有超时、网络、HTTP 与业务错误都不包含 URL query 或 secret。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+type Monitoring struct {
+    DingTalkWebhookURL string `yaml:"dingtalk_webhook_url"`
+    DingTalkSecret     string `yaml:"dingtalk_secret"`
+}
+```
+
+把秘密放进清单会让它进入示例、备份、错误上下文和普通配置审阅流程。
+
+#### Correct
+
+```go
+type Monitoring struct {
+    EnvFile string `yaml:"env_file"`
+}
+
+settings, err := monitoring.Load(cfg.Monitoring.EnvFile)
+if err != nil {
+    return err
+}
+```
+
+YAML 只记录绝对路径；文件安全、允许键、URL 与出站协议由 `internal/monitoring` 在同一边界统一校验。
 
 ---
 

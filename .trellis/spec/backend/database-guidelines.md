@@ -10,7 +10,7 @@ ark 有两条必须隔离的数据库路径：
 
 1. **ark 自身状态库**：`internal/store` 独占管理 `/var/lib/ark/ark.db`，
    使用 `database/sql` 和纯 Go `modernc.org/sqlite` 驱动，保存运行、target、
-   doctor 与恢复演练结果。
+   doctor、恢复演练、手工操作与跨 Hub 重启的告警生命周期状态。
 2. **被备份的业务数据库**：仍然只通过容器内 CLI 交互，不在 Go 代码里
    引入 PostgreSQL、Redis 等数据库驱动，也不由状态库包管理业务凭证。
 
@@ -36,8 +36,8 @@ ark 有两条必须隔离的数据库路径：
 
 ### 2. Signatures
 
-当前 schema 版本是 `2`，包含 `runs`、`run_targets`、`doctor_reports`、
-`verifications`、`manual_operations` 五张表。公开入口必须保持为：
+当前 schema 版本是 `3`，包含 `runs`、`run_targets`、`doctor_reports`、
+`verifications`、`manual_operations`、`alert_states` 六张表。公开入口必须保持为：
 
 ```go
 const DefaultPath = "/var/lib/ark/ark.db"
@@ -75,6 +75,19 @@ func (s *Store) ListManualOperations(
     ctx context.Context,
     options OperationListOptions,
 ) ([]ManualOperation, bool, error)
+type AlertState struct {
+    ID              string
+    Host            string
+    Kind            string
+    Active          bool
+    FirstSeenAt     time.Time
+    LastSeenAt      time.Time
+    LastAlertSentAt time.Time
+    ResolvedAt      time.Time
+    RecoverySentAt  time.Time
+}
+func (s *Store) ListAlertStates(ctx context.Context) ([]AlertState, error)
+func (s *Store) SaveAlertState(ctx context.Context, state AlertState) error
 func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
 ```
 
@@ -102,6 +115,12 @@ func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
 - `manual_operations` 使用独立 `OperationStatus`：`running`、`ok`、`fail`、`interrupted`。
   `CreateManualOperation` 只创建 running；`FinishManualOperation` 只允许一次终态转换。
   `request_json` / `result_json` 必须是调用方已经白名单化和脱敏的合法 JSON，不保存 token、Cookie、环境或 stderr。
+- `alert_states.id` 固定为 `<host>:<kind>`，kind 只允许 `backup_overdue`、
+  `backup_consecutive_failures`、`verification_failed`。Store 不解释告警规则，只校验稳定 ID 和生命周期字段。
+- `alert_states` 的时间统一是 UTC Unix 毫秒。活动状态必须没有 `resolved_at` / `recovery_sent_at`；
+  已恢复状态必须有 `resolved_at`，且 `recovery_sent_at >= resolved_at`。可空时间读回 Go 零值。
+- `SaveAlertState` 使用单条 upsert 保存完整状态；`ListAlertStates` 按 ID 升序返回全部活动和历史状态。
+  已恢复行不能立即删除，否则 Hub 无法区分持续恢复与恢复后复发。
 - Hub 启动前调用 `InterruptRunningOperations`，用一条 UPDATE 原子完成全部遗留 running 记录。
   当系统时钟早于 `started_at` 时，`finished_at` 必须钳制到开始时间，`duration_ms` 必须钳制为 0。
 - `ListRuns` 与 `ListManualOperations` 使用 `(started_at, id)` 倒序 keyset pagination；limit 默认 50、
@@ -131,7 +150,11 @@ func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
 | 多进程并发首次打开 | 迁移串行化，等待者在锁内重读版本，不重复建表 |
 | 迁移中任一 SQL 失败 | 回滚全部本次变更，`user_version` 不前移 |
 | v1 -> v2 迁移失败 | 保留全部 v1 表和数据，`user_version=1`，Hub 拒绝启动 |
+| v2 -> v3 迁移失败 | 保留全部 v2 表和数据，`alert_states` 不留下半成品，`user_version=2` |
 | 状态、必填字段、时间、耗时或 JSON 非法 | API 在写入前返回字段级错误；DB CHECK 继续兜底 |
+| AlertState ID 不等于 `host:kind`、kind 非法或时间倒序 | `SaveAlertState` 在写 SQL 前返回字段级错误 |
+| active 状态含恢复时间，或 inactive 状态缺 `resolved_at` | Go 校验拒绝；schema CHECK 继续兜底 |
+| 告警可空时间为 NULL | `ListAlertStates` 还原为 Go 零值，不伪造时间 |
 | 重复完成或完成不存在的 manual operation | UPDATE 影响行数不是 1，返回明确错误 |
 | 启动恢复时系统时钟回拨 | operation 仍变为 interrupted，完成时间不早于开始时间，耗时为 0 |
 | 最新 doctor 缺少 next run | 返回最新报告，并回退同 identity 的最后已知非 NULL 时间 |
@@ -158,8 +181,11 @@ func (s *Store) ExportSnapshot(ctx context.Context) (io.ReadCloser, error)
   而不是把它当作数据库错误。
 - **Good**：从真实 v1 数据库迁移到 v2 后，既有 run/doctor/verification 数据保持可查，
   新建 manual operation 可从 running 原子完成为终态。
+- **Good**：从真实 v2 数据库迁移到 v3 后，五张旧表与数据保持不变，Hub 可保存并重读告警静默状态。
+- **Base**：一条活动告警还没有成功投递，`last_alert_sent_at` 为 NULL；读回后是零值，下一轮仍立即到期。
 - **Base**：最新 doctor 写入因 schedule 失败而没有 next run，查询仍展示此前最后已知时间，
   但 API 健康投影把 schedule 状态标为 unknown。
+- **Bad**：恢复后删除 `alert_states` 行，或由 Hub 直接拼 SQL；前者会丢失恢复/复发语义，后者破坏 Store 单一边界。
 - **Bad**：向业务层暴露 `*sql.DB`、引入 ORM、把连接池限制为单连接、
   运行中只复制 `ark.db`、把 WAL/SHM 拼成恢复材料，或因为已有 SQLite 就用 Go 驱动
   直连被备份的 PostgreSQL。
@@ -177,13 +203,16 @@ CGO_ENABLED=0 go build -o bin/ark-nocgo ./cmd/ark
 go mod verify
 ```
 
-测试必须覆盖目录/文件权限、五张表与索引、每条物理连接的 PRAGMA、重复打开、
+测试必须覆盖目录/文件权限、六张表与索引、每条物理连接的 PRAGMA、重复打开、
 高版本拒绝、迁移回滚、并发首次迁移、CRUD 与历史查询、外键及级联、非法输入、
 WAL 写期间读取、锁等待中的 context 取消、操作后连接配置恢复，以及 Online Backup 的
 并发 writer、一致性/外键校验、0700/0600 权限、取消/失败清理、独立单文件恢复。
 
 schema v2 还必须覆盖真实 v1 数据保留、manual operation 生命周期和分页、重复完成、
 遗留 running 恢复、时钟回拨、doctor 最后已知 next run 回退，以及无 CGO 下 Store/Hub 查询。
+
+schema v3 还必须覆盖空库直达 v3、真实 v2 数据保留、并发迁移、失败回滚、AlertState upsert/
+round-trip、NULL 时间、全部非法生命周期组合、context 取消，以及无 CGO 下 Store/Hub 使用。
 
 ### 7. Wrong vs Correct
 
@@ -213,6 +242,15 @@ if err != nil {
     return err
 }
 defer reader.Close()
+```
+
+```go
+// 错误：Hub 绕过 Store 自行更新静默时间，迁移和校验边界会分裂。
+_, err := db.ExecContext(ctx, "UPDATE alert_states SET last_alert_sent_at = ? WHERE id = ?", now, id)
+
+// 正确：Hub 只提交完成业务对账的完整状态。
+state.LastAlertSentAt = now.UTC()
+err := stateStore.SaveAlertState(ctx, state)
 ```
 
 上面的正确示例只适用于 ark 自身状态。备份 PostgreSQL、Redis 等业务数据库时，

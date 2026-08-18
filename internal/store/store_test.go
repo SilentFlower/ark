@@ -146,7 +146,7 @@ func TestOpen_MigrationFailureRollsBackPartialSchema(t *testing.T) {
 	}
 }
 
-func TestOpen_MigratesV1ToV2并保留数据(t *testing.T) {
+func TestOpen_MigratesV1ToV3并保留数据(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ark.db")
 	raw := prepareV1Database(t, path)
 	startedAt := time.Date(2026, 8, 17, 4, 17, 0, 0, time.UTC)
@@ -168,6 +168,63 @@ func TestOpen_MigratesV1ToV2并保留数据(t *testing.T) {
 		t.Fatalf("迁移后 v1 数据=%#v err=%v", run, err)
 	}
 	assertSchemaObjects(t, state.db)
+}
+
+func TestOpen_MigratesV2ToV3并保留数据(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	raw := prepareV2Database(t, path)
+	if _, err := raw.Exec(`
+		INSERT INTO manual_operations (
+			id, kind, host, status, started_at, request_json, error
+		) VALUES (?, ?, ?, ?, ?, '{}', '')`,
+		"operation-v2", OperationKindBackup, "web-01", OperationStatusRunning,
+		time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC).UnixMilli(),
+	); err != nil {
+		t.Fatalf("写入 v2 数据失败: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("关闭 v2 数据库失败: %v", err)
+	}
+
+	state := openTestStore(t, path)
+	operation, err := state.GetManualOperation(context.Background(), "operation-v2")
+	if err != nil || operation.Status != OperationStatusRunning {
+		t.Fatalf("迁移后 v2 手工任务=%#v err=%v", operation, err)
+	}
+	assertSchemaObjects(t, state.db)
+}
+
+func TestOpen_V3MigrationFailureRollsBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ark.db")
+	raw := prepareV2Database(t, path)
+	if _, err := raw.Exec("CREATE TABLE alert_states (id TEXT PRIMARY KEY)"); err != nil {
+		t.Fatalf("创建冲突表失败: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("关闭 v2 数据库失败: %v", err)
+	}
+
+	_, err := Open(context.Background(), path)
+	if err == nil || !strings.Contains(err.Error(), "schema v3") {
+		t.Fatalf("v3 迁移错误 = %v", err)
+	}
+	raw, err = sql.Open("sqlite", dataSourceName(path))
+	if err != nil {
+		t.Fatalf("重新打开失败数据库失败: %v", err)
+	}
+	defer func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("关闭失败数据库连接失败: %v", err)
+		}
+	}()
+	if got := queryInt(t, raw, "PRAGMA user_version"); got != 2 {
+		t.Fatalf("失败迁移后的 user_version = %d，期望 2", got)
+	}
+	if got := queryInt(t, raw, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_alert_states_active'`); got != 0 {
+		t.Fatalf("失败迁移不应遗留 v3 索引，实际 %d", got)
+	}
 }
 
 func TestStore_RunAndTargetLifecycle(t *testing.T) {
@@ -752,6 +809,20 @@ func prepareV1Database(t *testing.T, path string) *sql.DB {
 	return raw
 }
 
+func prepareV2Database(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	raw := prepareV1Database(t, path)
+	if _, err := raw.Exec(schemaV2); err != nil {
+		_ = raw.Close()
+		t.Fatalf("创建 schema v2 失败: %v", err)
+	}
+	if _, err := raw.Exec("PRAGMA user_version = 2"); err != nil {
+		_ = raw.Close()
+		t.Fatalf("设置 schema v2 版本失败: %v", err)
+	}
+	return raw
+}
+
 func createRun(t *testing.T, store *Store, run Run) {
 	t.Helper()
 	if err := store.CreateRun(context.Background(), run); err != nil {
@@ -788,8 +859,9 @@ func rollbackTestTransaction(t *testing.T, conn *sql.Conn) {
 
 func assertSchemaObjects(t *testing.T, db *sql.DB) {
 	t.Helper()
-	wantTables := []string{"doctor_reports", "manual_operations", "run_targets", "runs", "verifications"}
+	wantTables := []string{"alert_states", "doctor_reports", "manual_operations", "run_targets", "runs", "verifications"}
 	wantIndexes := []string{
+		"idx_alert_states_active",
 		"idx_doctor_reports_scope_host_created",
 		"idx_manual_operations_host_started",
 		"idx_manual_operations_started",

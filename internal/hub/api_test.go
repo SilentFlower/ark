@@ -18,7 +18,7 @@ import (
 	"github.com/silentflower/ark/internal/store"
 )
 
-const validBackupOperationJSON = `{"run_id":"run-manual","status":"ok","manifest":{"schema_version":1,"run_id":"run-manual","ark_version":"test","started_at":"2026-08-17T12:00:00Z","finished_at":"2026-08-17T12:01:00Z","hosts":[]},"manifest_snapshot_id":"manifest-backup","error":""}`
+const validBackupOperationJSON = `{"run_id":"run-manual","status":"ok","manifest":{"schema_version":1,"run_id":"run-manual","ark_version":"test","started_at":"2026-08-17T12:00:00Z","finished_at":"2026-08-17T12:01:00Z","hosts":[]},"manifest_snapshot_id":"manifest-backup","heartbeat_status":"sent","error":""}`
 
 func TestAPI_HostsAlertsRuns与Operations稳定投影(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
@@ -162,7 +162,7 @@ if [ "$inspect" = "1" ]; then
 else
   case "$command_name" in
     backup)
-      printf '{"run_id":"run-manual","status":"ok","manifest":{"schema_version":1,"run_id":"run-manual","ark_version":"test","started_at":"2026-08-17T12:00:00Z","finished_at":"2026-08-17T12:01:00Z","hosts":[]},"manifest_snapshot_id":"manifest-backup","error":""}\n'
+      printf '{"run_id":"run-manual","status":"ok","manifest":{"schema_version":1,"run_id":"run-manual","ark_version":"test","started_at":"2026-08-17T12:00:00Z","finished_at":"2026-08-17T12:01:00Z","hosts":[]},"manifest_snapshot_id":"manifest-backup","heartbeat_status":"sent","error":""}\n'
       ;;
     verify)
       printf '{"manifest_snapshot_id":"manifest-selected","status":"ok","results":[]}\n'
@@ -634,6 +634,8 @@ func TestParseOperationResult_拒绝不完整或未知合同(t *testing.T) {
 		output string
 	}{
 		{name: "backup 缺少 run_id", kind: store.OperationKindBackup, output: `{"status":"ok"}`},
+		{name: "backup 缺少心跳状态", kind: store.OperationKindBackup, output: `{"run_id":"run-1","status":"fail","manifest_snapshot_id":"","error":"failed"}`},
+		{name: "backup 心跳状态非法", kind: store.OperationKindBackup, output: `{"run_id":"run-1","status":"fail","manifest_snapshot_id":"","heartbeat_status":"unknown","error":"failed"}`},
 		{name: "verify 缺少 results", kind: store.OperationKindVerify, output: `{"manifest_snapshot_id":"manifest-1","status":"ok"}`},
 		{name: "preview 摘要非法", kind: store.OperationKindRestorePreview, output: `{"plan":{"manifest_snapshot_id":"manifest-1","run_id":"run-1","source_host":"web-01","destination_host":"web-01","steps":[],"manual_checks":[]},"conflicts":[],"digest":"ABC"}`},
 		{name: "restore 缺少来源", kind: store.OperationKindRestore, output: `{"manifest_snapshot_id":"manifest-1","run_id":"run-1","destination_host":"web-01","status":"ok","steps":[],"manual_checks":[]}`},

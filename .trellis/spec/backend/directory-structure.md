@@ -34,6 +34,8 @@ internal/
 │   ├── config.go
 │   └── config_test.go
 ├── doctor/doctor.go         运行环境校验（外部命令、文件权限、compose 资源）
+├── envfile/                 受限 KEY=VALUE 文件解析，不回显变量值
+├── monitoring/              监控秘密加载、钉钉与外部心跳 HTTP 边界
 ├── schedule/                systemd OnCalendar 的结构化下一次触发与有效周期
 ├── store/                   SQLite 状态、查询 DTO、迁移和在线一致性导出
 └── hub/                     鉴权、HTTP DTO、健康投影和 Ark 子进程生命周期
@@ -62,6 +64,7 @@ examples/
 | `internal/hub/` + `cmd/ark-hub/` | hub 后端（界面与 API） | P4-1 / P4-2 |
 | `internal/hub/webui/` | go:embed 前端产物、静态资源与 SPA fallback | P4-3 |
 | `web/` | Vue 3 前端，构建产物 go:embed 进 ark-hub | P4-3 |
+| `internal/monitoring/` | root-only 秘密文件、安全 URL、钉钉 Markdown 与成功/失败双端点心跳 | P4-4 |
 
 早期规划过的 `internal/status/` **已取消**：hub 自己就是执行者，
 状态直接落本地 SQLite，不再需要把 `_status/<host>.json` 推到对象存储（design.md §9）。
@@ -88,17 +91,21 @@ int 交给 `os.Exit`。命令定义、flag 绑定、输出格式一律在 `inter
 cli  ──►  doctor  ──►  config
  ├────►  hostkey
  ├────►  backup / restore / verify
+ ├────►  monitoring ──► envfile
  └────►  sshexec ──► config
 
-hub  ──►  config / schedule / store
+doctor ──► monitoring
+
+hub  ──►  config / schedule / store / monitoring
  ├────►  hub/webui
  └─exec─► ark --json
 ```
 
 `config` 不认识任何其他内部包；`hostkey` 只依赖标准库和 OpenSSH 工具；
-`doctor` 与 `sshexec` 依赖 `config`，`cli` 负责编排业务边界。`schedule` 只负责
-systemd calendar 结构化解析，可被 doctor、CLI 与 Hub 复用；`store` 不反向依赖业务包。
-`hub` 可以依赖 config、schedule 和 store，但不得导入 backup、restore、verify、restic 或 sshexec；
+`doctor` 依赖 `config` 与 `monitoring`，`sshexec` 依赖 `config`，`cli` 负责编排业务边界。`schedule` 只负责
+systemd calendar 结构化解析，可被 doctor、CLI 与 Hub 复用；`monitoring` 只依赖 `envfile`
+和标准库，不理解 Hub、Store 或 backup 终态；`store` 不反向依赖业务包。
+`hub` 可以依赖 config、schedule、store 和 monitoring，但不得导入 backup、restore、verify、restic 或 sshexec；
 长任务跨进程调用 `ark --json`，避免 Hub 成为第二套业务编排器。
 `hub/webui` 是依赖链的末端：它只依赖标准库，不认识 config、store 或任何业务概念，
 因此可以独立验证「静态资源服务是否正确」而不必造一份清单或状态库。
