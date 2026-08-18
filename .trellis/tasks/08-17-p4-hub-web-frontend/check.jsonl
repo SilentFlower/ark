@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/hub-guidelines.md", "reason": "校验鉴权分流、CSP、缓存头、静态资源鉴权与 DTO 新字段是否符合规约，以及规约本身是否已同步更新"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "核对测试覆盖密度、-race -count=10、gofmt/vet 与提交前验证是否达标"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "核对 internal/hub/webui/ 的职责边界与依赖方向，确认没有反向依赖或业务逻辑渗入"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "反向核对前端 TS 类型与 Go DTO、operation result 白名单、错误码是否存在漂移"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "核对新增路径的错误语义与 fail closed 行为"}

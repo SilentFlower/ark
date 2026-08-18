@@ -1,0 +1,69 @@
+{
+  "id": "p4-hub-web-frontend",
+  "name": "p4-hub-web-frontend",
+  "title": "P4-3 ark-hub 前端 web/",
+  "description": "基于 Vue 3 + Vite + TypeScript + Pinia + Tailwind 实现 ark-hub 前端：总览、主机详情、告警、操作四块页面，消费 P4-2 已交付的 HTTP API",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-17",
+  "completedAt": "2026-08-18",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-17T08:25:04Z",
+      "contextKey": "claude_8ce9a2ed-d522-433f-9d4a-12771da355ba",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "69f9c48587f1b2da9c44b0c494ffa17e420c5787",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "69f9c48587f1b2da9c44b0c494ffa17e420c5787",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "da0df29b71642d0dc8e6d60de4fc0a9ca78e3660bfcb211ccffd86ef757c9dd8"
+          }
+        ],
+        "fingerprint": "49c321b6ced4ce561238b6c0535f5eba038d34bae64f5418b7c9023ae03c9ca4"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-18T01:20:00Z",
+    "completedSteps": [
+      "前端工程骨架（Vue 3 + Vite + TS + Pinia + Tailwind）",
+      "internal/hub/webui 嵌入包",
+      "hub 路由分流与 CSP 接入",
+      "摘要 DTO 增加大小趋势字段",
+      "API 客户端与四个 store",
+      "总览/主机详情/告警/操作四个页面与恢复交互",
+      "Makefile 构建接入（make hub / web-check）",
+      "规范与文档同步（含新增 spec/frontend）",
+      "真机验收（登录、四页面、操作、SPA fallback、CSP 无报错）",
+      "Check-All 修复（CHK-001/002、FBK-001）与 Update-Spec"
+    ],
+    "partialStep": null,
+    "nextStep": "P4-4 告警与死人开关（钉钉通知 + 静默期 + 外部心跳）",
+    "notes": "合并了 roadmap 原 P4-3 与 P4-4；修复了真机验证暴露的登录 CSRF Cookie 既有缺陷。恢复执行的完整成功路径待发布时在真实环境复核一次 isolate 恢复。"
+  }
+}

@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/hub-guidelines.md", "reason": "本任务要改 hub 路由、CSP、缓存、静态资源鉴权与摘要 DTO，全部受该规约约束；未认证行为和 API 契约不得放松"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "新增 internal/hub/webui/ 与 web/ 必须按既有包边界与依赖方向归位，且该文件本身要更新"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "webui handler 与 DTO 聚合的错误包装、fail closed 语义要与既有后端一致"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Go 侧命名、注释、测试密度与提交前验证要求"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "前端 DTO 类型必须与 Go DTO 和 operation result 字段白名单逐字段对齐，是典型跨层一致性工作"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "摘要大小聚合要复用 projectHosts 已取的 hostRuns，不得新增重复查询路径"}
