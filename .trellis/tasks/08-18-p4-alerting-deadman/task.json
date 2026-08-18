@@ -1,0 +1,61 @@
+{
+  "id": "p4-alerting-deadman",
+  "name": "p4-alerting-deadman",
+  "title": "P4-4 告警与死人开关",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-18",
+  "completedAt": "2026-08-18",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-18T01:43:19Z",
+      "contextKey": "codex_01a01287-441b-7152-93ec-26ff9bceef2f",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "115b02aff8c4e89ead4bb09d687fea5e666125de",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "115b02aff8c4e89ead4bb09d687fea5e666125de",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "9c80a9a857bcb25e22283fc2b5a5a81884969f26e46aa1b0090057235be8eb7c"
+          }
+        ],
+        "fingerprint": "89dad1010f8e824453177a585a79f706858807517d04b01ec8035d8f1a9310b5"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-18T03:18:16Z",
+    "completedSteps": [
+      "实现 P4-4 告警与死人开关",
+      "通过 Check-All 并同步后端规范"
+    ],
+    "partialStep": null,
+    "nextStep": "按上线流程完成真实钉钉、外部心跳与 systemd 隔离验收",
+    "notes": "自动化验证已通过；真实外部服务与 systemd 停止场景留待上线后验证"
+  }
+}

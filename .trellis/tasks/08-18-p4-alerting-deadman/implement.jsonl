@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"约束 monitoring 清单字段、纯静态校验、KnownFields 与示例同步。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"约束 schema v3 迁移、WAL 并发、Store AlertState API 与回滚。"}
+{"file":".trellis/spec/backend/hub-guidelines.md","reason":"约束健康投影复用、Hub 生命周期、Store 边界、timer 隔离与秘密保护。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"约束 backup 终态、锁、Store 收尾、JSON 输出和既有退出语义。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"约束心跳失败不伪造备份失败、中文错误链与退出码兼容。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"约束 stdout/stderr、结构化摘要和 webhook/URL/secret 脱敏。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"约束 monitoring、hub、store、cli 的包归属和单向依赖。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"约束公共 API 注释、race 测试、秘密扫描和最终质量门禁。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"约束 config、秘密文件、Store、Hub 投影、CLI JSON 与 operation 白名单的一致性。"}
+{"file":".trellis/tasks/08-18-p4-alerting-deadman/research/code-evidence.md","reason":"提供当前实现锚点、外部协议证据和确定的包边界。"}

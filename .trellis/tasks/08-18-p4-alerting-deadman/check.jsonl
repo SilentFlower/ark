@@ -1,0 +1,9 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"检查新增字段、未知字段、绝对路径和旧清单兼容。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 schema v3、迁移原子性、WAL、context 取消和状态 round-trip。"}
+{"file":".trellis/spec/backend/hub-guidelines.md","reason":"检查告警投影唯一所有者、后台生命周期、停止顺序和 timer 独立性。"}
+{"file":".trellis/spec/backend/backup-orchestration-guidelines.md","reason":"检查心跳接入没有漂移 backup 状态机、run 事实和退出码。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"检查发送失败可见但不伪造成备份失败，错误链保持脱敏。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"扫描 webhook、token、secret、完整 URL 和响应回显泄漏。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 race、CGO=0、构建、注释和禁止模式审计。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"反向核对 monitoring 设置、AlertState、API 投影和 backup operation JSON。"}
+{"file":".trellis/tasks/08-18-p4-alerting-deadman/research/code-evidence.md","reason":"按代码锚点和协议证据检查实现完整性与非目标。"}
