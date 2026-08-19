@@ -189,8 +189,7 @@ func defaultBackupDependencies() backupDependencies {
 			return state.RecordDoctorReport(ctx, report)
 		},
 		analyzeSchedule: func(ctx context.Context, expression string, baseTime time.Time) (time.Time, error) {
-			window, err := schedule.Analyze(ctx, expression, baseTime)
-			return window.NextRunAt, err
+			return schedule.Next(ctx, expression, baseTime)
 		},
 		newRepo:    restic.New,
 		ensureRepo: func(ctx context.Context, repo *restic.Repo) error { return repo.EnsureInit(ctx) },

@@ -94,8 +94,7 @@ func defaultVerifyDependencies() verifyDependencies {
 			return state.RecordDoctorReport(ctx, report)
 		},
 		analyzeSchedule: func(ctx context.Context, expression string, baseTime time.Time) (time.Time, error) {
-			window, err := schedule.Analyze(ctx, expression, baseTime)
-			return window.NextRunAt, err
+			return schedule.Next(ctx, expression, baseTime)
 		},
 		now:       time.Now,
 		statePath: store.DefaultPath,

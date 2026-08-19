@@ -54,6 +54,87 @@ printf '       (in UTC): Tue 2026-08-18 20:17:00 UTC\n'
 	}
 }
 
+func TestNext_旧Systemd回退单次日历输出(t *testing.T) {
+	directory := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "args")
+	script := `#!/bin/sh
+if [ "$2" = "--iterations=2" ]; then
+  printf "systemd-analyze: unrecognized option '--iterations=2'\n" >&2
+  exit 1
+fi
+printf '%s\n' "$@" > "$SCHEDULE_CAPTURE"
+printf '    Next elapse: Thu 2026-08-20 04:17:00 CST\n'
+printf '       (in UTC): Wed 2026-08-19 20:17:00 UTC\n'
+`
+	path := filepath.Join(directory, "systemd-analyze")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("写入 systemd-analyze 测试脚本失败: %v", err)
+	}
+	t.Setenv("PATH", directory)
+	t.Setenv("SCHEDULE_CAPTURE", capture)
+
+	nextRunAt, err := Next(context.Background(), "*-*-* 04:17:00", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Next 失败: %v", err)
+	}
+	if want := time.Date(2026, 8, 19, 20, 17, 0, 0, time.UTC); !nextRunAt.Equal(want) {
+		t.Errorf("NextRunAt = %s，期望 %s", nextRunAt, want)
+	}
+	arguments, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("读取参数捕获文件失败: %v", err)
+	}
+	if want := "calendar\n*-*-* 04:17:00\n"; string(arguments) != want {
+		t.Errorf("旧版回退参数 = %q，期望 %q", arguments, want)
+	}
+}
+
+func TestNext_旧Systemd拒绝忽略远端基准时间(t *testing.T) {
+	directory := t.TempDir()
+	script := `#!/bin/sh
+printf "systemd-analyze: unrecognized option '--iterations=2'\n" >&2
+exit 1
+`
+	path := filepath.Join(directory, "systemd-analyze")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("写入 systemd-analyze 测试脚本失败: %v", err)
+	}
+	t.Setenv("PATH", directory)
+
+	_, err := Next(context.Background(), "daily", time.Now().UTC().Add(-2*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "无法按指定 base_time") {
+		t.Fatalf("错误 = %v，期望拒绝忽略远端 base_time", err)
+	}
+}
+
+func TestNext_现代Systemd非法表达式不回退(t *testing.T) {
+	directory := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "calls")
+	script := `#!/bin/sh
+printf 'call\n' >> "$SCHEDULE_CAPTURE"
+printf 'Failed to parse calendar specification\n' >&2
+exit 1
+`
+	path := filepath.Join(directory, "systemd-analyze")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("写入 systemd-analyze 测试脚本失败: %v", err)
+	}
+	t.Setenv("PATH", directory)
+	t.Setenv("SCHEDULE_CAPTURE", capture)
+
+	_, err := Next(context.Background(), "not-a-calendar", time.Now().UTC())
+	if err == nil {
+		t.Fatal("Next 对非法表达式未返回错误")
+	}
+	calls, readErr := os.ReadFile(capture)
+	if readErr != nil {
+		t.Fatalf("读取调用次数失败: %v", readErr)
+	}
+	if string(calls) != "call\n" {
+		t.Fatalf("调用记录 = %q，非法表达式不应回退", calls)
+	}
+}
+
 func TestParseOutput_解析DailyWeeklyMonthly周期(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -75,6 +156,19 @@ func TestParseOutput_解析DailyWeeklyMonthly周期(t *testing.T) {
 				t.Fatalf("周期=%s err=%v，期望 %s", window.Interval, err, test.interval)
 			}
 		})
+	}
+}
+
+func TestParseOutput_UTC主机直接解析触发行(t *testing.T) {
+	window, err := parseOutput("daily", strings.Join([]string{
+		"Next elapse: Wed 2026-08-19 04:17:00 UTC",
+		"Iteration #2: Thu 2026-08-20 04:17:00 UTC",
+	}, "\n"))
+	if err != nil {
+		t.Fatalf("parseOutput 失败: %v", err)
+	}
+	if want := 24 * time.Hour; window.Interval != want {
+		t.Fatalf("周期 = %s，期望 %s", window.Interval, want)
 	}
 }
 

@@ -221,12 +221,12 @@ func checkBinary(ctx context.Context, r *Report, name string, argv ...string) bo
 
 // checkOnCalendar 用 systemd 自己来校验 OnCalendar 表达式。
 func checkOnCalendar(ctx context.Context, r *Report, name, expr string) {
-	window, err := schedule.Analyze(ctx, expr, time.Now().UTC())
+	nextRunAt, err := schedule.Next(ctx, expr, time.Now().UTC())
 	if err != nil {
 		r.add(name, StatusFail, "%q 不是合法的 OnCalendar 表达式", expr)
 		return
 	}
-	r.add(name, StatusOK, "%s（下次触发: %s）", expr, window.NextRunAt.Format(time.RFC3339))
+	r.add(name, StatusOK, "%s（下次触发: %s）", expr, nextRunAt.Format(time.RFC3339))
 }
 
 type pathKind uint8

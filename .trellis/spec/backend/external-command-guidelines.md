@@ -1096,6 +1096,90 @@ v2 的 compose 是 docker 的插件，装了 docker 不等于装了它。
 而分歧的方向通常是「ark 说合法、systemd 拒绝」——
 结果是 timer 根本没装上，备份从第一天起就没跑过。
 
+### Scenario: systemd 日历解析的新旧版本兼容
+
+#### 1. Scope / Trigger
+
+- 修改 `internal/schedule` 的 OnCalendar 命令、输出解析、下一次触发或周期计算时适用。
+- 修改 doctor、backup、verify 或 Hub 对调度解析接口的选择时，必须同步核对本场景。
+- 生产 hub 可能运行 systemd 241；该版本的 `systemd-analyze calendar` 不支持
+  `--iterations` 与 `--base-time`，不能把版本能力不足误报成表达式非法。
+
+#### 2. Signatures
+
+```go
+func Analyze(ctx context.Context, expression string, baseTime time.Time) (Window, error)
+func Next(ctx context.Context, expression string, baseTime time.Time) (time.Time, error)
+```
+
+`Analyze` 提供下一次触发与相邻周期，供 Hub 健康和逾期判断使用；`Next` 只提供下一次
+触发，供 doctor、backup 和 verify 使用。调用方不得在只需要下一次触发时自行拆取
+`Analyze(...).NextRunAt`，否则旧 systemd 会重新变成阻断项。
+
+#### 3. Contracts
+
+- `Analyze` 固定调用 `systemd-analyze calendar --iterations=2 --base-time=<UTC> <expression>`，
+  且必须拿到两条递增的 UTC 触发时间；它不降级，因为伪造周期会导致 Hub 误报或漏报备份逾期。
+- `Next` 先调用 `Analyze`。只有 `LC_ALL=C` 的 stderr 明确报告不认识 `--iterations`
+  或 `--base-time`，并且 `baseTime` 与当前时刻相差不超过一分钟时，才回退到
+  `systemd-analyze calendar <expression>` 的单次输出。
+- 现代 systemd 返回表达式解析错误、命令失败或输出损坏时不得回退；旧版回退命令自身失败时同样返回错误。
+- doctor、backup、verify 使用 `Next`；Hub 需要精确周期，继续使用 `Analyze`。旧 systemd 上
+  Hub 调度健康可以是 unknown，但不得用猜测周期制造确定性结论。
+- 输出解析同时接受非 UTC 主机的 `(in UTC):` 行，以及 UTC 主机直接输出的
+  `Next elapse:` / `Iteration #N:` 行。所有解析结果统一转成 UTC。
+- 新旧两条命令共用 15 秒超时、64 KiB stdout/stderr 上限和 `LC_ALL=C`；stderr 只用于
+  能力识别，不进入用户错误或日志。
+
+#### 4. Validation & Error Matrix
+
+| 条件 | 必须行为 |
+| --- | --- |
+| expression 为空或 baseTime 为零值 | 立即返回参数错误，不启动子进程 |
+| 高级参数可用且返回两次递增触发 | `Analyze` 和 `Next` 均成功 |
+| stderr 明确表示高级参数不受支持，baseTime 靠近当前时刻 | `Next` 执行一次无高级参数的旧版命令 |
+| 高级参数不受支持，但 baseTime 距当前时刻超过一分钟 | 拒绝忽略 baseTime，返回错误 |
+| 现代 systemd 报表达式非法 | 原错误返回，不尝试旧版回退 |
+| 旧版单次输出不是恰好一条 UTC 时间 | 返回输出结构错误 |
+| 精确分析不是恰好两条时间，或第二条不晚于第一条 | 返回输出结构或周期错误 |
+| context 取消、15 秒超时或任一输出超过 64 KiB | 返回可 `errors.Is` 识别的取消/超时或有界输出错误 |
+
+#### 5. Good / Base / Bad Cases
+
+- **Good**：systemd 241 上 doctor、backup、verify 通过单次输出获得下一次触发，真实备份不被版本能力阻断。
+- **Good**：Hub 在无法得到两次触发时保持 schedule unknown，不产生错误的逾期告警。
+- **Base**：UTC 主机没有 `(in UTC):` 辅助行，解析器仍从 `Next elapse:` 与 `Iteration #N:` 取值。
+- **Bad**：任何 `systemd-analyze` 失败都尝试旧版命令，会把现代版本上的非法表达式或真实故障错误降级。
+- **Bad**：用“距下一次触发还有多久”充当周期；靠近触发点时会把每日计划误算成几分钟。
+
+#### 6. Tests Required
+
+- 断言现代命令 argv 精确包含 `calendar`、`--iterations=2`、UTC `--base-time` 和独立 expression。
+- 模拟不支持高级参数，断言 `Next` 的第二次 argv 只有 `calendar <expression>`，并解析单条 UTC 时间。
+- 模拟现代版本表达式非法，断言只调用一次且不进入旧版回退。
+- 用超过一分钟的 baseTime 断言旧版路径 fail closed，不静默改用当前时间。
+- 分别覆盖 `(in UTC):` 与 UTC 主机直接触发行，以及缺失、倒序和输出超限。
+- `make check` 必须覆盖 doctor、backup、verify 的调用点和 `internal/schedule` race 测试。
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```go
+window, err := schedule.Analyze(ctx, expression, baseTime)
+return window.NextRunAt, err
+```
+
+只需要下一次触发的调用方直接依赖精确周期接口，会让 systemd 241 因不支持高级参数而阻断备份。
+
+##### Correct
+
+```go
+return schedule.Next(ctx, expression, baseTime)
+```
+
+`Next` 只在确认是旧版能力缺失且基准时间安全时降级，表达式错误和真实命令故障仍保持失败。
+
 ---
 
 ## Common Mistakes
