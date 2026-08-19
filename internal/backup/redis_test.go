@@ -13,13 +13,15 @@ import (
 
 func TestExecuteRedis_WaitsForLastSaveChange(t *testing.T) {
 	runner := &fakeRunner{
-		runResponses: []runResponse{
-			{out: "100\n"},
-			{out: "Background saving started\n"},
-			{out: "100\n"},
-			{out: "101\n"},
+		runResponses: []runResponse{{
+			out: "AUTH failed: ERR AUTH called without any password configured\nBackground saving started\n",
+		}},
+		streamResponses: []streamResponse{
+			testStreamResponse("100\n"),
+			testStreamResponse("100\n"),
+			testStreamResponse("101\n"),
+			testStreamResponse("rdb"),
 		},
-		streamResponses: []streamResponse{testStreamResponse("rdb")},
 	}
 	target := config.Target{Type: config.TargetRedis, Service: "redis;id"}
 
@@ -38,10 +40,10 @@ func TestExecuteRedis_WaitsForLastSaveChange(t *testing.T) {
 	stream := append(append([]string(nil), compose...),
 		"exec", "-T", "redis;id", "cat", "/data/dump.rdb")
 	assertCalls(t, runner.calls, []runnerCall{
-		{kind: "run", argv: lastSave},
+		{kind: "stream", argv: lastSave},
 		{kind: "run", argv: bgsave},
-		{kind: "run", argv: lastSave},
-		{kind: "run", argv: lastSave},
+		{kind: "stream", argv: lastSave},
+		{kind: "stream", argv: lastSave},
 		{kind: "stream", argv: stream},
 	})
 	if result.StdinFilename != "web-01/redis/redis;id.rdb" {
@@ -62,30 +64,45 @@ func TestExecuteRedis_PreservesStageErrors(t *testing.T) {
 		wantSub         string
 	}{
 		{
-			name:         "基线失败",
-			runResponses: []runResponse{{err: wantErr}},
-			wantSub:      "LASTSAVE",
+			name: "基线失败",
+			streamResponses: []streamResponse{{
+				err: wantErr,
+			}},
+			wantSub: "LASTSAVE",
 		},
 		{
-			name:         "基线格式错误",
-			runResponses: []runResponse{{out: "not-a-time"}},
-			wantSub:      "非负时间戳",
+			name: "基线格式错误",
+			streamResponses: []streamResponse{
+				testStreamResponse("not-a-time"),
+			},
+			wantSub: "非负时间戳",
 		},
 		{
 			name:         "触发失败",
-			runResponses: []runResponse{{out: "100"}, {err: wantErr}},
-			wantSub:      "BGSAVE",
+			runResponses: []runResponse{{err: wantErr}},
+			streamResponses: []streamResponse{
+				testStreamResponse("100"),
+			},
+			wantSub: "BGSAVE",
 		},
 		{
 			name:         "轮询失败",
-			runResponses: []runResponse{{out: "100"}, {out: "ok"}, {err: wantErr}},
-			wantSub:      "LASTSAVE",
+			runResponses: []runResponse{{out: "ok"}},
+			streamResponses: []streamResponse{
+				testStreamResponse("100"),
+				{err: wantErr},
+			},
+			wantSub: "LASTSAVE",
 		},
 		{
-			name:            "流启动失败",
-			runResponses:    []runResponse{{out: "100"}, {out: "ok"}, {out: "101"}},
-			streamResponses: []streamResponse{{err: wantErr}},
-			wantSub:         "数据流",
+			name:         "流启动失败",
+			runResponses: []runResponse{{out: "ok"}},
+			streamResponses: []streamResponse{
+				testStreamResponse("100"),
+				testStreamResponse("101"),
+				{err: wantErr},
+			},
+			wantSub: "数据流",
 		},
 	}
 
@@ -109,11 +126,13 @@ func TestExecuteRedis_PreservesStageErrors(t *testing.T) {
 
 func TestExecuteRedis_ContextCancellationStopsPolling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	runner := &fakeRunner{runResponses: []runResponse{
-		{out: "100"},
-		{out: "ok"},
-		{out: "100"},
-	}}
+	runner := &fakeRunner{
+		runResponses: []runResponse{{out: "ok"}},
+		streamResponses: []streamResponse{
+			testStreamResponse("100"),
+			testStreamResponse("100"),
+		},
+	}
 	target := config.Target{Type: config.TargetRedis, Service: "redis"}
 	cancel()
 

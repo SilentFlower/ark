@@ -77,11 +77,13 @@ func redisLastSave(
 	runner sshexec.Runner,
 	argv []string,
 ) (int64, error) {
-	out, err := runner.Run(ctx, argv...)
+	// redis-cli 可能在命令成功时向 stderr 写入非致命认证警告；LASTSAVE 是结构化值，
+	// 必须只解析 stdout，避免警告文本把有效时间戳误判为损坏输出。
+	out, err := sshexec.ReadAllStdout(ctx, runner, argv...)
 	if err != nil {
 		return 0, fmt.Errorf("读取 target %q Redis LASTSAVE 失败: %w", targetID, err)
 	}
-	value, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	value, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
 	if err != nil || value < 0 {
 		return 0, fmt.Errorf("读取 target %q Redis LASTSAVE 失败: 输出不是非负时间戳", targetID)
 	}

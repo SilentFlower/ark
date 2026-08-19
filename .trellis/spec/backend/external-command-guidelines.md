@@ -606,6 +606,10 @@ func Execute(
 
 - Redis 必须在 BGSAVE 前读取 LASTSAVE 基线；触发后按 context 轮询，时间戳发生变化
   才能读取 `/data/dump.rdb`。不得直接复制正在写入的 RDB。
+- Redis LASTSAVE 是短结构化输出，必须使用 `sshexec.ReadAllStdout` 只解析 stdout。
+  `redis-cli` 在 `REDISCLI_AUTH` 与服务端认证配置不一致时，可能在命令成功的同时向
+  stderr 写入非致命认证警告；不得用 `Runner.Run` 把警告和时间戳合并，也不得通过
+  清除 `REDISCLI_AUTH` 规避，因为启用密码的部署仍依赖该环境变量。
 - image_digest 只接受 `State=running` 的 compose 容器。先从容器 inspect 读取实际
   image ID 与 `Config.Image` 仓库引用，再对实际 image ID 读取 `RepoDigests`；
   `Config.Image` 只用于选择仓库，最终值必须来自 `RepoDigests`。
@@ -625,6 +629,7 @@ func Execute(
 | `Runner.Stream` 成功但 Reader 或 Wait 缺失 | 回收已有资源并返回组合错误 |
 | Reader Close 或 Wait 失败 | 重复调用仍返回第一次错误，底层动作只执行一次 |
 | Redis LASTSAVE 命令失败或输出不是非负整数 | 当前 target 失败，不触发后续阶段 |
+| Redis LASTSAVE stdout 是非负整数且 stderr 有非致命警告 | 只解析 stdout，继续 BGSAVE 与轮询 |
 | Redis 轮询期间 context 取消 | 停止轮询并保留 `errors.Is` 语义 |
 | compose ps JSON 无效或目标 service 没有运行容器 | image_digest 失败，不回退到 compose tag |
 | 容器 image ID / image ref 为空 | image_digest 失败，不猜测仓库 |
@@ -636,9 +641,13 @@ func Execute(
 
 - Good：带空格、引号或 shell 元字符的 service、路径和 volume 名仍各自作为单个 argv
   交给 Runner；SSH 层统一转义，数据流 stdout 不混入 stderr。
+- Good：Redis 容器设置了 `REDISCLI_AUTH`，但服务端未启用密码；LASTSAVE 的 stderr
+  警告被隔离，stdout 时间戳仍能驱动完整 BGSAVE 流程。
 - Base：postgres 未配置 user 时完全省略 `-U`；image target 的 services 顺序不同，
   仍产生相同 JSON 字节和 service 映射。
 - Bad：把 files 路径拼成一条 shell 字符串，会重新引入命令注入并破坏含空格路径。
+- Bad：用 `Runner.Run` 解析 Redis LASTSAVE，成功命令的 stderr 警告会污染时间戳，
+  让可备份的 Redis target 被误报为失败。
 - Bad：直接用 `Config.Image` 的 tag 作为恢复版本；tag 可变，不能证明备份时实际运行镜像。
 
 #### 6. Tests Required
@@ -647,7 +656,8 @@ func Execute(
   `Host` / `TargetID` / `TargetType` 元数据。
 - postgres 断言 `-T`、可选 `-U`、无 `-Fc` / gzip；volume 断言 `:ro` 和
   `tar -cpf`；files 断言 `--` 后路径保持独立 argv。
-- Redis 覆盖基线、BGSAVE、未变化轮询、变化后 Stream、context 取消和各阶段错误。
+- Redis 覆盖基线、BGSAVE、未变化轮询、变化后 Stream、context 取消和各阶段错误；
+  精确断言 LASTSAVE 走纯 stdout Stream，并覆盖成功命令带 stderr 认证警告的场景。
 - image_digest 覆盖 JSON Lines、稳定 service 排序、Docker Hub 别名、registry 端口、
   空 RepoDigests、仓库不匹配、多候选、多运行 digest、canonical stdout/stderr 隔离、
   Compose 端口元数据和每级 inspect/解析失败。
@@ -663,6 +673,11 @@ func Execute(
 // tag 不是运行版本证明；拼 shell 也绕过了 Runner 的逐参数转义。
 command := "docker compose exec " + target.Service + " pg_dump -d " + target.Database
 digest := configuredImageTag
+
+// Run 合并 stdout/stderr，非致命认证警告会污染 LASTSAVE 时间戳。
+lastSaveArgv := append(composeArgv(host.Project),
+    "exec", "-T", target.Service, "redis-cli", "LASTSAVE")
+lastSave, err := runner.Run(ctx, lastSaveArgv...)
 ```
 
 ##### Correct
@@ -673,6 +688,11 @@ argv := append(composeArgv(host.Project),
 reader, wait, err := runner.Stream(ctx, argv...)
 
 // image_digest 从运行容器的 image ID 反查 RepoDigests；Config.Image 只筛选仓库。
+
+// LASTSAVE 是短结构化输出，只读取 stdout，并复用统一的 Wait/Close 生命周期。
+lastSaveArgv := append(composeArgv(host.Project),
+    "exec", "-T", target.Service, "redis-cli", "LASTSAVE")
+lastSave, err := sshexec.ReadAllStdout(ctx, runner, lastSaveArgv...)
 ```
 
 ### Scenario: target 流完整性与状态持久化
