@@ -1,0 +1,60 @@
+{
+  "id": "p5-dnsmgr-maintenance-window",
+  "name": "p5-dnsmgr-maintenance-window",
+  "title": "P5-3 维护窗口联动",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-08-19",
+  "completedAt": "2026-08-19",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-08-19T08:43:45Z",
+      "contextKey": "codex_01a0188a-e110-7e81-a2d5-3af0ec27c58c",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "42a8936481f12684c0a562ba8285b724d6dc970e",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "42a8936481f12684c0a562ba8285b724d6dc970e",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "434aff07775d32228dee48abf267d1ef727607ce9d597e156acdadf31f668606"
+          }
+        ],
+        "fingerprint": "f771ba007e0065f552dfc27dc065e681f1d1d26ada6c95330f540b677203601f"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-08-19T18:19:06+08:00",
+    "completedSteps": [
+      "完成 P5-3 dnsmgr 维护窗口实现、测试、文档与 Full Check-All"
+    ],
+    "partialStep": null,
+    "nextStep": "在测试 dnsmgr 任务上完成暂停/恢复与部署验收",
+    "notes": "本地质量门槛全部通过；真实任务启停和部署验收按上线后验证执行。"
+  }
+}

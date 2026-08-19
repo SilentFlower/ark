@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"约束 host dnsmgr 可选字段、schema v2 兼容、静态组合校验和秘密不落清单。"}
+{"file":".trellis/spec/backend/restore-plan-guidelines.md","reason":"约束维护计划进入 Plan、JSON、dry-run、inspect、preview digest 和隔离清除。"}
+{"file":".trellis/spec/backend/dnsmgr-integration-guidelines.md","reason":"约束 dmonitor setactive API、按序暂停、逆序补偿、恢复兜底、DNS 时序和人工结果。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"约束暂停、恢复和 DNS 错误链聚合、非零退出与原始错误保留。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"约束 JSON/人类输出纯度及 dnsmgr URL、凭证、响应正文脱敏。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"约束公共 API 中文注释、race 测试、禁止 panic 和最终 make check 门槛。"}

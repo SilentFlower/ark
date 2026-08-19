@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/manifest-guidelines.md","reason":"检查 task_ids 组合校验、旧清单兼容、静态与运行时边界。"}
+{"file":".trellis/spec/backend/restore-plan-guidelines.md","reason":"检查维护计划映射、digest、OnPlanReady 时序和隔离零联动。"}
+{"file":".trellis/spec/backend/dnsmgr-integration-guidelines.md","reason":"检查真实 setactive 契约、维护补偿、恢复失败、DNS 共享 client 和测试矩阵。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"检查错误链、原始失败保留、人工任务和退出码可见性。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"扫描凭证、签名、完整 URL、外部正文和 JSON 混排风险。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"执行 make check、重复 race、无 CGO 构建、模块校验和禁止模式审计。"}
