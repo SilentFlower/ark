@@ -36,6 +36,9 @@ func (restoreNoopRunner) Feed(context.Context, io.Reader, ...string) error { ret
 
 type restoreDNSSetter struct{}
 
+// SetTaskActive 实现 CLI 测试所需的最小 dmonitor client 契约。
+func (restoreDNSSetter) SetTaskActive(context.Context, int64, bool) error { return nil }
+
 // SetRecordValue 实现 CLI 测试所需的最小 DNS client 契约。
 func (restoreDNSSetter) SetRecordValue(
 	context.Context,
@@ -134,6 +137,19 @@ func enableRestoreDNS(cfg *config.Config) {
 	}
 }
 
+func enableRestoreMaintenance(cfg *config.Config) {
+	if cfg.DNSMgr == nil {
+		cfg.DNSMgr = &config.DNSMgr{
+			BaseURL: "https://dns.invalid",
+			EnvFile: "/etc/ark/dnsmgr.env",
+		}
+	}
+	if cfg.Hosts[1].DNSMgr == nil {
+		cfg.Hosts[1].DNSMgr = &config.HostDNSMgr{}
+	}
+	cfg.Hosts[1].DNSMgr.TaskIDs = []int64{21, 34}
+}
+
 func TestRestoreCommand_DryRunJSON只调用只读依赖(t *testing.T) {
 	cfg, manifest, snapshot := testRestoreCommandInputs()
 	configPath := "/etc/ark/test.yaml"
@@ -204,7 +220,7 @@ func TestRestoreCommand_DNSDryRun展示计划但不读凭证或调用HTTP(t *tes
 		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
 			return manifest, snapshot, true, nil
 		},
-		newDNSMgrClient: func(string, string) (dnsmgr.ValueSetter, error) {
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) {
 			t.Fatal("dry-run 不应加载 dnsmgr 凭证或创建 client")
 			return nil, nil
 		},
@@ -234,9 +250,10 @@ func TestRestoreCommand_DNSDryRun展示计划但不读凭证或调用HTTP(t *tes
 	}
 }
 
-func TestRestoreCommand_DNSInspect保持只读并绑定计划(t *testing.T) {
+func TestRestoreCommand_DNS与维护Inspect保持只读并绑定计划(t *testing.T) {
 	cfg, manifest, snapshot := testRestoreCommandInputs()
 	enableRestoreDNS(cfg)
+	enableRestoreMaintenance(cfg)
 	configPath := "unused"
 	var events []string
 	cmd := newRestoreCmdWithDependencies(&configPath, restoreDependencies{
@@ -262,12 +279,13 @@ func TestRestoreCommand_DNSInspect保持只读并绑定计划(t *testing.T) {
 		},
 		inspect: func(_ context.Context, plan restore.Plan, _ sshexec.Runner, _ restore.InspectOptions) (restore.Preview, error) {
 			events = append(events, "inspect")
-			if plan.DNS == nil || plan.DNS.Value != "203.0.113.10" {
-				t.Fatalf("inspect 未收到 DNS 计划: %#v", plan.DNS)
+			if plan.DNS == nil || plan.DNS.Value != "203.0.113.10" || plan.Maintenance == nil ||
+				!slices.Equal(plan.Maintenance.TaskIDs, []int64{21, 34}) {
+				t.Fatalf("inspect 未收到完整 dnsmgr 计划: DNS=%#v maintenance=%#v", plan.DNS, plan.Maintenance)
 			}
 			return restore.Preview{Plan: plan, Digest: "dns-preview"}, nil
 		},
-		newDNSMgrClient: func(string, string) (dnsmgr.ValueSetter, error) {
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) {
 			t.Fatal("inspect 不应加载 dnsmgr 凭证")
 			return nil, nil
 		},
@@ -286,8 +304,45 @@ func TestRestoreCommand_DNSInspect保持只读并绑定计划(t *testing.T) {
 		t.Fatalf("inspect 调用 = %#v，期望 %#v", events, wantEvents)
 	}
 	var preview restore.Preview
-	if err := json.Unmarshal(output.Bytes(), &preview); err != nil || preview.Plan.DNS == nil {
+	if err := json.Unmarshal(output.Bytes(), &preview); err != nil || preview.Plan.DNS == nil || preview.Plan.Maintenance == nil {
 		t.Fatalf("DNS inspect JSON = %s, err=%v", output.String(), err)
+	}
+}
+
+func TestRestoreCommand_维护DryRun展示计划但不创建Client或调用HTTP(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	enableRestoreMaintenance(cfg)
+	configPath := "unused"
+	cmd := newRestoreCmdWithDependencies(&configPath, restoreDependencies{
+		loadConfig: func(string) (*config.Config, error) { return cfg, nil },
+		newRepo:    func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) {
+			t.Fatal("dry-run 不应创建 dnsmgr client")
+			return nil, nil
+		},
+		pauseMaintenance: func(context.Context, dnsmgr.TaskActivator, dnsmgr.MaintenancePlan) (dnsmgr.MaintenanceResult, error) {
+			t.Fatal("dry-run 不应暂停 dmonitor 任务")
+			return dnsmgr.MaintenanceResult{}, nil
+		},
+	})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--dry-run", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("维护 dry-run 失败: %v", err)
+	}
+	var plan restore.Plan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatalf("维护 Plan JSON 无效: %v\n%s", err, output.String())
+	}
+	if plan.Maintenance == nil || !slices.Equal(plan.Maintenance.TaskIDs, []int64{21, 34}) {
+		t.Fatalf("维护 Plan = %#v", plan.Maintenance)
 	}
 }
 
@@ -583,7 +638,7 @@ func TestRestoreCommand_恢复完成后切换DNS并保留Warn状态(t *testing.T
 			events = append(events, "execute:completion-marker")
 			return restore.Result{Status: store.StatusWarn}, nil
 		},
-		newDNSMgrClient: func(baseURL string, envFile string) (dnsmgr.ValueSetter, error) {
+		newDNSMgrClient: func(baseURL string, envFile string) (dnsmgr.RestoreClient, error) {
 			events = append(events, "dnsmgr:client")
 			if baseURL != cfg.DNSMgr.BaseURL || envFile != cfg.DNSMgr.EnvFile {
 				t.Fatalf("dnsmgr client 参数 = %q %q", baseURL, envFile)
@@ -627,6 +682,274 @@ func TestRestoreCommand_恢复完成后切换DNS并保留Warn状态(t *testing.T
 	}
 }
 
+func TestRestoreCommand_维护窗口覆盖恢复和DNS并在解锁前恢复(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	enableRestoreDNS(cfg)
+	enableRestoreMaintenance(cfg)
+	configPath := "unused"
+	var events []string
+	client := restoreDNSSetter{}
+	dependencies := restoreDependencies{
+		loadConfig: func(string) (*config.Config, error) {
+			events = append(events, "config")
+			return cfg, nil
+		},
+		acquireLock: func(string) (io.Closer, error) {
+			events = append(events, "lock")
+			return &restoreEventCloser{events: &events}, nil
+		},
+		runLocalDoctor: func(context.Context, *config.Config) *doctor.Report {
+			events = append(events, "doctor:local")
+			return &doctor.Report{}
+		},
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report {
+			events = append(events, "doctor:target")
+			return &doctor.Report{}
+		},
+		runDNSMgrDoctor: func(context.Context, *config.Config) *doctor.Report {
+			events = append(events, "doctor:dnsmgr")
+			return &doctor.Report{}
+		},
+		newRepo: func(*config.Repo) (*restic.Repo, error) {
+			events = append(events, "repo")
+			return nil, nil
+		},
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			events = append(events, "manifest")
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) {
+			events = append(events, "runner")
+			return restoreNoopRunner{}, nil
+		},
+		execute: func(
+			_ context.Context,
+			plan restore.Plan,
+			_ *restic.Repo,
+			_ sshexec.Runner,
+			options restore.ExecuteOptions,
+		) (restore.Result, error) {
+			events = append(events, "execute:preflight")
+			if options.OnPlanReady == nil {
+				t.Fatal("维护计划必须安装 OnPlanReady")
+			}
+			if err := options.OnPlanReady(plan); err != nil {
+				return restore.Result{Status: store.StatusFail}, err
+			}
+			events = append(events, "execute:write", "execute:completion-marker")
+			return restore.Result{Status: store.StatusOK}, nil
+		},
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) {
+			events = append(events, "dnsmgr:client")
+			return client, nil
+		},
+		pauseMaintenance: func(
+			_ context.Context,
+			got dnsmgr.TaskActivator,
+			plan dnsmgr.MaintenancePlan,
+		) (dnsmgr.MaintenanceResult, error) {
+			events = append(events, "dmonitor:pause")
+			if got != client || !slices.Equal(plan.TaskIDs, []int64{21, 34}) {
+				t.Fatalf("暂停参数 = %#v client=%#v", plan, got)
+			}
+			return dnsmgr.MaintenanceResult{Status: "paused", Tasks: []dnsmgr.MaintenanceTaskResult{
+				{TaskID: 21, PauseStatus: "paused"},
+				{TaskID: 34, PauseStatus: "paused"},
+			}}, nil
+		},
+		switchDNS: func(context.Context, dnsmgr.ValueSetter, dnsmgr.Plan) (dnsmgr.SwitchResult, error) {
+			events = append(events, "dnsmgr:switch")
+			return dnsmgr.SwitchResult{Status: "ok"}, nil
+		},
+		resumeMaintenance: func(
+			_ context.Context,
+			got dnsmgr.TaskActivator,
+			result dnsmgr.MaintenanceResult,
+		) (dnsmgr.MaintenanceResult, error) {
+			events = append(events, "dmonitor:resume")
+			if got != client || result.Status != "paused" {
+				t.Fatalf("恢复参数 = %#v client=%#v", result, got)
+			}
+			result.Status = "restored"
+			for index := range result.Tasks {
+				result.Tasks[index].ResumeStatus = "restored"
+			}
+			return result, nil
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("维护恢复失败: %v", err)
+	}
+	wantEvents := []string{
+		"config", "lock", "repo", "manifest", "doctor:local", "doctor:target", "doctor:dnsmgr", "runner",
+		"execute:preflight", "dnsmgr:client", "dmonitor:pause", "execute:write", "execute:completion-marker",
+		"dnsmgr:switch", "dmonitor:resume", "unlock",
+	}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("调用顺序 = %#v，期望 %#v", events, wantEvents)
+	}
+	var result restore.Result
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("维护结果 JSON 无效: %v\n%s", err, output.String())
+	}
+	if result.Status != store.StatusOK || result.Maintenance == nil || result.Maintenance.Status != "restored" ||
+		result.DNS == nil || result.DNS.Status != "ok" {
+		t.Fatalf("维护恢复结果 = %#v", result)
+	}
+}
+
+func TestRestoreCommand_暂停失败时目标零写入并返回人工任务(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	enableRestoreMaintenance(cfg)
+	configPath := "unused"
+	pauseErr := errors.New("pause failed")
+	writes := 0
+	resumeCalled := false
+	dependencies := restoreDependencies{
+		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
+		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+		runLocalDoctor:   func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report { return &doctor.Report{} },
+		runDNSMgrDoctor:  func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		newRepo:          func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		execute: func(
+			_ context.Context,
+			plan restore.Plan,
+			_ *restic.Repo,
+			_ sshexec.Runner,
+			options restore.ExecuteOptions,
+		) (restore.Result, error) {
+			if err := options.OnPlanReady(plan); err != nil {
+				return restore.Result{
+					ManifestSnapshotID: plan.ManifestSnapshotID,
+					RunID:              plan.RunID,
+					SourceHost:         plan.SourceHost,
+					DestinationHost:    plan.DestinationHost,
+					Status:             store.StatusFail,
+				}, err
+			}
+			writes++
+			return restore.Result{Status: store.StatusOK}, nil
+		},
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) { return restoreDNSSetter{}, nil },
+		pauseMaintenance: func(context.Context, dnsmgr.TaskActivator, dnsmgr.MaintenancePlan) (dnsmgr.MaintenanceResult, error) {
+			return dnsmgr.MaintenanceResult{
+				Status: "rollback_failed",
+				Tasks: []dnsmgr.MaintenanceTaskResult{
+					{TaskID: 21, PauseStatus: "paused", ResumeStatus: "failed"},
+					{TaskID: 34, PauseStatus: "failed"},
+				},
+				ManualTaskIDs: []int64{21},
+				Error:         "dmonitor 任务暂停失败且恢复不完整",
+			}, pauseErr
+		},
+		resumeMaintenance: func(context.Context, dnsmgr.TaskActivator, dnsmgr.MaintenanceResult) (dnsmgr.MaintenanceResult, error) {
+			resumeCalled = true
+			return dnsmgr.MaintenanceResult{}, nil
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--json"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, errRestoreFailed) || !errors.Is(err, pauseErr) || writes != 0 || resumeCalled {
+		t.Fatalf("错误=%v writes=%d resume=%v", err, writes, resumeCalled)
+	}
+	var result restore.Result
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("暂停失败 JSON 无效: %v\n%s", err, output.String())
+	}
+	if result.Status != store.StatusFail || result.Error != "恢复未开始，dmonitor 任务暂停失败" ||
+		result.Maintenance == nil || result.Maintenance.Status != "rollback_failed" ||
+		!slices.Contains(result.ManualChecks, "人工启用 dnsmgr dmonitor 任务 21") {
+		t.Fatalf("暂停失败结果 = %#v", result)
+	}
+}
+
+func TestRestoreCommand_数据恢复失败仍恢复任务并合并恢复错误(t *testing.T) {
+	cfg, manifest, snapshot := testRestoreCommandInputs()
+	enableRestoreMaintenance(cfg)
+	configPath := "unused"
+	restoreErr := errors.New("restore failed")
+	resumeErr := errors.New("resume failed")
+	dependencies := restoreDependencies{
+		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
+		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+		runLocalDoctor:   func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		runRestoreDoctor: func(context.Context, *config.Config, *config.Host) *doctor.Report { return &doctor.Report{} },
+		runDNSMgrDoctor:  func(context.Context, *config.Config) *doctor.Report { return &doctor.Report{} },
+		newRepo:          func(*config.Repo) (*restic.Repo, error) { return nil, nil },
+		loadManifest: func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error) {
+			return manifest, snapshot, true, nil
+		},
+		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		execute: func(
+			_ context.Context,
+			plan restore.Plan,
+			_ *restic.Repo,
+			_ sshexec.Runner,
+			options restore.ExecuteOptions,
+		) (restore.Result, error) {
+			if err := options.OnPlanReady(plan); err != nil {
+				return restore.Result{Status: store.StatusFail}, err
+			}
+			return restore.Result{Status: store.StatusFail, Error: "恢复未完成"}, restoreErr
+		},
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) { return restoreDNSSetter{}, nil },
+		pauseMaintenance: func(context.Context, dnsmgr.TaskActivator, dnsmgr.MaintenancePlan) (dnsmgr.MaintenanceResult, error) {
+			return dnsmgr.MaintenanceResult{Status: "paused", Tasks: []dnsmgr.MaintenanceTaskResult{
+				{TaskID: 21, PauseStatus: "paused"}, {TaskID: 34, PauseStatus: "paused"},
+			}}, nil
+		},
+		resumeMaintenance: func(
+			_ context.Context,
+			_ dnsmgr.TaskActivator,
+			result dnsmgr.MaintenanceResult,
+		) (dnsmgr.MaintenanceResult, error) {
+			result.Status = "restore_failed"
+			result.Tasks[1].ResumeStatus = "failed"
+			result.Tasks[0].ResumeStatus = "restored"
+			result.ManualTaskIDs = []int64{34}
+			result.Error = "dmonitor 任务恢复不完整"
+			return result, resumeErr
+		},
+	}
+	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--host", "web-01", "--to", "web-02", "--json"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, errRestoreFailed) || !errors.Is(err, restoreErr) || !errors.Is(err, resumeErr) {
+		t.Fatalf("错误链 = %v", err)
+	}
+	var result restore.Result
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("恢复失败 JSON 无效: %v\n%s", err, output.String())
+	}
+	if result.Error != "恢复未完成" || result.Maintenance == nil || result.Maintenance.Status != "restore_failed" ||
+		!slices.Contains(result.ManualChecks, "人工启用 dnsmgr dmonitor 任务 34") {
+		t.Fatalf("错误合并结果 = %#v", result)
+	}
+}
+
 func TestRestoreCommand_DNS失败后重跑只重试DNS(t *testing.T) {
 	cfg, manifest, snapshot := testRestoreCommandInputs()
 	enableRestoreDNS(cfg)
@@ -655,7 +978,7 @@ func TestRestoreCommand_DNS失败后重跑只重试DNS(t *testing.T) {
 			completionMarker = true
 			return restore.Result{Status: store.StatusOK, Steps: []restore.StepResult{{Status: "ok"}}}, nil
 		},
-		newDNSMgrClient: func(string, string) (dnsmgr.ValueSetter, error) { return restoreDNSSetter{}, nil },
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) { return restoreDNSSetter{}, nil },
 		switchDNS: func(context.Context, dnsmgr.ValueSetter, dnsmgr.Plan) (dnsmgr.SwitchResult, error) {
 			dnsCalls++
 			if dnsCalls == 1 {
@@ -707,7 +1030,7 @@ func TestRestoreCommand_DNS回滚不完整返回失败和人工记录(t *testing
 		execute: func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error) {
 			return restore.Result{Status: store.StatusOK}, nil
 		},
-		newDNSMgrClient: func(string, string) (dnsmgr.ValueSetter, error) { return restoreDNSSetter{}, nil },
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) { return restoreDNSSetter{}, nil },
 		switchDNS: func(context.Context, dnsmgr.ValueSetter, dnsmgr.Plan) (dnsmgr.SwitchResult, error) {
 			return dnsmgr.SwitchResult{
 				Status: "rollback_failed",
@@ -762,7 +1085,7 @@ func TestRestoreCommand_数据恢复失败时不创建DNSClient(t *testing.T) {
 		execute: func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error) {
 			return restore.Result{Status: store.StatusFail, Error: "恢复未完成"}, errors.New("restore failed")
 		},
-		newDNSMgrClient: func(string, string) (dnsmgr.ValueSetter, error) {
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) {
 			t.Fatal("数据恢复失败后不应创建 dnsmgr client")
 			return nil, nil
 		},
@@ -805,7 +1128,7 @@ func TestRestoreCommand_SkipDoctor仍执行受校验的DNS请求(t *testing.T) {
 		execute: func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error) {
 			return restore.Result{Status: store.StatusOK}, nil
 		},
-		newDNSMgrClient: func(string, string) (dnsmgr.ValueSetter, error) { return restoreDNSSetter{}, nil },
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) { return restoreDNSSetter{}, nil },
 		switchDNS: func(context.Context, dnsmgr.ValueSetter, dnsmgr.Plan) (dnsmgr.SwitchResult, error) {
 			switchCalled = true
 			return dnsmgr.SwitchResult{Status: "ok"}, nil
@@ -1027,6 +1350,8 @@ func TestRestoreCommand_仓库无Manifest时失败(t *testing.T) {
 
 func TestRestoreCommand_隔离执行不注入SafetyBackup(t *testing.T) {
 	cfg, manifest, snapshot := testRestoreCommandInputs()
+	enableRestoreDNS(cfg)
+	enableRestoreMaintenance(cfg)
 	configPath := "unused"
 	dependencies := restoreDependencies{
 		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
@@ -1038,6 +1363,10 @@ func TestRestoreCommand_隔离执行不注入SafetyBackup(t *testing.T) {
 			return manifest, snapshot, true, nil
 		},
 		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
+		newDNSMgrClient: func(string, string) (dnsmgr.RestoreClient, error) {
+			t.Fatal("隔离恢复不应创建 dnsmgr client")
+			return nil, nil
+		},
 		execute: func(
 			_ context.Context,
 			plan restore.Plan,
@@ -1045,7 +1374,8 @@ func TestRestoreCommand_隔离执行不注入SafetyBackup(t *testing.T) {
 			_ sshexec.Runner,
 			options restore.ExecuteOptions,
 		) (restore.Result, error) {
-			if plan.Isolation == nil || options.SafetyBackup != nil || options.Force {
+			if plan.Isolation == nil || plan.DNS != nil || plan.Maintenance != nil ||
+				options.SafetyBackup != nil || options.OnPlanReady != nil || options.Force {
 				t.Fatalf("隔离执行选项错误: plan=%#v options=%#v", plan.Isolation, options)
 			}
 			return restore.Result{Status: store.StatusOK, Isolation: &restore.IsolationResult{
@@ -1141,7 +1471,12 @@ func TestPrintRestoreResult_输出隔离端口和清理命令(t *testing.T) {
 	cmd := &cobra.Command{}
 	var output bytes.Buffer
 	cmd.SetOut(&output)
-	result := restore.Result{Status: store.StatusOK, Isolation: &restore.IsolationResult{
+	result := restore.Result{Status: store.StatusOK, Maintenance: &dnsmgr.MaintenanceResult{
+		Status: "restored",
+		Tasks: []dnsmgr.MaintenanceTaskResult{
+			{TaskID: 21, PauseStatus: "paused", ResumeStatus: "restored"},
+		},
+	}, Isolation: &restore.IsolationResult{
 		ID:          strings.Repeat("d", 64),
 		ProjectName: "web-restore-dddddddddddd",
 		Ports: []restore.IsolationPort{{
@@ -1152,7 +1487,13 @@ func TestPrintRestoreResult_输出隔离端口和清理命令(t *testing.T) {
 	if err := printRestoreResult(cmd, result); err != nil {
 		t.Fatalf("输出恢复结果失败: %v", err)
 	}
-	for _, want := range []string{"web-restore-dddddddddddd", "127.0.0.1:32768 -> 8080/tcp", "ark restore cleanup"} {
+	for _, want := range []string{
+		"web-restore-dddddddddddd",
+		"127.0.0.1:32768 -> 8080/tcp",
+		"ark restore cleanup",
+		"dmonitor 维护: restored",
+		"task 21: 暂停 paused，恢复 restored",
+	} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("输出缺少 %q:\n%s", want, output.String())
 		}

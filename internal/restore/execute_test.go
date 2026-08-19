@@ -410,6 +410,28 @@ func TestPreview_冲突排序稳定且资源变化改变Digest(t *testing.T) {
 	if dnsPreview.Digest == left.Digest {
 		t.Fatal("DNS 计划变化必须进入 preview digest")
 	}
+	maintenancePlan := plan
+	maintenancePlan.Maintenance = &dnsmgr.MaintenancePlan{TaskIDs: []int64{21, 34}}
+	maintenancePreview, err := newPreview(maintenancePlan, true, preflight{conflicts: []Conflict{
+		{Resource: "container-a", Detail: "已存在", ForceAllowed: true},
+		{Resource: "volume-b", Detail: "已存在", ForceAllowed: true},
+	}})
+	if err != nil {
+		t.Fatalf("生成维护 preview 失败: %v", err)
+	}
+	reorderedMaintenancePlan := plan
+	reorderedMaintenancePlan.Maintenance = &dnsmgr.MaintenancePlan{TaskIDs: []int64{34, 21}}
+	reorderedMaintenancePreview, err := newPreview(reorderedMaintenancePlan, true, preflight{conflicts: []Conflict{
+		{Resource: "container-a", Detail: "已存在", ForceAllowed: true},
+		{Resource: "volume-b", Detail: "已存在", ForceAllowed: true},
+	}})
+	if err != nil {
+		t.Fatalf("生成重排维护 preview 失败: %v", err)
+	}
+	if maintenancePreview.Digest == left.Digest ||
+		maintenancePreview.Digest == reorderedMaintenancePreview.Digest {
+		t.Fatal("维护任务的内容或顺序变化必须进入 preview digest")
+	}
 }
 
 func TestExecute_ExpectedPreview不匹配时零备份零写入(t *testing.T) {

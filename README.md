@@ -128,10 +128,11 @@ ARK_HEARTBEAT_FAILURE_URL=https://monitor.example/ping/REDACTED/fail
 `heartbeat_status=disabled|sent|failed`。心跳失败不会改写备份 run、manifest 或既有退出码。
 `ark-hub` 与 backup timer 仍彼此独立，停止 Hub 不影响定时备份和外部心跳。
 
-## 恢复后自动切换 DNS
+## 恢复维护窗口与自动切换 DNS
 
-跨机原位恢复可以在目标 host 下关联 dnsmgr 的 A/AAAA 记录。顶层只保存服务地址和受限凭证文件路径，
-host 只保存目标 IP、dnsmgr domain ID 与 provider record ID：
+同机或跨机原位恢复可以在目标 host 下关联 dnsmgr dmonitor 任务；跨机恢复还可以关联 A/AAAA
+记录。顶层只保存服务地址和受限凭证文件路径，host 保存任务 ID、目标 IP、dnsmgr domain ID 与
+provider record ID：
 
 ```yaml
 dnsmgr:
@@ -141,6 +142,7 @@ dnsmgr:
 hosts:
   - host: web-02
     dnsmgr:
+      task_ids: [21, 34]
       value: 203.0.113.10
       records:
         - domain_id: 12
@@ -148,12 +150,15 @@ hosts:
 ```
 
 `/etc/ark/dnsmgr.env` 必须由运行 ark 的用户所有、权限不超过 `0600`，且只包含
-`ARK_DNSMGR_UID` 与 `ARK_DNSMGR_API_KEY`。DNS 计划会进入 dry-run、inspect 和 preview digest，
-但这些只读模式不会打开凭证文件或发 HTTP。真实切换只发生在恢复 completion marker 成功后；
-多记录失败会逆序补偿，补偿不完整时结果会列出需人工核对的记录。
+`ARK_DNSMGR_UID` 与 `ARK_DNSMGR_API_KEY`。维护与 DNS 计划都会进入 dry-run、inspect 和 preview
+digest，但这些只读模式不会打开凭证文件或发 HTTP。真实恢复在安全备份完成后按顺序暂停任务，
+在数据恢复和 DNS 切换全部结束后逆序恢复；暂停失败不会开始目标写入。配置的任务应在恢复前处于
+启用状态，结束目标固定为 `active=1`。DNS 只在跨机恢复 completion marker 成功后切换，多记录失败
+会逆序补偿，补偿不完整时结果会列出需人工核对的记录。
 
-详细发布、验收和回滚步骤见 [运维说明](docs/operations.md)。P5-3 完成前，恢复前后仍需人工暂停和恢复
-相关 dnsmgr 健康检测任务。
+普通错误、取消和中断会执行恢复任务的兜底逻辑；`SIGKILL`、宿主机断电等无法运行 defer 的场景，
+必须按结构化结果和清单人工把关联任务恢复为 `active=1`。详细发布、验收和回滚步骤见
+[运维说明](docs/operations.md)。
 
 ## ⚠️ 关于密钥
 

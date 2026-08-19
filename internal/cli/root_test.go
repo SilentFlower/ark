@@ -5,15 +5,48 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/silentflower/ark/internal/config"
 	"github.com/silentflower/ark/internal/doctor"
 )
+
+func TestExecuteRoot_Context取消传入命令树(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	root := &cobra.Command{
+		Use: "test",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			close(started)
+			<-cmd.Context().Done()
+			return fmt.Errorf("命令已取消: %w", cmd.Context().Err())
+		},
+	}
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- executeRoot(ctx, root, &stderr)
+	}()
+	<-started
+	cancel()
+
+	select {
+	case code := <-done:
+		if code != 1 || !strings.Contains(stderr.String(), "命令已取消") {
+			t.Fatalf("退出码=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context 取消未传入 Cobra 命令树")
+	}
+}
 
 func TestRunDoctor_范围与调用顺序(t *testing.T) {
 	cfg := &config.Config{Hosts: []config.Host{

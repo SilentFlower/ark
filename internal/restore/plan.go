@@ -38,9 +38,14 @@ const (
 
 const defaultConflictPolicy = "refuse_existing"
 
+const (
+	manualCheckDMonitor = "确认已暂停 dnsmgr 对目标主机的检测，并在恢复结束后重新启用"
+	manualCheckDNS      = "确认 DNS 指向目标主机"
+)
+
 var defaultManualChecks = []string{
-	"确认已暂停 dnsmgr 对目标主机的检测，并在恢复结束后重新启用",
-	"确认 DNS 指向目标主机",
+	manualCheckDMonitor,
+	manualCheckDNS,
 	"确认 TLS 证书适配目标环境",
 	"确认防火墙端口已放行",
 	"复核 .env 中需要按新环境调整的配置",
@@ -113,6 +118,8 @@ type Plan struct {
 	ManualChecks []string `json:"manual_checks"`
 	// DNS 是跨机原位恢复完成后执行的非秘密 dnsmgr 切换计划。
 	DNS *dnsmgr.Plan `json:"dns,omitempty"`
+	// Maintenance 是真实原位恢复写入目标前执行的非秘密 dmonitor 维护计划。
+	Maintenance *dnsmgr.MaintenancePlan `json:"maintenance,omitempty"`
 	// Isolation 是显式隔离恢复的纯数据意图；原位恢复为空。
 	Isolation *IsolationSpec `json:"isolation,omitempty"`
 }
@@ -188,6 +195,7 @@ func BuildPlan(
 
 	steps := buildSteps(source.Targets, results)
 	dnsPlan := buildDNSPlan(*source, *destination)
+	maintenancePlan := buildMaintenancePlan(*destination)
 	return Plan{
 		ManifestSnapshotID: manifestSnapshotID,
 		RunID:              manifest.RunID,
@@ -196,13 +204,14 @@ func BuildPlan(
 		Project:            copyProject(source.Project),
 		ConflictPolicy:     defaultConflictPolicy,
 		Steps:              steps,
-		ManualChecks:       manualChecksFor(dnsPlan),
+		ManualChecks:       manualChecksFor(dnsPlan, maintenancePlan),
 		DNS:                dnsPlan,
+		Maintenance:        maintenancePlan,
 	}, nil
 }
 
 func buildDNSPlan(source config.Host, destination config.Host) *dnsmgr.Plan {
-	if source.Host == destination.Host || destination.DNSMgr == nil {
+	if source.Host == destination.Host || destination.DNSMgr == nil || len(destination.DNSMgr.Records) == 0 {
 		return nil
 	}
 	plan := &dnsmgr.Plan{
@@ -215,10 +224,20 @@ func buildDNSPlan(source config.Host, destination config.Host) *dnsmgr.Plan {
 	return plan
 }
 
-func manualChecksFor(plan *dnsmgr.Plan) []string {
+func buildMaintenancePlan(destination config.Host) *dnsmgr.MaintenancePlan {
+	if destination.DNSMgr == nil || len(destination.DNSMgr.TaskIDs) == 0 {
+		return nil
+	}
+	return &dnsmgr.MaintenancePlan{TaskIDs: append([]int64(nil), destination.DNSMgr.TaskIDs...)}
+}
+
+func manualChecksFor(dnsPlan *dnsmgr.Plan, maintenancePlan *dnsmgr.MaintenancePlan) []string {
 	checks := make([]string, 0, len(defaultManualChecks))
 	for _, item := range defaultManualChecks {
-		if plan != nil && item == "确认 DNS 指向目标主机" {
+		if dnsPlan != nil && item == manualCheckDNS {
+			continue
+		}
+		if maintenancePlan != nil && item == manualCheckDMonitor {
 			continue
 		}
 		checks = append(checks, item)

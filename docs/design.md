@@ -589,9 +589,9 @@ hub 上同时运行 dnsmgr（`SilentFlower/dnsmgr`，上游 `netcccyun/dnsmgr`�
 - **TLS 证书** → dnsmgr 的证书自动部署支持 `ssh`、`local` 等 40+ 目标，
   可以把证书推到重建后的机器。
 
-ark 清单顶层保存 dnsmgr HTTPS 地址和 root-only 凭证文件路径，目标 host 保存显式 IP 与有序的
-`domain_id/record_id` 关联。普通 dry-run、inspect 和 preview digest 包含非秘密 DNS 计划，但不会
-读取凭证或发 HTTP；同机恢复与隔离恢复不生成 DNS 动作。
+ark 清单顶层保存 dnsmgr HTTPS 地址和 root-only 凭证文件路径，目标 host 保存有序 `task_ids`、
+显式 IP 与有序的 `domain_id/record_id` 关联。普通 dry-run、inspect 和 preview digest 包含非秘密
+维护与 DNS 计划，但不会读取凭证或发 HTTP；同机恢复可以生成维护动作，隔离恢复不生成任何联动。
 
 多记录按清单顺序更新，任一失败后停止前向调用，并按逆序把本轮已变更记录补偿到各自旧值。
 补偿使用目标 IP 作为 `expected_value`，避免覆盖期间发生的其他切换。DNS 或补偿失败会让命令整体
@@ -604,16 +604,20 @@ ark 清单顶层保存 dnsmgr HTTPS 地址和 root-only 凭证文件路径，目
 恢复过程中服务必然有一段不可用，检测到了就自动切走解析；恢复完再切回来——
 如果检测间隔配得短，中间可能来回震荡。
 
-因此 ark 在发起恢复前应当暂停对应的 dmtask，完成后恢复。
+因此 ark 在发起真实原位恢复前暂停对应的 dmtask，数据恢复与 DNS 切换结束后恢复。
 
 **接口条件已具备**：dnsmgr fork 已增加固定的
 `POST /api/dmonitor/task/setactive` 路由，由 `AuthApi` 保护，并在控制器中执行
 管理员权限检查。接口只允许按任务 ID 设置 `active=0|1`，重复设置保持幂等，
 没有把 `/dmonitor/task/:action` 的新增、编辑、删除或批量操作暴露给 API。
 
-ark 侧的配置与调用逻辑留在 P5-3：恢复开始前暂停任务，并通过 `defer` 保证成功、
-失败或中断后都尝试恢复。在 P5-3 落地之前，恢复流程仍把
-「确认已暂停 dnsmgr 对目标主机的检测，并在恢复结束后重新启用」放进人工确认清单。
+P5-3 已在 ark 侧落地。任务 ID 来自目标 host 当前配置，默认契约是这些任务在恢复前本应启用；
+结束目标固定为 `active=1`，不尝试推断或恢复历史关闭状态。`restore.Execute` 完成 preflight、expected
+digest 和安全备份后，通过 `OnPlanReady` 按序暂停；暂停失败时先幂等恢复结果未知的当前任务，再逆序
+补偿此前已暂停任务，且不开始目标写入。首次完整暂停成功后注册 `defer`，在数据恢复和 P5-2 DNS
+切换结束后、全局锁释放前逆序恢复。根命令把 `SIGINT`/`SIGTERM` 转为 context 取消；兜底使用
+`context.WithoutCancel` 与固定总超时，普通失败、取消和中断都继续尝试全部任务；恢复不完整会返回
+非零并列出人工任务。`SIGKILL`、断电或宿主机崩溃无法执行 defer，运维必须人工恢复 `active=1`。
 
 演练（`ark verify`）不受此影响，因为演练环境不绑定生产域名和 IP。
 

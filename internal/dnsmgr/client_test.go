@@ -89,6 +89,50 @@ func TestClientCheckAuth_发送签名表单(t *testing.T) {
 	}
 }
 
+func TestClientSetTaskActive_发送固定路由和状态表单(t *testing.T) {
+	baseURL, _ := url.Parse("https://dns.example.com/root")
+	wantActive := []string{"0", "1"}
+	callIndex := 0
+	client := newClient(baseURL, credentials{uid: "12", apiKey: "secret"}, doerFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://dns.example.com/root/api/dmonitor/task/setactive" {
+			t.Fatalf("请求 URL = %s", request.URL.String())
+		}
+		if err := request.ParseForm(); err != nil {
+			t.Fatalf("解析表单失败: %v", err)
+		}
+		if request.Form.Get("id") != "21" || request.Form.Get("active") != wantActive[callIndex] ||
+			request.Form.Get("uid") != "12" || request.Form.Get("sign") == "" {
+			t.Fatalf("任务启停表单 = %#v", request.Form)
+		}
+		callIndex++
+		return apiHTTPResponse(http.StatusOK, `{"code":0,"msg":"设置成功"}`), nil
+	}), time.Now)
+
+	if err := client.SetTaskActive(context.Background(), 21, false); err != nil {
+		t.Fatalf("暂停任务失败: %v", err)
+	}
+	if err := client.SetTaskActive(context.Background(), 21, true); err != nil {
+		t.Fatalf("恢复任务失败: %v", err)
+	}
+	if callIndex != 2 {
+		t.Fatalf("调用次数 = %d", callIndex)
+	}
+}
+
+func TestClientSetTaskActive_非法任务ID不发请求(t *testing.T) {
+	baseURL, _ := url.Parse("https://dns.example.com")
+	called := false
+	client := newClient(baseURL, credentials{uid: "12", apiKey: "secret"}, doerFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return apiHTTPResponse(http.StatusOK, `{"code":0}`), nil
+	}), time.Now)
+
+	err := client.SetTaskActive(context.Background(), 0, false)
+	if err == nil || !strings.Contains(err.Error(), "必须大于 0") || called {
+		t.Fatalf("非法任务 ID 错误 = %v, called=%v", err, called)
+	}
+}
+
 func TestClientSetRecordValue_校验返回契约(t *testing.T) {
 	baseURL, _ := url.Parse("https://dns.example.com")
 	client := newClient(baseURL, credentials{uid: "12", apiKey: "secret"}, doerFunc(func(request *http.Request) (*http.Response, error) {
@@ -142,6 +186,18 @@ func TestClient_拒绝不可信响应且不泄漏秘密(t *testing.T) {
 		}), wantSub: "HTTP 状态 403"},
 		{name: "非法 JSON", doer: doerFunc(func(*http.Request) (*http.Response, error) {
 			return apiHTTPResponse(http.StatusOK, "not-json"), nil
+		}), wantSub: "无效 JSON"},
+		{name: "空响应信封", doer: doerFunc(func(*http.Request) (*http.Response, error) {
+			return apiHTTPResponse(http.StatusOK, "null"), nil
+		}), wantSub: "缺少业务码"},
+		{name: "缺少业务码", doer: doerFunc(func(*http.Request) (*http.Response, error) {
+			return apiHTTPResponse(http.StatusOK, `{}`), nil
+		}), wantSub: "缺少业务码"},
+		{name: "空业务码", doer: doerFunc(func(*http.Request) (*http.Response, error) {
+			return apiHTTPResponse(http.StatusOK, `{"code":null}`), nil
+		}), wantSub: "缺少业务码"},
+		{name: "业务码类型错误", doer: doerFunc(func(*http.Request) (*http.Response, error) {
+			return apiHTTPResponse(http.StatusOK, `{"code":"0"}`), nil
 		}), wantSub: "无效 JSON"},
 		{name: "业务错误", doer: doerFunc(func(*http.Request) (*http.Response, error) {
 			return apiHTTPResponse(http.StatusOK, `{"code":-1,"msg":"api-key-should-not-leak"}`), nil

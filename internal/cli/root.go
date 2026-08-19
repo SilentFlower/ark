@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -44,8 +47,16 @@ var errRestoreFailed = errors.New("恢复未完成")
 var errVerifyFailed = errors.New("恢复演练未完成")
 
 // Execute 运行根命令并返回进程退出码。
+// @return int 0 表示成功，1 表示命令失败，2 表示环境检查未通过。
 func Execute() int {
-	err := newRootCmd().Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return executeRoot(ctx, newRootCmd(), os.Stderr)
+}
+
+// executeRoot 统一退出码映射，便于验证信号取消会传入完整 Cobra 命令树。
+func executeRoot(ctx context.Context, root *cobra.Command, stderr io.Writer) int {
+	err := root.ExecuteContext(ctx)
 	switch {
 	case err == nil:
 		return 0
@@ -56,7 +67,7 @@ func Execute() int {
 		// backup/restore/verify 的人类摘要或 JSON 已包含失败事实，这里只保留非零退出码。
 		return 1
 	default:
-		fmt.Fprintln(os.Stderr, "错误:", err)
+		fmt.Fprintln(stderr, "错误:", err)
 		return 1
 	}
 }

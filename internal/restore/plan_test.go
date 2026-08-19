@@ -186,7 +186,8 @@ func TestBuildPlan_DNS计划只用于跨机原位恢复且深拷贝(t *testing.T
 	if plan.DNS == nil || plan.DNS.Value != "203.0.113.10" || len(plan.DNS.Records) != 2 {
 		t.Fatalf("DNS 计划 = %#v", plan.DNS)
 	}
-	if len(plan.ManualChecks) != 4 || slices.Contains(plan.ManualChecks, "确认 DNS 指向目标主机") {
+	if len(plan.ManualChecks) != 4 || slices.Contains(plan.ManualChecks, manualCheckDNS) ||
+		!slices.Contains(plan.ManualChecks, manualCheckDMonitor) {
 		t.Fatalf("自动 DNS 计划的人工项 = %#v", plan.ManualChecks)
 	}
 	cfg.Hosts[1].DNSMgr.Value = "198.51.100.20"
@@ -204,9 +205,40 @@ func TestBuildPlan_DNS计划只用于跨机原位恢复且深拷贝(t *testing.T
 	}
 }
 
+func TestBuildPlan_维护计划用于同机和跨机原位恢复且深拷贝(t *testing.T) {
+	cfg, manifest := testRestoreInputs()
+	cfg.Hosts[0].DNSMgr = &config.HostDNSMgr{TaskIDs: []int64{7}}
+	cfg.Hosts[1].DNSMgr = &config.HostDNSMgr{TaskIDs: []int64{21, 34}}
+
+	crossHost, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "destination-01")
+	if err != nil {
+		t.Fatalf("跨机 BuildPlan 失败: %v", err)
+	}
+	if crossHost.Maintenance == nil || !slices.Equal(crossHost.Maintenance.TaskIDs, []int64{21, 34}) {
+		t.Fatalf("跨机维护计划 = %#v", crossHost.Maintenance)
+	}
+	if slices.Contains(crossHost.ManualChecks, manualCheckDMonitor) {
+		t.Fatalf("自动维护计划不应保留人工暂停项: %#v", crossHost.ManualChecks)
+	}
+
+	sameHost, err := BuildPlan(cfg, manifest, "manifest-snapshot", "source-01", "source-01")
+	if err != nil {
+		t.Fatalf("同机 BuildPlan 失败: %v", err)
+	}
+	if sameHost.Maintenance == nil || !slices.Equal(sameHost.Maintenance.TaskIDs, []int64{7}) {
+		t.Fatalf("同机维护计划 = %#v", sameHost.Maintenance)
+	}
+
+	cfg.Hosts[1].DNSMgr.TaskIDs[0] = 99
+	if crossHost.Maintenance.TaskIDs[0] != 21 {
+		t.Fatalf("维护计划未深拷贝: %#v", crossHost.Maintenance)
+	}
+}
+
 func TestWithIsolation_清除DNS计划且不修改原计划(t *testing.T) {
 	cfg, manifest := testRestoreInputs()
 	cfg.Hosts[1].DNSMgr = &config.HostDNSMgr{
+		TaskIDs: []int64{21},
 		Value:   "203.0.113.10",
 		Records: []config.DNSMgrRecord{{DomainID: 12, RecordID: "record-a"}},
 	}
@@ -218,8 +250,12 @@ func TestWithIsolation_清除DNS计划且不修改原计划(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WithIsolation 失败: %v", err)
 	}
-	if isolated.DNS != nil || plan.DNS == nil {
-		t.Fatalf("隔离 DNS 边界错误: isolated=%#v original=%#v", isolated.DNS, plan.DNS)
+	if isolated.DNS != nil || isolated.Maintenance != nil || plan.DNS == nil || plan.Maintenance == nil {
+		t.Fatalf("隔离 dnsmgr 边界错误: isolated=%#v/%#v original=%#v/%#v",
+			isolated.DNS, isolated.Maintenance, plan.DNS, plan.Maintenance)
+	}
+	if slices.Contains(isolated.ManualChecks, manualCheckDMonitor) || slices.Contains(isolated.ManualChecks, manualCheckDNS) {
+		t.Fatalf("隔离计划不应保留 dmonitor/DNS 人工项: %#v", isolated.ManualChecks)
 	}
 }
 

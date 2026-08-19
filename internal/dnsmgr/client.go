@@ -1,4 +1,4 @@
-// Package dnsmgr 提供 dnsmgr AuthApi 客户端与恢复后 DNS 切换编排。
+// Package dnsmgr 提供 dnsmgr AuthApi 客户端、dmonitor 维护窗口与恢复后 DNS 切换编排。
 package dnsmgr
 
 import (
@@ -63,7 +63,7 @@ type ValueResult struct {
 }
 
 type apiResponse struct {
-	Code int `json:"code"`
+	Code *int `json:"code"`
 	Data struct {
 		RecordID      string `json:"recordid"`
 		PreviousValue string `json:"previous_value"`
@@ -137,6 +137,25 @@ func loadCredentials(path string) (credentials, error) {
 // @return error 请求、HTTP 状态、JSON 或业务码无效时的脱敏错误。
 func (c *Client) CheckAuth(ctx context.Context) error {
 	return c.post(ctx, "/api/auth/check", nil, nil)
+}
+
+// SetTaskActive 启用或暂停单个 dnsmgr dmonitor 任务。
+// @param ctx 控制 HTTP 请求取消与超时。
+// @param taskID dnsmgr dmtask 表中的任务 ID。
+// @param active true 表示启用，false 表示暂停。
+// @return error 参数、请求、响应或业务码无效时的脱敏错误。
+func (c *Client) SetTaskActive(ctx context.Context, taskID int64, active bool) error {
+	if taskID <= 0 {
+		return fmt.Errorf("dnsmgr dmonitor task_id 必须大于 0")
+	}
+	activeValue := "0"
+	if active {
+		activeValue = "1"
+	}
+	return c.post(ctx, "/api/dmonitor/task/setactive", url.Values{
+		"id":     {strconv.FormatInt(taskID, 10)},
+		"active": {activeValue},
+	}, nil)
 }
 
 // SetRecordValue 只修改一条 A 或 AAAA 记录的 IP。
@@ -245,8 +264,11 @@ func (c *Client) post(ctx context.Context, route string, form url.Values, decode
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return fmt.Errorf("dnsmgr 返回无效 JSON")
 	}
-	if envelope.Code != 0 {
-		return fmt.Errorf("dnsmgr 返回业务错误码 %d", envelope.Code)
+	if envelope.Code == nil {
+		return fmt.Errorf("dnsmgr 响应缺少业务码")
+	}
+	if *envelope.Code != 0 {
+		return fmt.Errorf("dnsmgr 返回业务错误码 %d", *envelope.Code)
 	}
 	if decoded != nil {
 		if err := json.Unmarshal(body, decoded); err != nil {

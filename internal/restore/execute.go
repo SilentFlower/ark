@@ -110,6 +110,8 @@ type Result struct {
 	Error string `json:"error,omitempty"`
 	// DNS 是数据恢复完成后的 dnsmgr 切换与补偿摘要；无自动 DNS 计划时为空。
 	DNS *dnsmgr.SwitchResult `json:"dns,omitempty"`
+	// Maintenance 是恢复窗口内 dmonitor 任务的暂停与恢复摘要；无自动维护计划时为空。
+	Maintenance *dnsmgr.MaintenanceResult `json:"maintenance,omitempty"`
 	// Isolation 是隔离恢复的资源、端口和清理摘要；原位恢复为空。
 	Isolation *IsolationResult `json:"isolation,omitempty"`
 }
@@ -277,7 +279,7 @@ func execute(
 	}
 	if options.OnPlanReady != nil {
 		if err := options.OnPlanReady(plan); err != nil {
-			return failResult(result, fmt.Errorf("输出恢复计划失败: %w", err))
+			return failResult(result, fmt.Errorf("恢复计划就绪处理失败: %w", err))
 		}
 	}
 	if !inspection.resume {

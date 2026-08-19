@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -36,20 +37,26 @@ type restoreCommandOptions struct {
 }
 
 type restoreDependencies struct {
-	loadConfig       func(string) (*config.Config, error)
-	acquireLock      func(string) (io.Closer, error)
-	runLocalDoctor   runLocalFunc
-	runRestoreDoctor runHostFunc
-	runDNSMgrDoctor  runDNSMgrFunc
-	newRepo          func(*config.Repo) (*restic.Repo, error)
-	loadManifest     func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error)
-	newRunner        func(*config.Host) (sshexec.Runner, error)
-	execute          func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error)
-	inspect          func(context.Context, restore.Plan, sshexec.Runner, restore.InspectOptions) (restore.Preview, error)
-	cleanup          func(context.Context, sshexec.Runner, string, string) (restore.CleanupResult, error)
-	newDNSMgrClient  func(string, string) (dnsmgr.ValueSetter, error)
-	switchDNS        func(context.Context, dnsmgr.ValueSetter, dnsmgr.Plan) (dnsmgr.SwitchResult, error)
-	backup           backupDependencies
+	loadConfig        func(string) (*config.Config, error)
+	acquireLock       func(string) (io.Closer, error)
+	runLocalDoctor    runLocalFunc
+	runRestoreDoctor  runHostFunc
+	runDNSMgrDoctor   runDNSMgrFunc
+	newRepo           func(*config.Repo) (*restic.Repo, error)
+	loadManifest      func(context.Context, *restic.Repo, string) (backup.Manifest, restic.Snapshot, bool, error)
+	newRunner         func(*config.Host) (sshexec.Runner, error)
+	execute           func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error)
+	inspect           func(context.Context, restore.Plan, sshexec.Runner, restore.InspectOptions) (restore.Preview, error)
+	cleanup           func(context.Context, sshexec.Runner, string, string) (restore.CleanupResult, error)
+	newDNSMgrClient   func(string, string) (dnsmgr.RestoreClient, error)
+	switchDNS         func(context.Context, dnsmgr.ValueSetter, dnsmgr.Plan) (dnsmgr.SwitchResult, error)
+	pauseMaintenance  func(context.Context, dnsmgr.TaskActivator, dnsmgr.MaintenancePlan) (dnsmgr.MaintenanceResult, error)
+	resumeMaintenance func(
+		context.Context,
+		dnsmgr.TaskActivator,
+		dnsmgr.MaintenanceResult,
+	) (dnsmgr.MaintenanceResult, error)
+	backup backupDependencies
 }
 
 // newRestoreCmd 构建恢复计划与真实恢复命令。
@@ -70,11 +77,19 @@ func defaultRestoreDependencies() restoreDependencies {
 		execute:          restore.Execute,
 		inspect:          restore.Inspect,
 		cleanup:          restore.CleanupIsolation,
-		newDNSMgrClient: func(baseURL string, envFile string) (dnsmgr.ValueSetter, error) {
+		newDNSMgrClient: func(baseURL string, envFile string) (dnsmgr.RestoreClient, error) {
 			return dnsmgr.New(baseURL, envFile)
 		},
-		switchDNS: dnsmgr.Switch,
-		backup:    defaultBackupDependencies(),
+		switchDNS:        dnsmgr.Switch,
+		pauseMaintenance: dnsmgr.PauseTasks,
+		resumeMaintenance: func(
+			ctx context.Context,
+			activator dnsmgr.TaskActivator,
+			result dnsmgr.MaintenanceResult,
+		) (dnsmgr.MaintenanceResult, error) {
+			return dnsmgr.ResumeTasks(ctx, activator, result)
+		},
+		backup: defaultBackupDependencies(),
 	}
 }
 
@@ -337,7 +352,7 @@ func runRestore(
 			return result, err
 		}
 	}
-	if err := validateDNSRestoreDependencies(plan, options.skipDoctor, dependencies); err != nil {
+	if err := validateDNSMgrRestoreDependencies(plan, options.skipDoctor, dependencies); err != nil {
 		return result, err
 	}
 
@@ -348,7 +363,7 @@ func runRestore(
 		if err := requireDoctor("恢复目标", dependencies.runRestoreDoctor(cmd.Context(), cfg, destination)); err != nil {
 			return result, err
 		}
-		if plan.DNS != nil {
+		if plan.DNS != nil || plan.Maintenance != nil {
 			if err := requireDoctor("dnsmgr", dependencies.runDNSMgrDoctor(cmd.Context(), cfg)); err != nil {
 				return result, err
 			}
@@ -358,6 +373,41 @@ func runRestore(
 	if err != nil {
 		return result, err
 	}
+
+	var dnsMgrClient dnsmgr.RestoreClient
+	getDNSMgrClient := func() (dnsmgr.RestoreClient, error) {
+		if dnsMgrClient != nil {
+			return dnsMgrClient, nil
+		}
+		if cfg.DNSMgr == nil {
+			return nil, fmt.Errorf("顶层 dnsmgr 配置缺失")
+		}
+		client, clientErr := dependencies.newDNSMgrClient(cfg.DNSMgr.BaseURL, cfg.DNSMgr.EnvFile)
+		if clientErr != nil {
+			return nil, clientErr
+		}
+		dnsMgrClient = client
+		return dnsMgrClient, nil
+	}
+
+	var maintenanceResult *dnsmgr.MaintenanceResult
+	maintenanceOpened := false
+	defer func() {
+		if !maintenanceOpened || maintenanceResult == nil {
+			return
+		}
+		resumed, resumeErr := dependencies.resumeMaintenance(cmd.Context(), dnsMgrClient, *maintenanceResult)
+		maintenanceResult = &resumed
+		mergeMaintenanceResult(&result, resumed)
+		if resumeErr == nil {
+			return
+		}
+		if result.Status == store.StatusOK || result.Status == store.StatusWarn {
+			result.Status = store.StatusFail
+			result.Error = "恢复已完成，但 dmonitor 任务恢复不完整"
+		}
+		runErr = errors.Join(runErr, fmt.Errorf("恢复 dnsmgr dmonitor 任务失败: %w", resumeErr))
+	}()
 
 	executeOptions := restore.ExecuteOptions{
 		Force:                 options.force,
@@ -373,9 +423,29 @@ func runRestore(
 			executeOptions.RawFileTargets[targetID] = mapped
 		}
 	}
-	if !options.asJSON {
+	if !options.asJSON || plan.Maintenance != nil {
 		executeOptions.OnPlanReady = func(ready restore.Plan) error {
-			return printRestorePlan(cmd, ready)
+			if !options.asJSON {
+				if err := printRestorePlan(cmd, ready); err != nil {
+					return err
+				}
+			}
+			if ready.Maintenance == nil {
+				return nil
+			}
+			client, clientErr := getDNSMgrClient()
+			if clientErr != nil {
+				failed := maintenanceNotStarted(*ready.Maintenance)
+				maintenanceResult = &failed
+				return fmt.Errorf("创建 dnsmgr client 失败: %w", clientErr)
+			}
+			paused, pauseErr := dependencies.pauseMaintenance(cmd.Context(), client, *ready.Maintenance)
+			maintenanceResult = &paused
+			if pauseErr != nil {
+				return pauseErr
+			}
+			maintenanceOpened = true
+			return nil
 		}
 	}
 	if plan.Isolation == nil {
@@ -384,10 +454,20 @@ func runRestore(
 		}
 	}
 	result, runErr = dependencies.execute(cmd.Context(), plan, repo, runner, executeOptions)
+	if maintenanceResult != nil {
+		mergeMaintenanceResult(&result, *maintenanceResult)
+		if runErr != nil && !maintenanceOpened {
+			result.Error = "恢复未开始，dmonitor 任务暂停失败"
+		}
+	}
 	if runErr != nil || plan.DNS == nil || (result.Status != store.StatusOK && result.Status != store.StatusWarn) {
 		return result, runErr
 	}
-	return runRestoreDNS(cmd.Context(), cfg, plan, result, dependencies)
+	dnsDependencies := dependencies
+	dnsDependencies.newDNSMgrClient = func(string, string) (dnsmgr.RestoreClient, error) {
+		return getDNSMgrClient()
+	}
+	return runRestoreDNS(cmd.Context(), cfg, plan, result, dnsDependencies)
 }
 
 type restoreCleanupOptions struct {
@@ -482,15 +562,46 @@ func validateRestoreDependencies(dependencies restoreDependencies) error {
 	return nil
 }
 
-func validateDNSRestoreDependencies(plan restore.Plan, skipDoctor bool, dependencies restoreDependencies) error {
-	if plan.DNS == nil {
+func validateDNSMgrRestoreDependencies(plan restore.Plan, skipDoctor bool, dependencies restoreDependencies) error {
+	if plan.DNS == nil && plan.Maintenance == nil {
 		return nil
 	}
-	if (!skipDoctor && dependencies.runDNSMgrDoctor == nil) ||
-		dependencies.newDNSMgrClient == nil || dependencies.switchDNS == nil {
+	if (!skipDoctor && dependencies.runDNSMgrDoctor == nil) || dependencies.newDNSMgrClient == nil {
+		return fmt.Errorf("执行 restore dnsmgr 联动失败: 内部依赖不完整")
+	}
+	if plan.DNS != nil && dependencies.switchDNS == nil {
 		return fmt.Errorf("执行 restore DNS 切换失败: 内部依赖不完整")
 	}
+	if plan.Maintenance != nil &&
+		(dependencies.pauseMaintenance == nil || dependencies.resumeMaintenance == nil) {
+		return fmt.Errorf("执行 restore dmonitor 维护失败: 内部依赖不完整")
+	}
 	return nil
+}
+
+func maintenanceNotStarted(plan dnsmgr.MaintenancePlan) dnsmgr.MaintenanceResult {
+	tasks := make([]dnsmgr.MaintenanceTaskResult, len(plan.TaskIDs))
+	for index, taskID := range plan.TaskIDs {
+		tasks[index] = dnsmgr.MaintenanceTaskResult{TaskID: taskID, PauseStatus: "not_attempted"}
+	}
+	return dnsmgr.MaintenanceResult{
+		Status: "not_started",
+		Tasks:  tasks,
+		Error:  "dmonitor 任务暂停未执行",
+	}
+}
+
+func mergeMaintenanceResult(result *restore.Result, maintenance dnsmgr.MaintenanceResult) {
+	if result == nil {
+		return
+	}
+	result.Maintenance = &maintenance
+	for _, taskID := range maintenance.ManualTaskIDs {
+		manual := fmt.Sprintf("人工启用 dnsmgr dmonitor 任务 %d", taskID)
+		if !slices.Contains(result.ManualChecks, manual) {
+			result.ManualChecks = append(result.ManualChecks, manual)
+		}
+	}
 }
 
 func runRestoreDNS(
@@ -644,6 +755,16 @@ func printRestoreResult(cmd *cobra.Command, result restore.Result) error {
 			fmt.Fprintln(&output)
 		}
 	}
+	if result.Maintenance != nil {
+		fmt.Fprintf(&output, "  dmonitor 维护: %s\n", result.Maintenance.Status)
+		for _, task := range result.Maintenance.Tasks {
+			fmt.Fprintf(&output, "    - task %d: 暂停 %s", task.TaskID, task.PauseStatus)
+			if task.ResumeStatus != "" {
+				fmt.Fprintf(&output, "，恢复 %s", task.ResumeStatus)
+			}
+			fmt.Fprintln(&output)
+		}
+	}
 	for _, step := range result.Steps {
 		target := "项目级"
 		if step.TargetID != "" {
@@ -749,6 +870,11 @@ func printRestorePlan(cmd *cobra.Command, plan restore.Plan) error {
 		fmt.Fprintln(&output, "  隔离策略: 不覆盖原项目资源；--force 禁用")
 	} else {
 		fmt.Fprintf(&output, "  冲突策略: %s（默认拒绝覆盖；真实恢复需显式 --force）\n", plan.ConflictPolicy)
+		if plan.Maintenance != nil {
+			for _, taskID := range plan.Maintenance.TaskIDs {
+				fmt.Fprintf(&output, "  dmonitor 任务: %d\n", taskID)
+			}
+		}
 		if plan.DNS != nil {
 			fmt.Fprintf(&output, "  DNS 目标: %s\n", plan.DNS.Value)
 			for _, record := range plan.DNS.Records {

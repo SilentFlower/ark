@@ -31,7 +31,8 @@ repo:
 # monitoring:
 #   env_file: /etc/ark/monitoring.env
 
-# 可选的 dnsmgr AuthApi 连接。UID 与 API key 只能放在 root-only 的 env 文件里，
+# 可选的 dnsmgr AuthApi 连接，用于 dmonitor 维护窗口和恢复后 DNS 切换。
+# UID 与 API key 只能放在 root-only 的 env 文件里，
 # 不得直接写入清单。/etc/ark/dnsmgr.env 必须由当前运行用户所有、权限不超过 0600，
 # 且只允许 ARK_DNSMGR_UID、ARK_DNSMGR_API_KEY 两个键。
 # dnsmgr:
@@ -94,9 +95,13 @@ hosts:
       # 没有完全跳过校验的开关。
       known_hosts_file: /etc/ark/ssh/known_hosts
 
-    # 可选。只有跨机原位恢复到本 host 时才会在 completion marker 之后切换；
-    # 同机恢复、dry-run、inspect 和 --isolate 都不会读取凭证或调用 dnsmgr。
+    # 可选。task_ids 来自 dnsmgr dmonitor 任务列表，用于同机或跨机真实原位恢复：
+    # 安全备份完成后按顺序暂停，
+    # 数据恢复和 DNS 切换结束后逆序恢复。所列任务应在恢复前处于启用状态。
+    # value/records 只用于跨机原位恢复，并在 completion marker 之后切换 DNS。
+    # dry-run、inspect 和 --isolate 都不会读取凭证或调用 dnsmgr。
     # dnsmgr:
+    #   task_ids: [21, 34]
     #   value: 203.0.113.10
     #   records:
     #     - domain_id: 12

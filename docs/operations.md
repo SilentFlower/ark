@@ -83,7 +83,7 @@ backup 读取失败时仍完成真实备份，但摘要显示 `heartbeat_status=
 静默期内确认不重复发送。再停止 `ark-hub`，确认 backup timer 和成功心跳仍执行；恢复 Hub 后停止
 backup timer，确认外部监控按配置的宽限期报告失联。任何测试结束后都要恢复 timer 和故障注入。
 
-## 3. 恢复后 dnsmgr DNS 切换
+## 3. dnsmgr 维护窗口与恢复后 DNS 切换
 
 先在 hub 创建受限凭证文件，并确保所有者与运行 `ark`、`ark-hub` 的用户一致：
 
@@ -98,7 +98,8 @@ ARK_DNSMGR_UID=REDACTED
 ARK_DNSMGR_API_KEY=REDACTED
 ```
 
-清单顶层声明 AuthApi 地址和凭证路径，目标 host 声明显式 IP 与有序记录关联：
+清单顶层声明 AuthApi 地址和凭证路径，目标 host 声明有序 dmonitor 任务、显式 IP 与有序记录关联。
+`task_ids` 取自 dnsmgr dmonitor 任务列表中的任务 ID，不是 DNS 记录 ID：
 
 ```yaml
 dnsmgr:
@@ -108,6 +109,7 @@ dnsmgr:
 hosts:
   - host: web-02
     dnsmgr:
+      task_ids: [21, 34]
       value: 203.0.113.10
       records:
         - domain_id: 12
@@ -116,20 +118,33 @@ hosts:
 
 发布顺序必须是：
 
-1. 先部署包含 `POST /api/auth/check` 与 `POST /api/record/value/:id` 的 dnsmgr fork；
+1. 先部署包含 `POST /api/auth/check`、`POST /api/dmonitor/task/setactive` 与
+   `POST /api/record/value/:id` 的 dnsmgr fork；
 2. 再部署新版 ark，但暂不增加 host 的 `dnsmgr` 关联；
 3. 执行 `ark validate` 与 `ark doctor`，确认 `dnsmgr.auth` 通过；
-4. 最后增加目标 host 关联，运行 `ark restore --host <source> --to <destination> --dry-run`；
-5. 再运行带 `--inspect` 的 dry-run，确认 DNS 目标与记录已进入 preview digest。
+4. 最后增加目标 host 关联，确认每个 `task_ids` 对应的任务当前都应为启用状态，再运行
+   `ark restore --host <source> --to <destination> --dry-run`；
+5. 再运行带 `--inspect` 的 dry-run，确认维护任务、DNS 目标与记录已进入 preview digest；
+6. 在可回滚的测试任务上执行一次真实暂停和恢复验收，结束后核对所有任务均为 `active=1`。
+
+真实同机和跨机原位恢复会在 preflight、expected digest、安全备份全部成功后，按清单顺序把任务设为
+`active=0`；任一暂停失败会停止后续暂停。由于网络失败时服务端可能已经写入，Ark 会先把当前失败任务
+幂等恢复为 `active=1`，再逆序恢复此前已暂停任务，并且不开始目标写入。维护窗口覆盖数据恢复与后置
+DNS 切换，`SIGINT`/`SIGTERM` 会转为命令取消，所有普通成功、失败、取消和中断返回路径都会在释放全局锁前逆序设置
+`active=1`。恢复任务失败会让命令返回非零，并在结构化结果中列出需人工启用的任务 ID。
 
 真实跨机原位恢复只在数据恢复 completion marker 成功后切 DNS。同机恢复和 `--isolate` 不切换；
-DNS 失败不会删除 completion marker，重跑同一 restore 会重新验证/跳过已完成数据步骤并再次尝试 DNS。
+dry-run、inspect、`--isolate`、backup 和 verify 都不会创建维护 client 或调用任务 API。DNS 失败不会
+删除 completion marker，重跑同一 restore 会重新验证/跳过已完成数据步骤并再次尝试 DNS。
 多记录部分失败会逆序补偿，补偿请求带本轮目标 IP 作为 `expected_value`；若结果为
 `rollback_failed`，按结果中的 `domain_id/record_id` 在 dnsmgr 人工核对当前 Value。
 
-P5-3 完成前，开始恢复前必须人工暂停相关 dmonitor 检测，结束后无论成功失败都恢复检测。
-回滚 ark 联动时，先从所有 host 删除 `dnsmgr` 关联并通过 `ark validate`，阻止新恢复继续调用；
-然后回滚 ark 二进制。dnsmgr 的两个加法接口可以保留，也可以在确认没有旧版 ark 调用后回滚镜像。
+`SIGKILL`、宿主机断电或进程所在机器崩溃无法运行 defer。遇到这类强制终止，必须从清单和最近一次
+结构化结果取得任务 ID，在 dnsmgr 人工逐项恢复为 `active=1`，再核对 DNS 当前值与恢复状态。
+
+只回滚维护窗口时，先从所有 host 的 `dnsmgr` 段删除 `task_ids` 并执行 `ark validate`，确认新的
+restore dry-run 重新显示人工暂停/恢复项，再人工核对关联任务均为 `active=1`，最后回滚 ark 二进制。
+如需同时停用 DNS 联动，再删除整个 host `dnsmgr` 关联。dnsmgr 的 P5-1/P5-2 加法接口无需回滚。
 
 ## 4. 离线恢复材料
 

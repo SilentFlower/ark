@@ -231,6 +231,8 @@ func WithIsolationOptions(plan Plan, options IsolationOptions) (Plan, error) {
 	generatedComposeFile := path.Join(root, "compose.generated.json")
 	isolated := copyPlan(plan)
 	isolated.DNS = nil
+	isolated.Maintenance = nil
+	isolated.ManualChecks = withoutManualChecks(isolated.ManualChecks, manualCheckDMonitor, manualCheckDNS)
 	isolated.Isolation = &IsolationSpec{
 		SchemaVersion:        isolationSchemaVersion,
 		ID:                   id,
@@ -458,6 +460,11 @@ func copyPlan(plan Plan) Plan {
 		dnsPlan.Records = append([]dnsmgr.Record(nil), plan.DNS.Records...)
 		copied.DNS = &dnsPlan
 	}
+	if plan.Maintenance != nil {
+		maintenancePlan := *plan.Maintenance
+		maintenancePlan.TaskIDs = append([]int64(nil), plan.Maintenance.TaskIDs...)
+		copied.Maintenance = &maintenancePlan
+	}
 	copied.Steps = make([]Step, len(plan.Steps))
 	for index, step := range plan.Steps {
 		copied.Steps[index] = step
@@ -483,6 +490,20 @@ func copyPlan(plan Plan) Plan {
 		copied.Isolation = &isolation
 	}
 	return copied
+}
+
+func withoutManualChecks(checks []string, removed ...string) []string {
+	blocked := make(map[string]struct{}, len(removed))
+	for _, item := range removed {
+		blocked[item] = struct{}{}
+	}
+	filtered := make([]string, 0, len(checks))
+	for _, item := range checks {
+		if _, exists := blocked[item]; !exists {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func isolationID(plan Plan, purpose string, instanceKey string) string {

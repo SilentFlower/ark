@@ -152,16 +152,18 @@ type Host struct {
 	Schedule  *Schedule  `yaml:"schedule"`
 	Retention *Retention `yaml:"retention"`
 
-	// DNSMgr 描述恢复到该 host 后需要切换的 dnsmgr 记录，可为空。
+	// DNSMgr 描述恢复到该 host 时的 dmonitor 维护任务和 DNS 切换，可为空。
 	DNSMgr *HostDNSMgr `yaml:"dnsmgr,omitempty"`
 }
 
-// HostDNSMgr 描述恢复到一台 host 后的 DNS 目标值与记录关联。
+// HostDNSMgr 描述恢复到一台 host 时的 dmonitor 任务与 DNS 记录关联。
 type HostDNSMgr struct {
+	// TaskIDs 按声明顺序保存恢复窗口内需要暂停的 dmonitor 任务。
+	TaskIDs []int64 `yaml:"task_ids,omitempty"`
 	// Value 是所有关联 A 或 AAAA 记录要切换到的显式 IP。
-	Value string `yaml:"value"`
+	Value string `yaml:"value,omitempty"`
 	// Records 按声明顺序保存需要切换的 dnsmgr 记录。
-	Records []DNSMgrRecord `yaml:"records"`
+	Records []DNSMgrRecord `yaml:"records,omitempty"`
 }
 
 // DNSMgrRecord 是一条 dnsmgr 域名与 provider 记录的稳定关联。
@@ -585,7 +587,7 @@ func (c *Config) validateHosts(add func(string, ...any)) {
 	}
 }
 
-// validateHostDNSMgr 校验 host 级 DNS 目标与记录关联。
+// validateHostDNSMgr 校验 host 级维护任务、DNS 目标与记录关联。
 func validateHostDNSMgr(
 	prefix string,
 	settings *HostDNSMgr,
@@ -596,7 +598,29 @@ func validateHostDNSMgr(
 		return
 	}
 	if !hasGlobalSettings {
-		add("%s: 已配置记录关联，但顶层 dnsmgr 配置缺失", prefix)
+		add("%s: 已配置 dnsmgr 能力，但顶层 dnsmgr 配置缺失", prefix)
+	}
+	hasMaintenance := len(settings.TaskIDs) > 0
+	hasDNS := strings.TrimSpace(settings.Value) != "" || len(settings.Records) > 0
+	if !hasMaintenance && !hasDNS {
+		add("%s: 至少需要配置 task_ids 或 value/records", prefix)
+	}
+
+	seenTasks := make(map[int64]int, len(settings.TaskIDs))
+	for index, taskID := range settings.TaskIDs {
+		taskPrefix := fmt.Sprintf("%s.task_ids[%d]", prefix, index)
+		if taskID <= 0 {
+			add("%s: 必须大于 0", taskPrefix)
+		}
+		if previous, exists := seenTasks[taskID]; exists {
+			add("%s: 与 %s.task_ids[%d] 重复", taskPrefix, prefix, previous)
+		} else {
+			seenTasks[taskID] = index
+		}
+	}
+
+	if !hasDNS {
+		return
 	}
 	if net.ParseIP(strings.TrimSpace(settings.Value)) == nil {
 		add("%s.value: %q 不是合法的 IPv4 或 IPv6 地址", prefix, settings.Value)

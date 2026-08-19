@@ -671,11 +671,17 @@ ark schema v2 以兼容的可选字段增加顶层连接配置和 host 级目标
 completion marker 成功后顺序切换 DNS；部分失败会逆序补偿。DNS 计划进入 dry-run、inspect、
 JSON 和 preview digest，但只读路径不读取凭证或发 HTTP；同机与隔离恢复不切换 DNS。
 
-### P5-3 维护窗口联动
+### P5-3 维护窗口联动（已实现）
 
-ark 发起恢复前暂停对应 dmtask，完成后恢复。
-**失败也要恢复**——用 defer 保证，不能因为恢复失败就把检测永久关着。
-P5-1 的 dnsmgr API 前置条件已经满足；本阶段实现 ark 侧配置、客户端调用与恢复兜底。
+ark schema v2 以兼容可选字段增加 host 级有序 `task_ids`。真实同机或跨机原位恢复在 preflight、
+expected digest 和安全备份成功后按序暂停对应 dmtask，暂停失败时先恢复结果未知的当前任务，再逆序
+补偿此前已暂停任务，且不开始目标写入。
+
+维护窗口覆盖数据恢复与 P5-2 DNS 切换，结束后在释放全局锁前逆序恢复。根命令把
+`SIGINT`/`SIGTERM` 转为 context 取消；兜底使用 `context.WithoutCancel` 和固定总超时，普通成功、
+失败、取消与中断都会尝试全部任务；恢复不完整返回非零并列出人工任务。dry-run、inspect、隔离恢复、
+backup 和 verify 都不会调用任务 API。
+配置契约假设任务原本应启用，结束目标固定为 `active=1`；`SIGKILL` 或断电需人工恢复。
 
 ### P5-4 证书部署联动
 

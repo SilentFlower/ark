@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -102,6 +103,13 @@ defaults:
       name: sub2api`, 1)
 }
 
+// manifestWithDNSMgrMaintenance 在 DNS 配置上增加两个有序 dmonitor 任务。
+func manifestWithDNSMgrMaintenance() string {
+	return strings.Replace(manifestWithDNSMgr(), "    dnsmgr:\n      value:", `    dnsmgr:
+      task_ids: [21, 34]
+      value:`, 1)
+}
+
 // writeManifest 把清单内容写入临时文件并返回路径。
 func writeManifest(t *testing.T, content string) string {
 	t.Helper()
@@ -171,6 +179,40 @@ func TestLoadAndValidate_DNSMgr配置(t *testing.T) {
 	web := hostByName(t, cfg, "web-01")
 	if web.DNSMgr == nil || web.DNSMgr.Value != "203.0.113.10" || len(web.DNSMgr.Records) != 2 {
 		t.Fatalf("host dnsmgr 配置 = %#v", web.DNSMgr)
+	}
+}
+
+func TestLoadAndValidate_DNSMgr维护任务组合(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		wantDNS  bool
+	}{
+		{name: "只配置维护任务", manifest: strings.Replace(
+			manifestWithDNSMgrMaintenance(),
+			"      value: 203.0.113.10\n      records:\n        - domain_id: 12\n          record_id: cf-record-1\n        - domain_id: 12\n          record_id: cf-record-2\n",
+			"", 1), wantDNS: false},
+		{name: "只配置 DNS", manifest: manifestWithDNSMgr(), wantDNS: true},
+		{name: "同时配置维护任务和 DNS", manifest: manifestWithDNSMgrMaintenance(), wantDNS: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadAndValidate(writeManifest(t, tc.manifest))
+			if err != nil {
+				t.Fatalf("dnsmgr 组合配置应通过校验: %v", err)
+			}
+			settings := hostByName(t, cfg, "web-01").DNSMgr
+			if settings == nil {
+				t.Fatal("host dnsmgr 配置为空")
+			}
+			if tc.name != "只配置 DNS" && !slices.Equal(settings.TaskIDs, []int64{21, 34}) {
+				t.Fatalf("task_ids = %#v", settings.TaskIDs)
+			}
+			if gotDNS := len(settings.Records) > 0; gotDNS != tc.wantDNS {
+				t.Fatalf("DNS 能力 = %t，期望 %t", gotDNS, tc.wantDNS)
+			}
+		})
 	}
 }
 
@@ -257,10 +299,33 @@ func TestValidate_DNSMgrErrors(t *testing.T) {
 			},
 			wantSub: "重复",
 		},
+		{
+			name: "维护任务 ID 非正数",
+			mutate: func(s string) string {
+				return strings.Replace(s, "task_ids: [21, 34]", "task_ids: [0, 34]", 1)
+			},
+			wantSub: "task_ids[0]",
+		},
+		{
+			name: "维护任务 ID 重复",
+			mutate: func(s string) string {
+				return strings.Replace(s, "task_ids: [21, 34]", "task_ids: [21, 21]", 1)
+			},
+			wantSub: "task_ids[1]",
+		},
+		{
+			name: "host dnsmgr 没有任何能力",
+			mutate: func(s string) string {
+				start := strings.Index(s, "    dnsmgr:\n      task_ids:")
+				end := strings.Index(s[start:], "    project:\n") + start
+				return s[:start] + "    dnsmgr: {}\n" + s[end:]
+			},
+			wantSub: "至少需要配置 task_ids 或 value/records",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := LoadAndValidate(writeManifest(t, tc.mutate(manifestWithDNSMgr())))
+			_, err := LoadAndValidate(writeManifest(t, tc.mutate(manifestWithDNSMgrMaintenance())))
 			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
 				t.Fatalf("错误 = %v，期望包含 %q", err, tc.wantSub)
 			}
