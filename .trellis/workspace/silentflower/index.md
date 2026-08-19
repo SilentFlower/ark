@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
-- **Last Active**: 2026-08-18
+- **Total Sessions**: 21
+- **Last Active**: 2026-08-19
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~545 | Active |
+| `journal-1.md` | ~566 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-08-19 | 完成 P5-3 dnsmgr 维护窗口联动 | `0d6b7dd` | `main` |
 | 20 | 2026-08-18 | 完成 P5-2 恢复后自动切换 dnsmgr DNS | `d6799e3`, `9121e93` | `main` |
 | 19 | 2026-08-18 | 完成并归档 P4-4 告警与死人开关 | `dc68c7e` | `main` |
 | 18 | 2026-08-18 | 完成 P4-3 ark-hub Web 控制台并内嵌打包 | `6777071` `742286f` | `main` |

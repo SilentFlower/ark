@@ -543,3 +543,24 @@ Vue 3 控制台四页面 + go:embed 单二进制；合并原 P4-4；修复真机
 
 - 使用可回滚 DNS 记录验证 forward 与 expected compensation。
 - 部署 ark 后执行一次真实跨机恢复并核对 completion marker、DNS 日志和无秘密输出。
+
+
+## Session 21: 完成 P5-3 dnsmgr 维护窗口联动
+
+**Date**: 2026-08-19
+**Task**: 完成 P5-3 dnsmgr 维护窗口联动
+**Branch**: `main`
+
+### Summary
+
+实现真实恢复前暂停 dmonitor、失败补偿、信号取消恢复兜底与严格 dnsmgr 响应校验；Full Check-All 通过，任务记录和发布操作已归档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0d6b7dd` | (see git log) |
+
+### Status
+
+[OK] **Completed**
