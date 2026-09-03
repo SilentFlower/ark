@@ -738,6 +738,117 @@ func TestRestoreImages_拒绝缺少Digest的活跃Service(t *testing.T) {
 	}
 }
 
+func TestRedisPingReady_只接受独立PONG响应(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "纯响应", output: "PONG\n", want: true},
+		{name: "首尾空白", output: " \n\tPONG \r\n\n", want: true},
+		{name: "警告在响应前", output: "AUTH failed: default user 未配置密码\nPONG\n", want: true},
+		{name: "警告在响应后", output: "PONG\nAUTH failed: default user 未配置密码\n", want: true},
+		{name: "空输出", output: "", want: false},
+		{name: "只有警告", output: "AUTH failed: default user 未配置密码\n", want: false},
+		{name: "小写响应", output: "pong\n", want: false},
+		{name: "RESP响应", output: "+PONG\n", want: false},
+		{name: "附加内容", output: "PONG extra\n", want: false},
+		{name: "警告包含子串", output: "warning PONG\n", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redisPingReady(tc.output); got != tc.want {
+				t.Fatalf("redisPingReady(%q) = %t，期望 %t", tc.output, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWaitDatabaseReady_Redis多行输出立即成功(t *testing.T) {
+	plan := fullExecutePlan()
+	step := plan.Steps[4]
+	calls := 0
+	runner := &runnerFuncs{run: func(_ context.Context, argv ...string) (string, error) {
+		calls++
+		if !isComposeCommand(argv, "exec", "-T", "redis", "redis-cli", "PING") {
+			return "", fmt.Errorf("不应执行命令: %#v", argv)
+		}
+		return "AUTH failed: default user 未配置密码\nPONG\n", nil
+	}}
+
+	if err := waitDatabaseReady(context.Background(), plan, step, runner, time.Hour); err != nil {
+		t.Fatalf("等待 Redis 就绪失败: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("Redis readiness 调用次数 = %d，期望 1", calls)
+	}
+}
+
+func TestWaitDatabaseReady_Redis命令错误不能由响应覆盖(t *testing.T) {
+	plan := fullExecutePlan()
+	step := plan.Steps[4]
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	runner := &runnerFuncs{run: func(_ context.Context, argv ...string) (string, error) {
+		calls++
+		if !isComposeCommand(argv, "exec", "-T", "redis", "redis-cli", "PING") {
+			return "", fmt.Errorf("不应执行命令: %#v", argv)
+		}
+		cancel()
+		return "PONG\n", errors.New("redis-cli failed")
+	}}
+
+	err := waitDatabaseReady(ctx, plan, step, runner, time.Hour)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("错误链 = %v，期望 context canceled", err)
+	}
+	if calls != 1 {
+		t.Fatalf("Redis readiness 调用次数 = %d，期望 1", calls)
+	}
+}
+
+func TestWaitDatabaseReadyOnce_Redis多行输出与命令错误(t *testing.T) {
+	plan := fullExecutePlan()
+	step := plan.Steps[6]
+	failure := errors.New("redis-cli failed")
+	tests := []struct {
+		name    string
+		output  string
+		runErr  error
+		wantErr error
+	}{
+		{
+			name:   "警告加响应成功",
+			output: "AUTH failed: default user 未配置密码\nPONG\n",
+		},
+		{
+			name:    "命令错误不能由响应覆盖",
+			output:  "PONG\n",
+			runErr:  failure,
+			wantErr: failure,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &runnerFuncs{run: func(_ context.Context, argv ...string) (string, error) {
+				if !isComposeCommand(argv, "exec", "-T", "redis", "redis-cli", "PING") {
+					return "", fmt.Errorf("不应执行命令: %#v", argv)
+				}
+				return tc.output, tc.runErr
+			}}
+			err := waitDatabaseReadyOnce(context.Background(), plan, step, runner)
+			if tc.wantErr == nil && err != nil {
+				t.Fatalf("一次性 Redis readiness 失败: %v", err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("错误 = %v，期望保留 %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestWaitDatabaseReady_Context取消可识别(t *testing.T) {
 	plan := fullExecutePlan()
 	step := plan.Steps[3]

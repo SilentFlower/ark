@@ -1198,6 +1198,18 @@ func feedDump(
 	return nil
 }
 
+// redisPingReady 判断合并命令输出中是否存在独立的 Redis PING 成功响应。
+func redisPingReady(output string) bool {
+	// Runner.Run 会合并 stdout 与 stderr，警告可能位于 PONG 前后；逐行严格匹配既不依赖
+	// 两个流的排列顺序，也不会把警告中的 PONG 子串误判为成功响应。
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) == "PONG" {
+			return true
+		}
+	}
+	return false
+}
+
 func waitDatabaseReady(
 	ctx context.Context,
 	plan Plan,
@@ -1220,7 +1232,7 @@ func waitDatabaseReady(
 			return fmt.Errorf("不支持数据库 readiness 类型 %q", step.TargetType)
 		}
 		out, err := runner.Run(ctx, argv...)
-		if err == nil && (step.TargetType != config.TargetRedis || strings.TrimSpace(out) == "PONG") {
+		if err == nil && (step.TargetType != config.TargetRedis || redisPingReady(out)) {
 			return nil
 		}
 		if err := waitPoll(ctx, pollInterval); err != nil {
@@ -1520,7 +1532,7 @@ func waitDatabaseReadyOnce(ctx context.Context, plan Plan, step Step, runner ssh
 	if err != nil {
 		return err
 	}
-	if step.TargetType == config.TargetRedis && strings.TrimSpace(out) != "PONG" {
+	if step.TargetType == config.TargetRedis && !redisPingReady(out) {
 		return fmt.Errorf("Redis PING 未返回 PONG")
 	}
 	return nil

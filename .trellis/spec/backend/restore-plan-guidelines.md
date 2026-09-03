@@ -207,7 +207,10 @@ restic、仓库凭证和业务明文流只存在于 hub。
 - files tar 直接由 `restic.Dump` 流入 destination `tar -xpf -`；hub 不落业务临时文件。hub 状态库
   的 `.db` 原始流先写同目录临时文件、收紧到 `0600` 后原子切换，再删除旧 WAL/SHM。
 - PostgreSQL 使用 `psql --set ON_ERROR_STOP=1`；Redis 必须停止 service，在 volume 内写隔离临时 RDB
-  并原子切换后再启动。所有 Dump/Feed/Close、Runner 和 context 错误保留 `errors.Is` 错误链。
+  并原子切换后再启动。Redis readiness 的 `redis-cli PING` 只有在命令成功退出，且 Runner 合并输出中
+  存在去除空白后严格等于 `PONG` 的独立行时才算成功；警告可位于响应前后，但子串、大小写变体、
+  `+PONG` 或附加内容不能通过。首次等待与 marker 后置条件复核必须复用同一判定。所有
+  Dump/Feed/Close、Runner 和 context 错误保留 `errors.Is` 错误链。
 - CLI 的 `Result.Error` 和步骤 Detail 只保留阶段级脱敏文本；底层错误链只用于退出和诊断，
   `errRestoreFailed` 负责转换退出码，不能让根命令重复回显敏感外部错误。
 
@@ -224,6 +227,8 @@ restic、仓库凭证和业务明文流只存在于 hub。
 | files marker 存在但 stat 元数据漂移 | 不跳过，按该 step 重做 |
 | step marker 与 Plan/snapshot 不匹配 | 不跳过，按该 step 重做 |
 | Feed 与 Dump Close 同时失败 | 两条错误都可 `errors.Is`，阶段失败且不写完成 marker |
+| Redis PING 成功退出且合并输出含警告与独立 `PONG` 行 | readiness 成功；完整输出不进入 Result、CLI 或状态库 |
+| Redis PING 非零退出，即使输出含独立 `PONG` 行 | 继续等待或复核失败，输出不能覆盖退出状态 |
 | context 在 readiness/health 轮询中取消 | 立即结束轮询并保留取消错误链 |
 | service exited/unhealthy 或实际容器 digest 不一致 | health 阶段 fail；缺 healthcheck 只 warn |
 | 人类 Plan 输出失败 | 在首次目标 marker/写入前中止 |
