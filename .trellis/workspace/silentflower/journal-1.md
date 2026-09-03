@@ -564,3 +564,24 @@ Vue 3 控制台四页面 + go:embed 单二进制；合并原 P4-4；修复真机
 ### Status
 
 [OK] **Completed**
+
+
+## Session 22: 完成 external network 隔离恢复修复并归档
+
+**Date**: 2026-09-03
+**Task**: 完成 external network 隔离恢复修复并归档
+**Branch**: `main`
+
+### Summary
+
+完成 external network 私有 bridge 转换、Compose v5 local named volume 兼容和脱敏失败摘要；本地质量门与 Docker 集成通过。hub 真机验收确认原阻断已越过，但发现 Redis readiness 对 redis-cli PING 多行输出误判，已清理隔离资源并回滚生产二进制。任务已归档，release audit 标记 needs-review，后续应建立独立任务修复 Redis readiness 后重新部署验收。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a7c7f75` | (see git log) |
+
+### Status
+
+[OK] **Completed**
