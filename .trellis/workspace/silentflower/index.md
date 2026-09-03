@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
-- **Last Active**: 2026-09-03
+- **Total Sessions**: 23
+- **Last Active**: 2026-09-04
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~587 | Active |
+| `journal-1.md` | ~608 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-09-04 | 修复 Redis readiness 多行输出误判 | `ae0eae3` | `main` |
 | 22 | 2026-09-03 | 完成 external network 隔离恢复修复并归档 | `a7c7f75` | `main` |
 | 21 | 2026-08-19 | 完成 P5-3 dnsmgr 维护窗口联动 | `0d6b7dd` | `main` |
 | 20 | 2026-08-18 | 完成 P5-2 恢复后自动切换 dnsmgr DNS | `d6799e3`, `9121e93` | `main` |

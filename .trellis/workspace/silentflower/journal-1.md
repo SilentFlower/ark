@@ -585,3 +585,24 @@ Vue 3 控制台四页面 + go:embed 单二进制；合并原 P4-4；修复真机
 ### Status
 
 [OK] **Completed**
+
+
+## Session 23: 修复 Redis readiness 多行输出误判
+
+**Date**: 2026-09-04
+**Task**: 修复 Redis readiness 多行输出误判
+**Branch**: `main`
+
+### Summary
+
+修复 redis-cli PING 合并输出的多行误判，统一首次等待与断点续跑复核，完成严格回归、全项目检查和静态构建；上线操作已记录，待 hub 部署与 biz latest verify。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ae0eae3` | (see git log) |
+
+### Status
+
+[OK] **Completed**
