@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/restore-plan-guidelines.md", "reason": "核对首次等待与断点续跑 readiness 语义一致"}
+{"file": ".trellis/spec/backend/external-command-guidelines.md", "reason": "核对合并输出解析不覆盖非零退出且不泄露敏感内容"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "核对表驱动测试、race、全项目质量门与中文注释"}
+{"file": ".trellis/spec/backend/verify-guidelines.md", "reason": "核对真机 verify、生产基线和隔离资源清理"}

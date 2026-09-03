@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/restore-plan-guidelines.md", "reason": "恢复数据库 readiness、同 Plan 续跑与错误链契约"}
+{"file": ".trellis/spec/backend/external-command-guidelines.md", "reason": "Runner.Run 合并 stdout/stderr、退出状态与敏感输出边界"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "context 取消、错误包装与脱敏表达"}
+{"file": ".trellis/spec/backend/verify-guidelines.md", "reason": "biz 自动恢复演练、生产基线与 cleanup 验收"}

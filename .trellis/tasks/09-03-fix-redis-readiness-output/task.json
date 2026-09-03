@@ -1,0 +1,62 @@
+{
+  "id": "fix-redis-readiness-output",
+  "name": "fix-redis-readiness-output",
+  "title": "修复 Redis readiness 多行输出误判",
+  "description": "修复 restore 首次等待与断点续跑复核对 redis-cli PING 合并输出的整体精确匹配，兼容警告行与独立 PONG 响应并完成 hub 真机验收。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-09-03",
+  "completedAt": "2026-09-03",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-09-03T11:39:29Z",
+      "contextKey": "codex_01a0663e-db81-7e31-9774-773711eb077f",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "4652cb84e5339f128d3805983cc30a829c3321fe",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "4652cb84e5339f128d3805983cc30a829c3321fe",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "369f56a8fbab334930f023f441799124fb03d452ed3c4c2a1867b5d3073b1d83"
+          }
+        ],
+        "fingerprint": "7a1de842803c6b04a27b0205f745634bc04491c32d39d8b5aae5f765bb914a2f"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-09-04T01:48:13+08:00",
+    "completedSteps": [
+      "完成 Redis PING 独立响应行解析并统一首次等待与断点续跑复核",
+      "完成命令错误优先、合并输出脱敏与严格拒绝回归",
+      "完成 restore 十次 race、全项目检查与静态构建"
+    ],
+    "partialStep": null,
+    "nextStep": "在 hub 部署静态二进制并完成 biz latest verify 上线后验收",
+    "notes": "Check-All full 严格通过；生产部署、基线、残留资源与 timer 核对作为上线后验证。"
+  }
+}
