@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/restore-plan-guidelines.md", "reason": "隔离 Compose、资源派生、归属校验与 cleanup 契约"}
+{"file": ".trellis/spec/backend/verify-guidelines.md", "reason": "verify 对 restore 隔离转换、基线与结果摘要的复用契约"}
+{"file": ".trellis/spec/backend/external-command-guidelines.md", "reason": "Compose canonical 命令输出与敏感诊断隔离边界"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "错误链、脱敏结果与失败语义"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "回归测试、race、静态构建与提交前质量门"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "restore 到 verify、CLI 的失败摘要传播"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "复用现有隔离命名、标签、state 与 cleanup 实现"}

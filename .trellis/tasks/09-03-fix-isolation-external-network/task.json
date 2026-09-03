@@ -1,0 +1,62 @@
+{
+  "id": "fix-isolation-external-network",
+  "name": "fix-isolation-external-network",
+  "title": "修复 external network 隔离恢复兼容性",
+  "description": "线上 ark verify 连续失败：真实 Compose 使用 external network api_shared，隔离转换按现有规范拒绝 external 资源。规划安全的 external network 隔离策略、诊断输出与真机回归。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "silentflower",
+  "assignee": "silentflower",
+  "createdAt": "2026-09-03",
+  "completedAt": "2026-09-03",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "intentRouting": {
+      "autoCreated": true,
+      "createdAt": "2026-09-03T08:26:56Z",
+      "contextKey": "codex_01a0663e-db81-7e31-9774-773711eb077f",
+      "implementationStarted": false,
+      "baseline": {
+        "head": "6154f6399d70db23933f37bc6c3b52b13c10ce1f",
+        "status": [],
+        "repositories": [
+          {
+            "root": ".",
+            "head": "6154f6399d70db23933f37bc6c3b52b13c10ce1f",
+            "status": [],
+            "worktreeDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "indexDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "untracked": [],
+            "conflicts": [],
+            "integration": [],
+            "fingerprint": "d9c056e7dff4641248ebf1b910950f81658990ce51258f2a1558e469378c783e"
+          }
+        ],
+        "fingerprint": "4e2e7dd9be9aed2ea55fceba7ac319833f017106162e8e4ce3fb9946b99b3760"
+      }
+    }
+  },
+  "progress": {
+    "updatedAt": "2026-09-03T09:25:53Z",
+    "completedSteps": [
+      "完成 external network 私有化转换与 local named volume 兼容",
+      "完成受控失败摘要在 restore、verify 与 CLI 的传播",
+      "完成单元、race、Docker 集成、全项目检查与静态构建"
+    ],
+    "partialStep": null,
+    "nextStep": "在 hub 部署静态二进制并完成 biz latest verify 上线后验收",
+    "notes": "本地 Check-All 严格通过；生产部署与基线、残留资源、timer 核对由后续上线验收承接。"
+  }
+}

@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/restore-plan-guidelines.md", "reason": "核对 external network、named volume、隔离归属与 cleanup 契约"}
+{"file": ".trellis/spec/backend/verify-guidelines.md", "reason": "核对 verify 基线、清理和安全摘要传播"}
+{"file": ".trellis/spec/backend/external-command-guidelines.md", "reason": "核对 Compose canonical 与外部命令敏感输出边界"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "核对错误链和结构化失败摘要"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "核对测试矩阵与全量质量门"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 restore、verify、CLI 数据流一致性"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核对命名、标签、state 与 cleanup 复用"}
