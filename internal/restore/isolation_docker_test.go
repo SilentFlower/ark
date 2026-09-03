@@ -60,6 +60,7 @@ func TestIsolationDockerIntegration_与原项目并存并精确清理(t *testing
 volumes:
   data:
     name: %s
+    driver: local
 networks:
   app:
     name: %s
@@ -225,9 +226,11 @@ func TestIsolationDockerIntegration_Verify不发布端口且不改变生产基�
 volumes:
   data:
     name: %s
+    driver: local
 networks:
   app:
     name: %s
+    external: true
 `, productionContainer, productionPort, productionVolume, productionNetwork)
 	if err := os.WriteFile(productionCompose, []byte(composeContent), 0o600); err != nil {
 		t.Fatalf("写入生产 Compose 夹具失败: %v", err)
@@ -237,9 +240,13 @@ networks:
 	defer func() {
 		_, _ = runner.Run(context.Background(), append(productionArgv, "down", "-v", "--remove-orphans")...)
 		_, _ = runner.Run(context.Background(), "docker", "network", "rm", isolationNetwork)
+		_, _ = runner.Run(context.Background(), "docker", "network", "rm", productionNetwork)
 		_, _ = runner.Run(context.Background(), "docker", "volume", "rm", isolationVolume)
 		_ = os.RemoveAll(isolationRoot)
 	}()
+	if _, err := runner.Run(ctx, "docker", "network", "create", "--driver", "bridge", productionNetwork); err != nil {
+		t.Fatalf("创建生产 external network 失败: %v", err)
+	}
 	if _, err := runner.Run(ctx, append(productionArgv, "up", "-d", "--no-build", "--pull", "never")...); err != nil {
 		t.Fatalf("启动生产 Compose 夹具失败: %v", err)
 	}
@@ -265,6 +272,9 @@ networks:
 	if len(services) != 1 || len(volumes) != 1 || len(networks) != 1 || len(ports) != 1 || len(hostIPs) != 0 {
 		t.Fatalf("verify 隔离资源清单错误: services=%#v volumes=%#v networks=%#v ports=%#v hostIPs=%#v",
 			services, volumes, networks, ports, hostIPs)
+	}
+	if networks[0] != isolationNetwork {
+		t.Fatalf("external network 未使用派生名称: networks=%#v want=%q", networks, isolationNetwork)
 	}
 	if strings.Contains(string(generated), `"ports"`) || ports[0].AllocatedPort != IsolationPortDisabled {
 		t.Fatalf("verify Compose 仍发布端口: generated=%s ports=%#v", generated, ports)
@@ -309,6 +319,20 @@ networks:
 	published, err := runner.Run(ctx, "docker", "port", state.Containers[0].ID)
 	if err != nil || strings.TrimSpace(published) != "" {
 		t.Fatalf("verify 容器存在宿主机 published ports: output=%q err=%v", published, err)
+	}
+	attachedOutput, err := runner.Run(ctx, "docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", state.Containers[0].ID)
+	if err != nil {
+		t.Fatalf("读取 verify 容器网络失败: %v", err)
+	}
+	var attachedNetworks map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(attachedOutput), &attachedNetworks); err != nil {
+		t.Fatalf("解析 verify 容器网络失败: %v", err)
+	}
+	if _, connected := attachedNetworks[productionNetwork]; connected {
+		t.Fatalf("verify 容器错误连接生产 external network: %#v", attachedNetworks)
+	}
+	if _, connected := attachedNetworks[isolationNetwork]; !connected {
+		t.Fatalf("verify 容器未连接派生 network: %#v", attachedNetworks)
 	}
 	if after := dockerIntegrationBaseline(t, ctx, runner, productionContainer, productionVolume, productionNetwork); after != baseline {
 		t.Fatalf("verify 副本启动后生产项目发生变化:\n前=%s\n后=%s", baseline, after)

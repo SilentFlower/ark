@@ -331,9 +331,14 @@ target、protocol、可选 app protocol 和 mode。
   移除固定 `container_name`，为 service、volume、network 增加 isolation label，改写显式资源名和
   安全路径，删除 published 让 Docker 原子分配宿主机端口；保留 host IP、target、TCP/UDP、
   app protocol 和 mode。
-- 只允许默认网络或无 `driver_opts` 的 `bridge` network；external 资源、host/container namespace、
-  volume driver/driver_opts、network driver_opts、非 bridge driver、越界路径和其它共享宿主资源配置
-  全部 fail closed。隔离端口第一版只接受 TCP/UDP，重复声明和无法结构化保真的协议在启动前拒绝。
+- 普通 network 只允许默认 driver 或无 `driver_opts` 的 `bridge`。external network 只把 `name/external`
+  身份声明和 Compose canonical 自动补出的空默认字段作为输入，重新构造为带派生名称及 isolation label
+  的独立 `bridge`，不得连接、修改或删除原共享 network；非空 IPAM、driver、driver_opts、internal、
+  attachable 等额外运行时参数在 Docker 创建前 fail closed。
+- 普通 named volume 允许缺省 driver 或 Compose canonical 默认的 `local`，但物理名称和 isolation label
+  仍必须重写；非 `local` driver 与任何非空 `driver_opts` 继续在 Docker 创建前 fail closed。
+- external volume/config/secret、host/container namespace、非 bridge driver、越界路径和其它共享宿主资源
+  配置继续全部 fail closed。隔离端口第一版只接受 TCP/UDP，重复声明和无法结构化保真的协议在启动前拒绝。
 - 具体 host IP 必须存在于 destination；不得回退到 `0.0.0.0`、回环或其它地址。Docker 启动后立即
   inspect 实际端口并原子持久化到 root-only `state.json`，续跑从受标签保护的容器重建缺失状态。
 - cleanup 只删除 state 中记录且 project/isolation label、名称和路径全部匹配的 container、network、
@@ -342,7 +347,8 @@ target、protocol、可选 app protocol 和 mode。
 - state/root 是部分清理失败后证明归属并按同一 ID 重试的最后凭据。删除 container、network、volume
   后必须再次按 isolation label 扫描；只有确认无残留资源后才能删除 root。扫描失败或仍有残留时
   返回失败并保留 state/root，不能先删状态再报告孤儿。
-- CLI 人类与 JSON 输出只包含安全资源摘要、端口、访问地址和精确 cleanup 命令；canonical Compose、
+- CLI 人类与 JSON 输出只包含安全资源摘要、端口、访问地址和精确 cleanup 命令；Compose 隔离策略
+  可通过 restore 包内受控摘要进入 `Result.Error`，任意外部错误文本不得自动复制。canonical Compose、
   environment、secret、仓库凭证和底层外部命令诊断不得进入输出。
 
 ### 4. Validation & Error Matrix
@@ -355,7 +361,11 @@ target、protocol、可选 app protocol 和 mode。
 | manifest 缺 Compose 端口元数据 | 普通 Plan 可构建；隔离 Plan 要求重新备份 |
 | 备份端口与恢复材料 canonical 端口漂移 | 创建 Docker 资源前失败 |
 | host IP 在 destination 不存在 | 不回退地址，不创建 Docker 资源 |
-| external、host namespace、未映射路径或不支持 driver/protocol | fail closed，不触碰原项目 |
+| external network 只有身份字段或空 canonical 默认字段 | 转换为派生私有 bridge，不连接原共享 network |
+| external network 含非空运行时参数 | fail closed，不创建 Docker 资源，Result 记录脱敏策略摘要 |
+| 普通 named volume 无 driver 或 driver=local | 派生独立名称和 isolation label，按现有 state/cleanup 管理 |
+| 普通 named volume 使用非 local driver 或 driver_opts | fail closed，不创建 Docker 资源，Result 记录脱敏策略摘要 |
+| external volume/config/secret、host namespace、未映射路径或不支持 driver/protocol | fail closed，不触碰原项目 |
 | 名称存在但 Compose/isolation label 不匹配 | 续跑与 cleanup 均拒绝接管或删除 |
 | 启动成功但端口 inspect/状态持久化失败 | 当前阶段失败；续跑按标签重建，不创建第二套副本 |
 | state/root 不存在且无带标签资源 | cleanup 幂等成功 |
@@ -367,6 +377,10 @@ target、protocol、可选 app protocol 和 mode。
 
 - **Good**：目标机保留同名 production project、固定容器名、显式 volume/network 和原 TCP/UDP 端口；
   隔离副本自动派生名称和端口，启动与清理前后原容器 ID/state、volume、network 和端口不变。
+- **Good**：production Compose 通过 external network 连接共享 bridge；隔离转换保留 service 的逻辑引用
+  与 alias，但容器只连接 Ark 派生 network，启动与清理前后原 external network ID、label 和成员不变。
+- **Good**：Compose canonical 为普通 named volume 补出 `driver: local`；隔离转换仍覆盖物理名称并添加
+  isolation label，cleanup 只删除派生 volume，不接管或删除生产 volume。
 - **Good**：首次启动后、写端口状态前中断；相同命令复用 isolation ID，inspect 已有受标签保护容器，
   恢复实际端口后继续，不创建新 project。
 - **Base**：`--isolate --dry-run` 只显示稳定映射和 `auto`，管理员确认后真实执行，成功副本默认保留。
@@ -378,13 +392,16 @@ target、protocol、可选 app protocol 和 mode。
 - Plan/CLI：稳定 ID、purpose/instance key、深拷贝、普通 Plan JSON 兼容、`--force` 互斥、dry-run
   零副作用，以及人类/JSON 完整路径、volume 和端口映射。
 - Compose 纯函数：短/长端口、范围、TCP/UDP、IPv4/IPv6 host IP、app protocol、固定名称、bind/config/
-  secret 映射，以及 external、host namespace、driver、driver_opts、重复/未知协议矩阵。
+  secret 映射；external network 布尔/对象形式、空 canonical 默认字段、service alias、额外运行时参数；
+  普通 named volume 缺省/`local` driver；external volume/config/secret、host namespace、非 `local` driver、
+  driver_opts、重复/未知协议矩阵。
 - fake Runner：canonical stdout/stderr 隔离、备份端口漂移、host IP、root-only state、标签冲突、
   inspect 端口恢复、同 ID 续跑和阶段错误脱敏。
 - cleanup：精确删除顺序、部分失败续跑、重复执行、state/标签/名称/路径漂移、root 缺失且有/无孤儿，
   以及删除后标签复扫发现残留时 root 未被删除。
-- 可选真实 Docker 集成测试使用唯一 project 和临时目录，覆盖 production 与隔离副本并存、TCP/UDP
-  自动端口、显式资源名、原项目基线不变和被测 cleanup API；失败清理只能使用精确 ID/名称。
+- 可选真实 Docker 集成测试使用唯一 project 和临时目录，覆盖 production 与隔离副本并存、external
+  network 私有化、TCP/UDP 自动或禁用端口、显式资源名、原项目基线不变和被测 cleanup API；失败清理
+  只能使用精确 ID/名称。
 - 提交前运行关键包十轮 race、`make check`、双构建、`go mod verify`、`git diff --check`，并在有
   Docker 环境时运行 `ARK_DOCKER_INTEGRATION=1` 隔离集成测试。
 

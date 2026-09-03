@@ -47,6 +47,26 @@ func TestExecute_Restore返回Fail状态时仍失败并清理(t *testing.T) {
 	}
 }
 
+func TestExecute_Restore安全摘要传播到Verify结果(t *testing.T) {
+	dependencies, recorded := testVerifyDependencies(t)
+	sensitiveErr := errors.New("底层包含敏感 stderr")
+	dependencies.executeRestore = func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error) {
+		return restore.Result{
+			Status: store.StatusFail,
+			Error:  "隔离 Compose external volume 无法隔离",
+		}, sensitiveErr
+	}
+	runner := &fakeRunner{run: func(context.Context, ...string) (string, error) { return "", nil }}
+	result, err := execute(context.Background(), testVerifyPlan(), nil, runner, Options{}, dependencies)
+	want := "隔离恢复未完成：隔离 Compose external volume 无法隔离"
+	if !errors.Is(err, sensitiveErr) || result.Status != store.StatusFail || result.Error != want || recorded.Error != want {
+		t.Fatalf("result=%#v err=%v recorded=%#v", result, err, *recorded)
+	}
+	if strings.Contains(result.Error, "敏感 stderr") {
+		t.Fatalf("verify 摘要泄漏底层错误: %q", result.Error)
+	}
+}
+
 func TestExecute_归属校验失败会回退清理(t *testing.T) {
 	dependencies, recorded := testVerifyDependencies(t)
 	cleanupCalled := false

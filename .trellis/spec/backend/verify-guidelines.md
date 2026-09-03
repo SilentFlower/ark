@@ -70,6 +70,11 @@ ark-verify.timer   -> OnCalendar=weekly, Persistent=true, RandomizedDelaySec=216
 - verify 固定调用 `WithIsolationOptions`，`Purpose=verify`、`InstanceKey=verification ID`、
   `PortAllocation=disabled`。结构化 Compose 转换必须删除整个 service `ports` 字段；普通
   `restore --isolate` 继续使用 `runtime_auto`，两者共享 project/path/label/state/cleanup 实现。
+- production Compose 声明 external network 时，verify 必须复用 restore 的严格私有化转换：只保留
+  service 逻辑引用与 alias，容器连接带 isolation label 的派生 bridge，绝不连接原共享 network。
+  canonical 中非空的额外运行时参数无法安全迁移时，必须在创建 Docker 资源前 fail closed。
+- production Compose 的普通 named volume 即使被 canonical 补出 `driver: local`，verify 仍必须重写
+  物理名称并添加 isolation label；非 `local` driver、任何非空 `driver_opts` 和 external volume 继续拒绝。
 - 单 host 顺序固定为：生成 ID -> 生产基线 -> verify isolation -> `restore.Execute` -> 默认 cleanup，
   或失败时校验 keep ownership -> 生产基线复核 -> `Store.RecordVerification`。
 - `--keep-on-failure` 仅在恢复已失败，且 `state.json`、destination、project、路径、container/network/
@@ -81,6 +86,8 @@ ark-verify.timer   -> OnCalendar=weekly, Persistent=true, RandomizedDelaySec=216
   Verification 为 fail。Store 写入失败时，`Result.Error` 必须保留已发生的阶段级脱敏摘要并追加
   “记录演练结果失败”，返回 error 使用 `errors.Join` 同时保留原阶段与 Store 错误链。context 取消后
   使用最多 30 秒的 `context.WithoutCancel` 收尾。
+- restore 提供比“恢复未完成”更具体的受控安全摘要时，verify 顶层错误必须以“隔离恢复未完成：”传播；
+  通用文案不重复拼接，任意底层 SSH/Docker/restic stderr 不得进入结果、状态库或 CLI 输出。
 - detail JSON 固定带 schema version、source/host、run、manifest snapshot、target snapshot 关联、
   restore steps/isolation、baseline fingerprint/diff、cleanup、keep ownership 和阶段级错误；不得包含
   repo URL、SSH 配置、canonical Compose、env、凭证、命令输出或业务内容。
@@ -101,7 +108,10 @@ ark-verify.timer   -> OnCalendar=weekly, Persistent=true, RandomizedDelaySec=216
 | local doctor fail | 每个待验证 host 写前置 fail，不启动恢复 |
 | BuildPlan 漂移、host doctor fail、Runner 创建失败 | 写当前 host 前置 fail，继续下一 host |
 | baseline 前置采集失败 | 零隔离写入，记录 fail |
-| 隔离转换或原始单文件映射失败 | 零 Docker 写入，记录 fail |
+| external network 可安全私有化 | 使用派生 bridge，原共享 network 与生产基线不变 |
+| 普通 named volume 无 driver 或 driver=local | 使用派生 volume，原生产 volume 与基线不变 |
+| 普通 named volume 使用非 local driver、driver_opts 或 external | 零 Docker 写入，记录脱敏阶段摘要并 fail |
+| 隔离转换、external network 额外参数或原始单文件映射失败 | 零 Docker 写入，记录脱敏阶段摘要并 fail |
 | Dump/Feed/database/digest/health 失败或 restore 返回 fail | 默认 cleanup，记录 fail |
 | keep-on-failure 归属校验失败 | 不保留，执行 cleanup，记录 fail |
 | cleanup、结束基线或 Store 写入失败 | 最终 fail，不输出成功 |
@@ -116,6 +126,8 @@ ark-verify.timer   -> OnCalendar=weekly, Persistent=true, RandomizedDelaySec=216
   JSON 仍包含两条结果，生产基线均不变。
 - **Base**：`ark verify --host web-01 --snapshot latest` 在原 host 创建独立 verify project，容器只有
   Compose 内部网络、不发布宿主机端口；health 成功后清理全部资源并记录 ok/warn。
+- **Good**：production service 使用 external network；verify service 只连接派生 bridge，原 network
+  ID、driver、labels 和生产成员前后不变，cleanup 后派生 network 无残留。
 - **Good**：显式 `--keep-on-failure` 且完整 ownership 校验通过，输出精确
   `ark restore cleanup --host ... --isolation ...`；结束生产基线仍完全一致。
 - **Bad**：为避开端口冲突只把生产端口加偏移。它仍会意外暴露公网端口，且复制了普通 isolation
@@ -127,10 +139,12 @@ ark-verify.timer   -> OnCalendar=weekly, Persistent=true, RandomizedDelaySec=216
 
 - `internal/verify` 覆盖基线排序/指纹、RepoDigests、目录递归元数据、成功、restore fail/status fail、
   cleanup fail、baseline diff、store fail、restore 与 store 同时失败时的摘要/错误链聚合、keep ownership、
-  取消后收尾和 target snapshot detail。
+  restore 安全摘要传播、底层错误脱敏、取消后收尾和 target snapshot detail。
 - `internal/restore` 覆盖普通 isolation 仍为 runtime-auto，verify 删除全部 `ports`，并共享 project/path/
-  label/state/cleanup。真实 Docker 用例必须由 `testing.Short()`、`ARK_DOCKER_INTEGRATION=1` 和本地镜像
-  检测保护，并断言生产 project 前后基线一致、verify 容器 `docker port` 为空、清理无残留。
+  label/state/cleanup；external network 转换必须覆盖 service alias、空 canonical 默认字段和额外参数拒绝，
+  named volume 必须覆盖缺省/`local` 成功与非 `local`/driver_opts/external 拒绝。
+  真实 Docker 用例必须由 `testing.Short()`、`ARK_DOCKER_INTEGRATION=1` 和本地镜像检测保护，并断言
+  verify 容器不连接原 external network、`docker port` 为空、生产 project 前后基线一致且清理无残留。
 - `internal/cli` 覆盖未知/漂移 host、锁顺序、doctor/plan/runner 前置失败落库、全 host 串行继续、
   每 host latest manifest 选择、显式 snapshot 单 manifest、JSON 单输出、脱敏、`errVerifyFailed` 与
   close/unlock 错误聚合。

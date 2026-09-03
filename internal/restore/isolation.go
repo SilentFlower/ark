@@ -713,7 +713,7 @@ func prepareIsolation(
 		canonical, plan.Isolation,
 	)
 	if err != nil {
-		return state, err
+		return state, withResultSummary(err, "隔离 Compose 配置不符合安全策略")
 	}
 	if !equalIsolationPortDeclarations(ports, plan.Isolation.Ports) {
 		return state, fmt.Errorf("备份时记录的 Compose 端口与恢复材料不一致，拒绝启动隔离副本")
@@ -1300,19 +1300,42 @@ func transformNamedResources(document map[string]any, field string, spec *Isolat
 			return nil, fmt.Errorf("Compose %s %q 结构无效", field, key)
 		}
 		if externalResource(resource) {
-			return nil, fmt.Errorf("Compose %s %q 是 external 资源，无法隔离", field, key)
+			if field == "networks" {
+				mappedResource, mappedName, err := transformExternalNetwork(key, resource, spec, labels)
+				if err != nil {
+					return nil, err
+				}
+				resources[key] = mappedResource
+				physicalNames = append(physicalNames, mappedName)
+				continue
+			}
+			return nil, withResultSummary(
+				fmt.Errorf("Compose %s %q 是 external 资源，无法隔离", field, key),
+				"隔离 Compose external volume 无法隔离",
+			)
 		}
-		if field == "volumes" &&
-			(strings.TrimSpace(stringValue(resource["driver"])) != "" || composeFieldPresent(resource["driver_opts"])) {
-			return nil, fmt.Errorf("Compose volume %q 的 driver/driver_opts 无法证明隔离", key)
+		if field == "volumes" {
+			driver := strings.TrimSpace(stringValue(resource["driver"]))
+			if (driver != "" && driver != "local") || composeFieldPresent(resource["driver_opts"]) {
+				return nil, withResultSummary(
+					fmt.Errorf("Compose volume %q 的 driver/driver_opts 无法证明隔离", key),
+					"隔离 Compose volume driver/driver_opts 无法隔离",
+				)
+			}
 		}
 		if field == "networks" {
 			driver := strings.TrimSpace(stringValue(resource["driver"]))
 			if driver != "" && driver != "bridge" {
-				return nil, fmt.Errorf("Compose network %q 使用 driver %q，无法证明隔离", key, driver)
+				return nil, withResultSummary(
+					fmt.Errorf("Compose network %q 使用 driver %q，无法证明隔离", key, driver),
+					"隔离 Compose network 使用不支持的 driver",
+				)
 			}
 			if composeFieldPresent(resource["driver_opts"]) {
-				return nil, fmt.Errorf("Compose network %q 的 driver_opts 无法证明隔离", key)
+				return nil, withResultSummary(
+					fmt.Errorf("Compose network %q 的 driver_opts 无法证明隔离", key),
+					"隔离 Compose network driver_opts 无法隔离",
+				)
 			}
 		}
 		original := strings.TrimSpace(stringValue(resource["name"]))
@@ -1329,6 +1352,50 @@ func transformNamedResources(document map[string]any, field string, spec *Isolat
 	return physicalNames, nil
 }
 
+// transformExternalNetwork 把生产共享网络的逻辑入口重建为最小私有 bridge。
+// 只接受身份字段是为了避免静默继承或丢弃无法证明等价的宿主网络参数。
+func transformExternalNetwork(
+	key string,
+	resource map[string]any,
+	spec *IsolationSpec,
+	labels bool,
+) (map[string]any, string, error) {
+	original := strings.TrimSpace(stringValue(resource["name"]))
+	for _, field := range sortedKeys(resource) {
+		if field != "name" && field != "external" && composeFieldPresent(resource[field]) {
+			return nil, "", withResultSummary(
+				fmt.Errorf("Compose external network %q 包含运行时参数 %q，无法证明隔离", key, field),
+				"隔离 Compose external network 包含不支持的运行时参数",
+			)
+		}
+	}
+	if external, ok := resource["external"].(map[string]any); ok {
+		for _, field := range sortedKeys(external) {
+			if field != "name" && composeFieldPresent(external[field]) {
+				return nil, "", withResultSummary(
+					fmt.Errorf("Compose external network %q 的 external 包含参数 %q，无法证明隔离", key, field),
+					"隔离 Compose external network 包含不支持的运行时参数",
+				)
+			}
+		}
+		if original == "" {
+			original = strings.TrimSpace(stringValue(external["name"]))
+		}
+	}
+	if original == "" {
+		original = effectiveProjectResourceName(spec.SourceProject, key)
+	}
+	mapped := isolationResourceName(original, spec.Purpose, spec.ShortID)
+	mappedResource := map[string]any{
+		"name":   mapped,
+		"driver": "bridge",
+	}
+	if labels {
+		addIsolationLabel(mappedResource, spec.ID)
+	}
+	return mappedResource, mapped, nil
+}
+
 func transformFileResources(document map[string]any, field string, spec *IsolationSpec) error {
 	resources, err := objectField(document, field, false)
 	if err != nil || resources == nil {
@@ -1340,7 +1407,10 @@ func transformFileResources(document map[string]any, field string, spec *Isolati
 			return fmt.Errorf("Compose %s %q 结构无效", field, key)
 		}
 		if externalResource(resource) {
-			return fmt.Errorf("Compose %s %q 是 external 资源，无法隔离", field, key)
+			return withResultSummary(
+				fmt.Errorf("Compose %s %q 是 external 资源，无法隔离", field, key),
+				fmt.Sprintf("隔离 Compose external %s 无法隔离", strings.TrimSuffix(field, "s")),
+			)
 		}
 		filePath := strings.TrimSpace(stringValue(resource["file"]))
 		if filePath != "" {

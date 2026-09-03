@@ -232,7 +232,7 @@ func execute(
 		runErr = fmt.Errorf("隔离恢复返回失败状态")
 	}
 	if runErr != nil {
-		result.Error = "隔离恢复未完成"
+		result.Error = isolationRestoreFailureSummary(result.Restore.Error)
 	}
 
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), verificationFinishTimeout)
@@ -279,6 +279,16 @@ func execute(
 		result.Status = store.StatusFail
 	}
 	return finishVerification(finishCtx, result, runErr, dependencies)
+}
+
+// isolationRestoreFailureSummary 只传播 restore.Result 已承诺脱敏的摘要。
+// 通用 restore 文案不重复拼接，避免得到没有额外诊断价值的嵌套错误。
+func isolationRestoreFailureSummary(restoreSummary string) string {
+	restoreSummary = strings.TrimSpace(restoreSummary)
+	if restoreSummary == "" || restoreSummary == "恢复未完成" {
+		return "隔离恢复未完成"
+	}
+	return "隔离恢复未完成：" + restoreSummary
 }
 
 func finishVerification(

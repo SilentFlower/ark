@@ -373,9 +373,52 @@ func newExecuteResult(plan Plan) Result {
 	return result
 }
 
+type resultSummarizer interface {
+	resultSummary() string
+}
+
+type resultSummaryError struct {
+	cause   error
+	summary string
+}
+
+func (e resultSummaryError) Error() string {
+	if e.cause == nil {
+		return e.summary
+	}
+	return e.cause.Error()
+}
+
+func (e resultSummaryError) Unwrap() error {
+	return e.cause
+}
+
+func (e resultSummaryError) resultSummary() string {
+	return e.summary
+}
+
+// withResultSummary 只允许 restore 包主动选择可进入结构化结果的错误摘要。
+// 接口方法保持非导出，避免外部依赖把任意底层诊断伪装成可公开文本。
+func withResultSummary(cause error, summary string) error {
+	if cause == nil {
+		return nil
+	}
+	var summarizer resultSummarizer
+	if errors.As(cause, &summarizer) && strings.TrimSpace(summarizer.resultSummary()) != "" {
+		return cause
+	}
+	return resultSummaryError{cause: cause, summary: strings.TrimSpace(summary)}
+}
+
 func failResult(result Result, err error) (Result, error) {
 	result.Status = store.StatusFail
 	result.Error = "恢复未完成"
+	var summarizer resultSummarizer
+	if errors.As(err, &summarizer) {
+		if summary := strings.TrimSpace(summarizer.resultSummary()); summary != "" {
+			result.Error = summary
+		}
+	}
 	return result, err
 }
 

@@ -991,6 +991,26 @@ func TestValidateExecutePlan_拒绝原始文件与其它Files路径重叠(t *tes
 	}
 }
 
+func TestFailResult_只传播受控安全摘要(t *testing.T) {
+	sensitiveErr := errors.New("底层包含敏感 stderr")
+	safeSummary := "隔离 Compose external volume 无法隔离"
+	result, err := failResult(Result{}, fmt.Errorf(
+		"准备隔离恢复失败: %w",
+		withResultSummary(sensitiveErr, safeSummary),
+	))
+	if !errors.Is(err, sensitiveErr) || result.Status != store.StatusFail || result.Error != safeSummary {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if strings.Contains(result.Error, "敏感 stderr") {
+		t.Fatalf("安全摘要泄漏底层错误: %q", result.Error)
+	}
+
+	plainResult, plainErr := failResult(Result{}, sensitiveErr)
+	if !errors.Is(plainErr, sensitiveErr) || plainResult.Error != "恢复未完成" {
+		t.Fatalf("普通错误不应进入结果: result=%#v err=%v", plainResult, plainErr)
+	}
+}
+
 func TestParseComposeStates_支持数组与NDJSON(t *testing.T) {
 	want := []composeState{{ID: "one", Service: "api", State: "running"}, {ID: "two", Service: "api", State: "exited"}}
 	array, err := parseComposeStates(`[{"ID":"one","Service":"api","State":"running"},{"ID":"two","Service":"api","State":"exited"}]`)

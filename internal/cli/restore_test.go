@@ -1149,6 +1149,7 @@ func TestRestoreCommand_执行失败输出脱敏结果并返回哨兵(t *testing
 	cfg, manifest, snapshot := testRestoreCommandInputs()
 	configPath := "unused"
 	wantErr := errors.New("底层包含敏感 stderr")
+	safeSummary := "隔离 Compose external volume 无法隔离"
 	dependencies := restoreDependencies{
 		loadConfig:       func(string) (*config.Config, error) { return cfg, nil },
 		acquireLock:      func(string) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
@@ -1160,7 +1161,7 @@ func TestRestoreCommand_执行失败输出脱敏结果并返回哨兵(t *testing
 		},
 		newRunner: func(*config.Host) (sshexec.Runner, error) { return restoreNoopRunner{}, nil },
 		execute: func(context.Context, restore.Plan, *restic.Repo, sshexec.Runner, restore.ExecuteOptions) (restore.Result, error) {
-			return restore.Result{Status: store.StatusFail, Error: "恢复未完成"}, wantErr
+			return restore.Result{Status: store.StatusFail, Error: safeSummary}, wantErr
 		},
 	}
 	cmd := newRestoreCmdWithDependencies(&configPath, dependencies)
@@ -1175,7 +1176,7 @@ func TestRestoreCommand_执行失败输出脱敏结果并返回哨兵(t *testing
 	if !errors.Is(err, errRestoreFailed) || !errors.Is(err, wantErr) {
 		t.Fatalf("错误链 = %v", err)
 	}
-	if strings.Contains(output.String(), "敏感 stderr") || !strings.Contains(output.String(), `"error": "恢复未完成"`) {
+	if strings.Contains(output.String(), "敏感 stderr") || !strings.Contains(output.String(), `"error": "`+safeSummary+`"`) {
 		t.Fatalf("失败输出未脱敏: %s", output.String())
 	}
 }

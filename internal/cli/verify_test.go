@@ -60,6 +60,7 @@ func TestVerifyCommand_全Host失败后继续且JSON纯净(t *testing.T) {
 	web02Snapshot := snapshot
 	web02Snapshot.ID = "manifest-web-02"
 	configPath := "/etc/ark/test.yaml"
+	safeSummary := "隔离恢复未完成：隔离 Compose external volume 无法隔离"
 	var events []string
 	var doctorReports []store.DoctorReport
 	dependencies := verifyDependencies{
@@ -125,8 +126,8 @@ func TestVerifyCommand_全Host失败后继续且JSON纯净(t *testing.T) {
 			}
 			if plan.SourceHost == "web-01" {
 				result.Status = store.StatusFail
-				result.Error = "隔离恢复未完成"
-				return result, errors.New("restore failed")
+				result.Error = safeSummary
+				return result, errors.New("底层包含敏感 stderr")
 			}
 			return result, nil
 		},
@@ -161,7 +162,9 @@ func TestVerifyCommand_全Host失败后继续且JSON纯净(t *testing.T) {
 	}
 	if summary.Status != store.StatusFail || len(summary.Results) != 2 ||
 		summary.Results[0].RunID != "run-web-01" || summary.Results[0].ManifestSnapshotID != "manifest-web-01" ||
-		summary.Results[1].RunID != "run-web-02" || summary.Results[1].ManifestSnapshotID != "manifest-web-02" {
+		summary.Results[0].Error != safeSummary ||
+		summary.Results[1].RunID != "run-web-02" || summary.Results[1].ManifestSnapshotID != "manifest-web-02" ||
+		strings.Contains(output.String(), "敏感 stderr") {
 		t.Fatalf("summary=%#v", summary)
 	}
 	wantEvents := []string{

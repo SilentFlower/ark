@@ -108,6 +108,114 @@ func TestTransformIsolationCompose_结构化隔离资源路径和端口(t *testi
 	}
 }
 
+func TestTransformIsolationCompose_ExternalNetwork转换为私有Bridge(t *testing.T) {
+	spec := testIsolationSpec(t)
+	tests := []struct {
+		name       string
+		network    string
+		sourceName string
+	}{
+		{
+			name:       "布尔声明和显式名称",
+			network:    `{"name":"api_shared","external":true}`,
+			sourceName: "api_shared",
+		},
+		{
+			name:       "Compose canonical 空默认字段",
+			network:    `{"name":"api_shared","ipam":{},"external":true}`,
+			sourceName: "api_shared",
+		},
+		{
+			name:       "对象声明中的名称",
+			network:    `{"external":{"name":"api_shared"}}`,
+			sourceName: "api_shared",
+		},
+		{
+			name:       "缺少名称时按项目回退",
+			network:    `{"external":true}`,
+			sourceName: effectiveProjectResourceName(spec.SourceProject, "shared"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			canonical := `{"services":{"api":{"networks":{"shared":{"aliases":["api.internal"],"priority":100}}}},` +
+				`"networks":{"shared":` + tc.network + `}}`
+			generated, _, _, networks, _, _, err := transformIsolationCompose([]byte(canonical), spec)
+			if err != nil {
+				t.Fatalf("transformIsolationCompose 失败: %v", err)
+			}
+			wantName := isolationResourceName(tc.sourceName, spec.Purpose, spec.ShortID)
+			if !reflect.DeepEqual(networks, []string{wantName}) {
+				t.Fatalf("network 清单=%#v，期望 %#v", networks, []string{wantName})
+			}
+
+			var document map[string]any
+			if err := json.Unmarshal(generated, &document); err != nil {
+				t.Fatalf("生成 JSON 无效: %v", err)
+			}
+			network := document["networks"].(map[string]any)["shared"].(map[string]any)
+			if network["name"] != wantName || network["driver"] != "bridge" {
+				t.Fatalf("external network 未转换为私有 bridge: %#v", network)
+			}
+			if _, exists := network["external"]; exists {
+				t.Fatalf("隔离 network 仍含 external: %#v", network)
+			}
+			if network["labels"].(map[string]any)[isolationLabel] != spec.ID {
+				t.Fatalf("隔离 network 缺少归属标签: %#v", network)
+			}
+			serviceNetwork := document["services"].(map[string]any)["api"].(map[string]any)["networks"].(map[string]any)["shared"].(map[string]any)
+			if !reflect.DeepEqual(serviceNetwork["aliases"], []any{"api.internal"}) || serviceNetwork["priority"] != float64(100) {
+				t.Fatalf("service network attachment 发生变化: %#v", serviceNetwork)
+			}
+		})
+	}
+}
+
+func TestTransformIsolationCompose_普通NamedVolume允许默认LocalDriver(t *testing.T) {
+	spec := testIsolationSpec(t)
+	tests := []struct {
+		name       string
+		volume     string
+		wantDriver string
+	}{
+		{
+			name:   "缺省 driver",
+			volume: `{"name":"app_data"}`,
+		},
+		{
+			name:       "Compose canonical 默认 local driver",
+			volume:     `{"name":"app_data","driver":"local"}`,
+			wantDriver: "local",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			canonical := `{"services":{"api":{"volumes":[{"type":"volume","source":"data","target":"/data"}]}},` +
+				`"volumes":{"data":` + tc.volume + `}}`
+			generated, _, volumes, _, _, _, err := transformIsolationCompose([]byte(canonical), spec)
+			if err != nil {
+				t.Fatalf("transformIsolationCompose 失败: %v", err)
+			}
+			wantName := isolationResourceName("app_data", spec.Purpose, spec.ShortID)
+			if !reflect.DeepEqual(volumes, []string{wantName}) {
+				t.Fatalf("volume 清单=%#v，期望 %#v", volumes, []string{wantName})
+			}
+
+			var document map[string]any
+			if err := json.Unmarshal(generated, &document); err != nil {
+				t.Fatalf("生成 JSON 无效: %v", err)
+			}
+			volume := document["volumes"].(map[string]any)["data"].(map[string]any)
+			if volume["name"] != wantName || volume["labels"].(map[string]any)[isolationLabel] != spec.ID {
+				t.Fatalf("named volume 未隔离: %#v", volume)
+			}
+			if strings.TrimSpace(stringValue(volume["driver"])) != tc.wantDriver {
+				t.Fatalf("volume driver=%#v，期望 %q", volume["driver"], tc.wantDriver)
+			}
+		})
+	}
+}
+
 func TestTransformIsolationCompose_拒绝无法证明隔离的配置(t *testing.T) {
 	spec := testIsolationSpec(t)
 	tests := []struct {
@@ -119,6 +227,21 @@ func TestTransformIsolationCompose_拒绝无法证明隔离的配置(t *testing.
 			name:      "external volume",
 			canonical: `{"services":{"api":{}},"volumes":{"data":{"external":true}}}`,
 			want:      "external",
+		},
+		{
+			name:      "external config",
+			canonical: `{"services":{"api":{}},"configs":{"app":{"external":true}}}`,
+			want:      "external",
+		},
+		{
+			name:      "external secret",
+			canonical: `{"services":{"api":{}},"secrets":{"token":{"external":true}}}`,
+			want:      "external",
+		},
+		{
+			name:      "external network 额外运行时参数",
+			canonical: `{"services":{"api":{}},"networks":{"shared":{"name":"api_shared","external":true,"ipam":{"driver":"default"}}}}`,
+			want:      "运行时参数",
 		},
 		{
 			name:      "host network",
@@ -161,6 +284,11 @@ func TestTransformIsolationCompose_拒绝无法证明隔离的配置(t *testing.
 			want:      "driver/driver_opts",
 		},
 		{
+			name:      "非 local volume driver",
+			canonical: `{"services":{"api":{}},"volumes":{"data":{"driver":"nfs"}}}`,
+			want:      "driver/driver_opts",
+		},
+		{
 			name:      "Docker API socket",
 			canonical: `{"services":{"api":{"use_api_socket":true}}}`,
 			want:      "use_api_socket",
@@ -176,6 +304,48 @@ func TestTransformIsolationCompose_拒绝无法证明隔离的配置(t *testing.
 			_, _, _, _, _, _, err := transformIsolationCompose([]byte(tc.canonical), spec)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("错误 = %v，期望包含 %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestTransformIsolationCompose_策略拒绝提供受控结果摘要(t *testing.T) {
+	spec := testIsolationSpec(t)
+	tests := []struct {
+		name        string
+		canonical   string
+		wantSummary string
+	}{
+		{
+			name:        "external volume 使用具体摘要",
+			canonical:   `{"services":{"api":{}},"volumes":{"data":{"external":true}}}`,
+			wantSummary: "隔离 Compose external volume 无法隔离",
+		},
+		{
+			name:        "external network 参数使用具体摘要",
+			canonical:   `{"services":{"api":{}},"networks":{"shared":{"external":true,"ipam":{"driver":"default"}}}}`,
+			wantSummary: "隔离 Compose external network 包含不支持的运行时参数",
+		},
+		{
+			name:        "非 local volume driver 使用具体摘要",
+			canonical:   `{"services":{"api":{}},"volumes":{"data":{"driver":"nfs"}}}`,
+			wantSummary: "隔离 Compose volume driver/driver_opts 无法隔离",
+		},
+		{
+			name:        "其它转换拒绝使用通用阶段摘要",
+			canonical:   `{"services":{"api":{"network_mode":"host"}}}`,
+			wantSummary: "隔离 Compose 配置不符合安全策略",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, _, _, transformErr := transformIsolationCompose([]byte(tc.canonical), spec)
+			if transformErr == nil {
+				t.Fatal("期望 Compose 转换失败")
+			}
+			result, err := failResult(Result{}, withResultSummary(transformErr, "隔离 Compose 配置不符合安全策略"))
+			if err == nil || result.Error != tc.wantSummary {
+				t.Fatalf("result=%#v err=%v", result, err)
 			}
 		})
 	}
